@@ -22,7 +22,9 @@ sudo ./pnt.sh restart
 sudo ./pnt.sh update
 ```
 
-`update` clones the repository over HTTPS using the account that invoked `sudo`, so Git can ask for a username and password or access token in the terminal. It builds before changing the running installation, replaces the binary and service unit, then restarts an active service. If activation fails, it restores the previous binary and unit. A stopped service remains stopped. An optional repository URL passed to `update` is saved for later runs.
+`update` stops the service, runs `git pull --ff-only` in this checkout over HTTPS, builds from the updated source, installs the binary and unit, and starts the service. The pull also updates `pnt.sh` and the other source files. Git runs as the user who invoked `sudo` and can ask for a username and access token. If pull, build, or service startup fails, the previous binary and unit are restored and a previously running service is started again. An optional repository URL passed to `update` is saved for later runs.
+
+To remember HTTPS credentials for later pulls, run `git config --global credential.helper store` as the same user who runs the update, then authenticate once. Git stores the credentials unencrypted in `~/.git-credentials`; keep that file readable only by its owner (`chmod 600 ~/.git-credentials`) and use a read-only repository token.
 
 ```sh
 sudo pnt create cluster '37004389'

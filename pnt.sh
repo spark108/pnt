@@ -14,7 +14,7 @@ usage() {
 Usage: sudo ./pnt.sh <command>
 
   install                 Install Debian dependencies, build, and start the service
-  update [repository_url] Clone, build, and install an update from the private repository
+  update [repository_url] Stop, pull, build, install, and start the service
   start                   Start pnt.service
   stop                    Stop pnt.service
   restart                 Restart pnt.service
@@ -35,6 +35,15 @@ require_root() {
 
 require_command() {
     command -v "$1" >/dev/null 2>&1 || die "Required command not found: $1"
+}
+
+as_invoker() {
+    if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ]; then
+        require_command runuser
+        runuser -u "$SUDO_USER" -- "$@"
+    else
+        "$@"
+    fi
 }
 
 runtime_id() {
@@ -138,21 +147,36 @@ update_from_repository() {
     [ "$#" -le 1 ] || die 'update accepts one repository URL at most.'
     repo=$(repository_url "$@")
     check_repository_url "$repo"
+    checkout_root=$(as_invoker git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null) ||
+        die 'Update must run from a Git checkout of PNT.'
+    [ "$checkout_root" = "$SCRIPT_DIR" ] || die 'The script must be in the root of the PNT checkout.'
+    branch=$(as_invoker git -C "$SCRIPT_DIR" symbolic-ref --quiet --short HEAD) ||
+        die 'The checkout must be on a branch.'
 
     temp_dir=$(mktemp -d)
     staged_bin=''
-    backup_bin=''
+    backup_bin=$(mktemp "$INSTALL_DIR/.pnt-old.XXXXXX")
+    cp -p "$BIN" "$backup_bin"
+    cp -p "$UNIT" "$temp_dir/pnt.service.old"
     swapped=0
+    service_stopped=0
     update_ok=0
+    was_active=0
+    if systemctl is-active --quiet pnt.service; then was_active=1; fi
     cleanup_update() {
         result=$?
         trap - EXIT HUP INT TERM
-        if [ "$swapped" -eq 1 ] && [ "$update_ok" -eq 0 ]; then
-            mv -f "$backup_bin" "$BIN" || true
-            install -m 644 "$temp_dir/pnt.service.old" "$UNIT" || true
-            systemctl daemon-reload || true
-            if [ "$was_active" -eq 1 ]; then systemctl restart pnt.service || true; fi
-            printf 'pnt.sh: previous version restored after failed update.\n' >&2
+        if [ "$update_ok" -eq 0 ]; then
+            if [ "$swapped" -eq 1 ]; then
+                mv -f "$backup_bin" "$BIN" || true
+                backup_bin=''
+                install -m 644 "$temp_dir/pnt.service.old" "$UNIT" || true
+                systemctl daemon-reload || true
+            fi
+            if [ "$service_stopped" -eq 1 ] && [ "$was_active" -eq 1 ]; then
+                systemctl start pnt.service || true
+            fi
+            printf 'pnt.sh: update failed; the previous service was restored.\n' >&2
         fi
         rm -rf -- "$temp_dir"
         [ -z "$staged_bin" ] || rm -f -- "$staged_bin"
@@ -162,36 +186,29 @@ update_from_repository() {
     trap cleanup_update EXIT
     trap 'exit 1' HUP INT TERM
 
+    systemctl stop pnt.service
+    service_stopped=1
+    as_invoker git -C "$SCRIPT_DIR" pull --ff-only "$repo" "$branch"
     if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ]; then
-        require_command runuser
         chown "$SUDO_USER" "$temp_dir"
-        runuser -u "$SUDO_USER" -- git clone --depth 1 -- "$repo" "$temp_dir/source"
-        runuser -u "$SUDO_USER" -- dotnet publish "$temp_dir/source/pnt.csproj" -c Release -r "$(runtime_id)" \
-            --self-contained true -p:PublishSingleFile=true -o "$temp_dir/build"
-        [ -s "$temp_dir/build/pnt" ] || die 'Build did not produce the pnt executable.'
-        [ -f "$temp_dir/source/deploy/pnt.service" ] || die 'The repository has no deploy/pnt.service.'
-    else
-        git clone --depth 1 -- "$repo" "$temp_dir/source"
-        publish_source "$temp_dir/source" "$temp_dir/build"
     fi
+    [ -f "$SCRIPT_DIR/pnt.csproj" ] || die 'The updated checkout has no pnt.csproj.'
+    [ -f "$SCRIPT_DIR/deploy/pnt.service" ] || die 'The updated checkout has no deploy/pnt.service.'
+    as_invoker dotnet publish "$SCRIPT_DIR/pnt.csproj" -c Release -r "$(runtime_id)" \
+        --self-contained true -p:PublishSingleFile=true -o "$temp_dir/build"
+    [ -s "$temp_dir/build/pnt" ] || die 'Build did not produce the pnt executable.'
 
     # Keep both executable files on one filesystem so each replacement is atomic.
     staged_bin=$(mktemp "$INSTALL_DIR/.pnt-new.XXXXXX")
-    backup_bin=$(mktemp "$INSTALL_DIR/.pnt-old.XXXXXX")
     install -m 755 "$temp_dir/build/pnt" "$staged_bin"
-    cp -p "$BIN" "$backup_bin"
-    cp -p "$UNIT" "$temp_dir/pnt.service.old"
-    was_active=0
-    if systemctl is-active --quiet pnt.service; then was_active=1; fi
-
     mv -f "$staged_bin" "$BIN"
     staged_bin=''
     swapped=1
-    install -m 644 "$temp_dir/source/deploy/pnt.service" "$UNIT"
+    install -m 644 "$SCRIPT_DIR/deploy/pnt.service" "$UNIT"
     systemctl daemon-reload
-    if [ "$was_active" -eq 1 ]; then
-        systemctl restart pnt.service || die 'The updated service failed to start.'
-    fi
+    systemctl start pnt.service
+    sleep 2
+    systemctl is-active --quiet pnt.service || die 'The updated service failed to start.'
 
     if [ "$#" -eq 1 ]; then
         install -d -m 700 /etc/pnt
@@ -199,11 +216,7 @@ update_from_repository() {
         chmod 600 "$REPO_CONFIG"
     fi
     update_ok=1
-    if [ "$was_active" -eq 1 ]; then
-        printf 'PNT updated and restarted.\n'
-    else
-        printf 'PNT updated. The service remains stopped.\n'
-    fi
+    printf 'PNT sources, executable, and service updated.\n'
 }
 
 command_name=${1:-}
