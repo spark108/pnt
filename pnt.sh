@@ -7,7 +7,7 @@ BIN=$INSTALL_DIR/pnt
 LINK=/usr/local/bin/pnt
 UNIT=/etc/systemd/system/pnt.service
 REPO_CONFIG=/etc/pnt/update.conf
-DEFAULT_REPOSITORY=ssh://git@162.55.1.114:4022/spark108/pnt.git
+DEFAULT_REPOSITORY=https://gitea.alathea.ru/spark108/pnt.git
 
 usage() {
     cat <<'EOF'
@@ -19,8 +19,8 @@ Usage: sudo ./pnt.sh <command>
   stop                    Stop pnt.service
   restart                 Restart pnt.service
 
-Default repository: ssh://git@162.55.1.114:4022/spark108/pnt.git
-SSH may ask for a key passphrase, password, or host-key confirmation.
+Default repository: https://gitea.alathea.ru/spark108/pnt.git
+Git may ask for a username and password or access token.
 An optional URL is saved for later updates.
 EOF
 }
@@ -91,7 +91,11 @@ repository_url() {
     elif [ -n "${PNT_REPOSITORY:-}" ]; then
         printf '%s\n' "$PNT_REPOSITORY"
     elif [ -f "$REPO_CONFIG" ]; then
-        cat "$REPO_CONFIG"
+        saved_repo=$(cat "$REPO_CONFIG")
+        case "$saved_repo" in
+            ssh://git@162.55.1.114:4022/spark108/pnt.git) printf '%s\n' "$DEFAULT_REPOSITORY" ;;
+            *) printf '%s\n' "$saved_repo" ;;
+        esac
     else
         printf '%s\n' "$DEFAULT_REPOSITORY"
     fi
@@ -99,10 +103,10 @@ repository_url() {
 
 check_repository_url() {
     case "$1" in
-        ssh://git@162.55.1.114:4022/spark108/pnt.git) return ;;
+        https://gitea.alathea.ru/spark108/pnt.git) return ;;
     esac
     printf '%s\n' "$1" | grep -Eq '^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(\.git)?$' ||
-        die 'The repository must be the configured private SSH URL or a GitHub HTTPS URL.'
+        die 'The repository must be the configured Gitea URL or a GitHub HTTPS URL.'
 }
 
 install_current() {

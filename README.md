@@ -17,11 +17,11 @@ sudo ./pnt.sh start
 sudo ./pnt.sh stop
 sudo ./pnt.sh restart
 
-# Uses ssh://git@162.55.1.114:4022/spark108/pnt.git:
+# Uses https://gitea.alathea.ru/spark108/pnt.git:
 sudo ./pnt.sh update
 ```
 
-`update` clones the private repository over SSH using the account that invoked `sudo`, so SSH can ask for authentication in the terminal. It builds before changing the running installation, replaces the binary and service unit, then restarts an active service. If activation fails, it restores the previous binary and unit. A stopped service remains stopped. An optional repository URL passed to `update` is saved for later runs.
+`update` clones the repository over HTTPS using the account that invoked `sudo`, so Git can ask for a username and password or access token in the terminal. It builds before changing the running installation, replaces the binary and service unit, then restarts an active service. If activation fails, it restores the previous binary and unit. A stopped service remains stopped. An optional repository URL passed to `update` is saved for later runs.
 
 ```sh
 sudo pnt create cluster 'a-long-random-cluster-key'
