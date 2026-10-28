@@ -27,6 +27,8 @@ sudo ./pnt.sh install -r root@192.0.2.20
 
 `install` and `update` run in a separate systemd unit and print a checkmark when each stage finishes. Closing the terminal does not cancel the worker. `./pnt.sh status` shows the service and the latest operation. `update` stops the service, fast-forwards the local checkout from the public GitHub repository, builds, installs the binary and unit, and starts the service. If pull, build, or service startup fails, the previous binary and unit are restored and a previously running service is started again.
 
+Before stopping the service for an update, the node announces its `update` status over TCP 442. `pnt cluster nodes` shows `update` in place of that node's ping, including when viewing pings from another node. The status travels through normal cluster synchronization, then clears after the service starts or the update rolls back. A stale status expires from the display after one hour. Existing nodes need this version once before they can announce their own update status.
+
 After a manual update on a cluster member, it announces the Git commit to peers over TCP 442. Each connected member runs its own update in a separate systemd unit and relays the notice through normal cluster synchronization. A node that is offline updates after reconnecting. All existing nodes must first receive a version with this feature once by running `./pnt.sh update` locally.
 
 `install -r root@ip` opens an SSH connection and asks for the remote root password or SSH key passphrase when needed. It installs from public GitHub on the remote Debian server, then creates and accepts a one-time cluster invitation. The inviting node must be able to reach the remote node directly on TCP 442.

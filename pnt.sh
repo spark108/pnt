@@ -120,6 +120,15 @@ update_local() {
     cp -p "$UNIT" "$TEMP_DIR/pnt.service.old"
     OLD_ACTIVE=0
     if systemctl is-active --quiet pnt.service; then OLD_ACTIVE=1; fi
+    if "$BIN" cluster status >/dev/null 2>&1; then
+        if "$BIN" cluster maintenance start; then
+            MAINT_STARTED=1
+            printf '✓ Статус update разослан узлам кластера\n' >> "$PROGRESS"
+            sleep 8
+        else
+            printf '%s\n' 'Текущий бинарник ещё не поддерживает статус update; он появится после этого обновления.'
+        fi
+    fi
     systemctl stop pnt.service
     STOPPED=1
     printf '✓ Служба остановлена\n' >> "$PROGRESS"
@@ -141,6 +150,10 @@ update_local() {
     sleep 2
     systemctl is-active --quiet pnt.service || die 'Updated service did not start.'
     printf '✓ Служба запущена с новой версией\n' >> "$PROGRESS"
+    if [ "$MAINT_STARTED" -eq 1 ]; then
+        step 'Статус update снят' "$BIN" cluster maintenance done
+        MAINT_STARTED=0
+    fi
     if [ -n "$EVENT_ID" ]; then
         step 'Обновление узла подтверждено' "$BIN" cluster update applied "$EVENT_ID"
     elif "$BIN" cluster status >/dev/null 2>&1; then
@@ -187,6 +200,7 @@ finish_worker() {
                 systemctl daemon-reload
             fi
             if [ "$STOPPED" -eq 1 ] && [ "$OLD_ACTIVE" -eq 1 ]; then systemctl start pnt.service; fi
+            if [ "$MAINT_STARTED" -eq 1 ]; then "$BIN" cluster maintenance done; fi
         fi
         printf '✗ %s\n' "${CURRENT_STAGE:-Операция завершилась ошибкой}" >> "$PROGRESS"
     fi
@@ -223,6 +237,7 @@ worker() {
     STOPPED=0
     OLD_ACTIVE=0
     UPDATE_OK=0
+    MAINT_STARTED=0
     INSTALLED=0
     CURRENT_STAGE='Подготовка'
     trap finish_worker EXIT

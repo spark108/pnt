@@ -10,7 +10,8 @@ using Microsoft.Data.Sqlite;
 
 namespace Pnt;
 
-record Node(string Id, string Name, string Ip, string Cert, long Version, bool Removed = false);
+record Node(string Id, string Name, string Ip, string Cert, long Version, bool Removed = false,
+    bool Updating = false, long UpdatingSince = 0);
 record Rule(string Id, string In, int InPort, string? Via, string To, int ToPort, long Version, bool Removed = false);
 record Invite(string Id, string Secret, string Ip, long Expires, bool Used = false);
 record Token(string Cluster, string Host, string Cert, string Id, string Secret);
@@ -104,6 +105,10 @@ static class App
                     if (db.Update()?.Id != updateId) throw new Exception("Событие обновления не найдено.");
                     db.Set("update_applied", updateId);
                     Console.WriteLine("Обновление узла подтверждено."); break;
+                case ["cluster", "maintenance", "start"]:
+                    await SetMaintenance(db, cert, true); break;
+                case ["cluster", "maintenance", "done"]:
+                    await SetMaintenance(db, cert, false); break;
                 case ["name", .. var words] when words.Length > 0:
                     Active(db); var name = string.Join(' ', words).Trim();
                     if (name.Length is < 1 or > 64) throw new Exception("Имя: от 1 до 64 символов.");
@@ -136,8 +141,33 @@ static class App
         foreach (var node in db.Nodes())
         {
             var ping = source.Id == db.Get("self") ? db.Ping(node.Id) : db.PingFrom(source.Id, node.Id);
-            Console.WriteLine($"{node.Id}  {node.Name,-20} {node.Ip,-16} {(node.Removed ? "исключён" : ping is double ms ? $"{ms:0.0} ms" : "нет связи")}");
+            var status = node.Removed ? "исключён"
+                : node.Updating && node.UpdatingSince > 0 && Now - node.UpdatingSince < 3600_000 ? "update"
+                : ping is double ms ? $"{ms:0.0} ms" : "нет связи";
+            Console.WriteLine($"{node.Id}  {node.Name,-20} {node.Ip,-16} {status}");
         }
+    }
+
+    static async Task SetMaintenance(Store db, X509Certificate2 cert, bool updating)
+    {
+        Active(db);
+        var self = db.Self()!;
+        db.Put(self with { Updating = updating, UpdatingSince = updating ? Now : 0,
+            Version = Math.Max(Now, self.Version + 1) });
+        var message = new Message("sync", self.Id, Nodes: db.Nodes().ToArray(),
+            Rules: db.Rules().ToArray(), Update: db.Update(), Pings: db.Pings().ToArray());
+        var peers = db.Nodes().Where(x => !x.Removed && x.Id != self.Id).ToArray();
+        var results = await Task.WhenAll(peers.Select(async node =>
+        {
+            try
+            {
+                using var peer = await Peer.Connect(node.Ip, node.Cert, cert);
+                await Peer.Send(peer.Stream, message).WaitAsync(TimeSpan.FromSeconds(5));
+                return (await Peer.Read(peer.Stream).WaitAsync(TimeSpan.FromSeconds(5)))?.Type == "sync";
+            }
+            catch { return false; }
+        }));
+        Console.WriteLine($"Статус {(updating ? "update" : "рабочий")} сохранён; оповещено узлов: {results.Count(x => x)}/{peers.Length}.");
     }
 
     static void AddRule(Store db, string[] args)
