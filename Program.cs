@@ -15,10 +15,11 @@ record Rule(string Id, string In, int InPort, string? Via, string To, int ToPort
 record Invite(string Id, string Secret, string Ip, long Expires, bool Used = false);
 record Token(string Cluster, string Host, string Cert, string Id, string Secret);
 record UpdateNotice(string Id, string Commit, long Version);
+record PingReport(string Source, string Target, double Ms, long Updated);
 record Message(string Type, string? Id = null, string? Name = null, string? Ip = null, string? Cert = null,
     string? Secret = null, string? Target = null, int Port = 0, string? Via = null,
     string[]? Hops = null, Node[]? Nodes = null, Rule[]? Rules = null, string? Error = null, string? KeyHash = null,
-    UpdateNotice? Update = null);
+    UpdateNotice? Update = null, PingReport[]? Pings = null);
 
 static class App
 {
@@ -81,10 +82,8 @@ static class App
                 case ["cluster", "leave"]:
                     Active(db); db.Put(db.Self()! with { Removed = true, Version = Now });
                     db.Set("left", "1"); Console.WriteLine("Выход зарегистрирован."); break;
-                case ["cluster", "nodes"]:
-                    Active(db);
-                    foreach (var n in db.Nodes()) Console.WriteLine($"{n.Id}  {n.Name,-20} {n.Ip,-16} {(n.Removed ? "исключён" : db.Ping(n.Id) is double p ? $"{p:0.0} ms" : "нет связи")}");
-                    break;
+                case ["cluster", "nodes"]: PrintNodes(db, null); break;
+                case ["cluster", "nodes", var fromNode]: PrintNodes(db, fromNode); break;
                 case ["cluster", "status"]:
                     Active(db); Console.WriteLine($"Кластер: {db.Get("cluster")}\nУзел: {me}\nIP: {db.Self()!.Ip}\nУзлов: {db.Nodes().Count(x => !x.Removed)}"); break;
                 case ["cluster", "invites"]:
@@ -127,6 +126,18 @@ static class App
     static void Active(Store db)
     {
         if (db.Get("cluster") == null || db.Get("left") == "1" || db.Self()?.Removed == true) throw new Exception("Узел не состоит в активном кластере.");
+    }
+
+    static void PrintNodes(Store db, string? fromNode)
+    {
+        Active(db);
+        var source = fromNode is null ? db.Self()! : db.Resolve(fromNode) ?? throw new Exception("Узел для измерения пинга не найден.");
+        if (fromNode is not null) Console.WriteLine($"Пинг от узла {source.Name} ({source.Id}), измерения за последние 30 секунд:");
+        foreach (var node in db.Nodes())
+        {
+            var ping = source.Id == db.Get("self") ? db.Ping(node.Id) : db.PingFrom(source.Id, node.Id);
+            Console.WriteLine($"{node.Id}  {node.Name,-20} {node.Ip,-16} {(node.Removed ? "исключён" : ping is double ms ? $"{ms:0.0} ms" : "нет связи")}");
+        }
     }
 
     static void AddRule(Store db, string[] args)
@@ -180,7 +191,7 @@ static class App
 
     static void Help() => Console.WriteLine("""
         pnt create cluster <key>
-        pnt cluster add <ip> | remove <node|ip> | leave | nodes | status | invites
+        pnt cluster add <ip> | remove <node|ip> | leave | nodes [node-id] | status | invites
         pnt cluster invite revoke <id>
         pnt accept cluster <invite_key>
         pnt name <name>

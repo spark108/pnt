@@ -38,6 +38,7 @@ sudo pnt cluster add 192.0.2.20
 sudo pnt accept cluster '<invite_key>'
 sudo pnt name 'edge-1'
 sudo pnt cluster nodes
+sudo pnt cluster nodes 93a3655e61179794  # Ping measured by this node to every cluster member
 sudo pnt cluster status
 ```
 
@@ -70,7 +71,7 @@ sudo pnt cluster leave
 journalctl -u pnt -f
 ```
 
-Nodes exchange their membership and forwarding records every five seconds. Records with newer timestamps replace older ones. `cluster remove` creates a removal record; peers reject that certificate after receiving it. `cluster leave` publishes the local node's own removal. A disconnected peer can retain stale membership until it reconnects or receives an update through another peer. Ping is the application-level response time, including relay hops when used.
+Nodes exchange their membership, forwarding records, and ping measurements every five seconds. `pnt cluster nodes [node-id]` shows measurements made by the specified node; values older than 30 seconds appear as `нет связи`. Records with newer timestamps replace older ones. `cluster remove` creates a removal record; peers reject that certificate after receiving it. `cluster leave` publishes the local node's own removal. A disconnected peer can retain stale membership until it reconnects or receives an update through another peer. Ping is the application-level response time, including relay hops when used.
 
 ## Current limits
 

@@ -16,7 +16,8 @@ sealed class Store : IDisposable
             "CREATE TABLE IF NOT EXISTS nodes(id TEXT PRIMARY KEY,json TEXT NOT NULL,version INTEGER NOT NULL)",
             "CREATE TABLE IF NOT EXISTS rules(id TEXT PRIMARY KEY,json TEXT NOT NULL,version INTEGER NOT NULL)",
             "CREATE TABLE IF NOT EXISTS invites(id TEXT PRIMARY KEY,json TEXT NOT NULL)",
-            "CREATE TABLE IF NOT EXISTS pings(id TEXT PRIMARY KEY,ms REAL NOT NULL,updated INTEGER NOT NULL)"
+            "CREATE TABLE IF NOT EXISTS pings(id TEXT PRIMARY KEY,ms REAL NOT NULL,updated INTEGER NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS peer_pings(source TEXT NOT NULL,target TEXT NOT NULL,ms REAL NOT NULL,updated INTEGER NOT NULL,PRIMARY KEY(source,target))"
         }) { using var cmd = c.CreateCommand(); cmd.CommandText = sql; cmd.ExecuteNonQuery(); }
     }
     SqliteConnection Open()
@@ -108,6 +109,34 @@ sealed class Store : IDisposable
         using var c = Open(); using var q = c.CreateCommand();
         q.CommandText = "INSERT INTO pings VALUES($id,$ms,$time) ON CONFLICT(id) DO UPDATE SET ms=excluded.ms,updated=excluded.updated";
         q.Parameters.AddWithValue("$id", id); q.Parameters.AddWithValue("$ms", ms); q.Parameters.AddWithValue("$time", App.Now); q.ExecuteNonQuery();
+        if (Get("self") is string self) PutPing(new PingReport(self, id, ms, App.Now));
+    }
+    public void PutPing(PingReport report)
+    {
+        if (report.Source.Length != 16 || report.Target.Length != 16 || !double.IsFinite(report.Ms) || report.Ms < 0 || report.Updated > App.Now + 60_000 || report.Updated < App.Now - 60_000) return;
+        if (!Nodes().Any(x => x.Id == report.Source && !x.Removed) || !Nodes().Any(x => x.Id == report.Target && !x.Removed)) return;
+        using var c = Open(); using var q = c.CreateCommand();
+        q.CommandText = "INSERT INTO peer_pings VALUES($source,$target,$ms,$updated) ON CONFLICT(source,target) DO UPDATE SET ms=excluded.ms,updated=excluded.updated WHERE excluded.updated>peer_pings.updated";
+        q.Parameters.AddWithValue("$source", report.Source); q.Parameters.AddWithValue("$target", report.Target);
+        q.Parameters.AddWithValue("$ms", report.Ms); q.Parameters.AddWithValue("$updated", report.Updated); q.ExecuteNonQuery();
+    }
+    public List<PingReport> Pings()
+    {
+        using var c = Open(); using var q = c.CreateCommand();
+        q.CommandText = "SELECT source,target,ms,updated FROM peer_pings WHERE updated>$minimum";
+        q.Parameters.AddWithValue("$minimum", App.Now - 30_000);
+        using var reader = q.ExecuteReader(); var result = new List<PingReport>();
+        while (reader.Read()) result.Add(new PingReport(reader.GetString(0), reader.GetString(1), reader.GetDouble(2), reader.GetInt64(3)));
+        return result;
+    }
+    public double? PingFrom(string source, string target)
+    {
+        if (source == target) return 0;
+        using var c = Open(); using var q = c.CreateCommand();
+        q.CommandText = "SELECT ms FROM peer_pings WHERE source=$source AND target=$target AND updated>$minimum";
+        q.Parameters.AddWithValue("$source", source); q.Parameters.AddWithValue("$target", target);
+        q.Parameters.AddWithValue("$minimum", App.Now - 30_000);
+        return q.ExecuteScalar() is double ms ? ms : null;
     }
     public double? Ping(string id)
     {

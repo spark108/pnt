@@ -85,7 +85,7 @@ sealed class Service(Store db, X509Certificate2 cert)
         await Peer.Send(peer.Stream, new Message("welcome", id, Nodes: db.Nodes().ToArray(), Rules: db.Rules().ToArray(), KeyHash: db.Get("key_hash"), Update: db.Update()));
     }
 
-    Message Sync() => new("sync", id, Nodes: db.Nodes().ToArray(), Rules: db.Rules().ToArray(), Update: db.Update());
+    Message Sync() => new("sync", id, Nodes: db.Nodes().ToArray(), Rules: db.Rules().ToArray(), Update: db.Update(), Pings: db.Pings().ToArray());
 
     void Merge(Message m)
     {
@@ -98,6 +98,7 @@ sealed class Service(Store db, X509Certificate2 cert)
             db.Put(n);
         }
         foreach (var r in m.Rules ?? []) db.Put(r);
+        foreach (var ping in m.Pings ?? []) db.PutPing(ping);
         if (m.Update is not null) db.PutUpdate(m.Update);
     }
 
