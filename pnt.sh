@@ -18,6 +18,7 @@ Usage: sudo ./pnt.sh <command>
   start                   Start pnt.service
   stop                    Stop pnt.service
   restart                 Restart pnt.service
+  status                  Show pnt.service status
 
 Default repository: https://gitea.alathea.ru/spark108/pnt.git
 Git may ask for a username and password or access token.
@@ -213,6 +214,7 @@ case "$command_name" in
     start) [ "$#" -eq 0 ] || die 'start takes no arguments.'; require_root; systemctl start pnt.service ;;
     stop) [ "$#" -eq 0 ] || die 'stop takes no arguments.'; require_root; systemctl stop pnt.service ;;
     restart) [ "$#" -eq 0 ] || die 'restart takes no arguments.'; require_root; systemctl restart pnt.service ;;
+    status) [ "$#" -eq 0 ] || die 'status takes no arguments.'; require_command systemctl; systemctl status --no-pager --full pnt.service ;;
     help|--help|-h|'') usage ;;
     *) usage >&2; exit 2 ;;
 esac

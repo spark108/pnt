@@ -16,6 +16,7 @@ The script installs required Debian packages, including the .NET 10 SDK, Git, Op
 sudo ./pnt.sh start
 sudo ./pnt.sh stop
 sudo ./pnt.sh restart
+./pnt.sh status
 
 # Uses https://gitea.alathea.ru/spark108/pnt.git:
 sudo ./pnt.sh update
@@ -24,7 +25,7 @@ sudo ./pnt.sh update
 `update` clones the repository over HTTPS using the account that invoked `sudo`, so Git can ask for a username and password or access token in the terminal. It builds before changing the running installation, replaces the binary and service unit, then restarts an active service. If activation fails, it restores the previous binary and unit. A stopped service remains stopped. An optional repository URL passed to `update` is saved for later runs.
 
 ```sh
-sudo pnt create cluster 'a-long-random-cluster-key'
+sudo pnt create cluster '37004389'
 sudo pnt cluster add 192.0.2.20
 # Run the invitation printed above on 192.0.2.20:
 sudo pnt accept cluster '<invite_key>'

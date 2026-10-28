@@ -54,7 +54,6 @@ static class App
                 case ["serve"]: await new Service(db, cert).Run(); break;
                 case ["create", "cluster", var key]:
                     if (db.Get("cluster") != null) throw new Exception("Кластер уже создан или принят.");
-                    if (key.Length < 16) throw new Exception("Ключ должен содержать не менее 16 символов.");
                     db.Set("cluster", Convert.ToHexString(RandomNumberGenerator.GetBytes(16)));
                     db.Set("key_hash", Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(key))));
                     db.Set("self", me);
