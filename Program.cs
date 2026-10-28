@@ -14,9 +14,11 @@ record Node(string Id, string Name, string Ip, string Cert, long Version, bool R
 record Rule(string Id, string In, int InPort, string? Via, string To, int ToPort, long Version, bool Removed = false);
 record Invite(string Id, string Secret, string Ip, long Expires, bool Used = false);
 record Token(string Cluster, string Host, string Cert, string Id, string Secret);
+record UpdateNotice(string Id, string Commit, long Version);
 record Message(string Type, string? Id = null, string? Name = null, string? Ip = null, string? Cert = null,
     string? Secret = null, string? Target = null, int Port = 0, string? Via = null,
-    string[]? Hops = null, Node[]? Nodes = null, Rule[]? Rules = null, string? Error = null, string? KeyHash = null);
+    string[]? Hops = null, Node[]? Nodes = null, Rule[]? Rules = null, string? Error = null, string? KeyHash = null,
+    UpdateNotice? Update = null);
 
 static class App
 {
@@ -88,6 +90,21 @@ static class App
                 case ["cluster", "invites"]:
                     foreach (var i in db.Invites()) Console.WriteLine($"{i.Id} {i.Ip} {DateTimeOffset.FromUnixTimeMilliseconds(i.Expires):u} {(i.Used ? "использовано" : "активно")}"); break;
                 case ["cluster", "invite", "revoke", var id]: db.Revoke(id); break;
+                case ["cluster", "update", "announce", var commit]:
+                    Active(db);
+                    if (commit.Length != 40 || !commit.All(Uri.IsHexDigit)) throw new Exception("Ожидается SHA-1 коммита Git.");
+                    var current = db.Update();
+                    if (current?.Commit != commit)
+                    {
+                        current = new UpdateNotice(Guid.NewGuid().ToString("N"), commit.ToLowerInvariant(), Now);
+                        db.PutUpdate(current);
+                    }
+                    db.Set("update_applied", current.Id);
+                    Console.WriteLine($"Обновление {current.Commit} объявлено кластеру."); break;
+                case ["cluster", "update", "applied", var updateId]:
+                    if (db.Update()?.Id != updateId) throw new Exception("Событие обновления не найдено.");
+                    db.Set("update_applied", updateId);
+                    Console.WriteLine("Обновление узла подтверждено."); break;
                 case ["name", .. var words] when words.Length > 0:
                     Active(db); var name = string.Join(' ', words).Trim();
                     if (name.Length is < 1 or > 64) throw new Exception("Имя: от 1 до 64 символов.");
@@ -157,6 +174,7 @@ static class App
         foreach (var n in reply.Nodes ?? []) db.Put(n);
         db.Put(new Node(Certificate.Id(cert), Environment.MachineName, OwnIp, Certificate.Fingerprint(cert), Now));
         foreach (var r in reply.Rules ?? []) db.Put(r);
+        if (reply.Update is not null) db.PutUpdate(reply.Update);
         Console.WriteLine("Присоединён к кластеру. ID: " + Certificate.Id(cert));
     }
 

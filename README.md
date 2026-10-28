@@ -18,13 +18,18 @@ sudo ./pnt.sh stop
 sudo ./pnt.sh restart
 ./pnt.sh status
 
-# Uses https://gitea.alathea.ru/spark108/pnt.git:
+# Pulls from https://github.com/spark108/pnt.git:
 sudo ./pnt.sh update
+
+# Installs PNT over SSH and joins the remote server to this cluster:
+sudo ./pnt.sh install -r root@192.0.2.20
 ```
 
-`update` stops the service, runs `git pull --ff-only` in this checkout over HTTPS, builds from the updated source, installs the binary and unit, and starts the service. The pull also updates `pnt.sh` and the other source files. Git runs as the user who invoked `sudo` and can ask for a username and access token. If pull, build, or service startup fails, the previous binary and unit are restored and a previously running service is started again. An optional repository URL passed to `update` is saved for later runs.
+`install` and `update` run in a separate systemd unit and print a checkmark when each stage finishes. Closing the terminal does not cancel the worker. `./pnt.sh status` shows the service and the latest operation. `update` stops the service, fast-forwards the local checkout from the public GitHub repository, builds, installs the binary and unit, and starts the service. If pull, build, or service startup fails, the previous binary and unit are restored and a previously running service is started again.
 
-To remember HTTPS credentials for later pulls, run `git config --global credential.helper store` as the same user who runs the update, then authenticate once. Git stores the credentials unencrypted in `~/.git-credentials`; keep that file readable only by its owner (`chmod 600 ~/.git-credentials`) and use a read-only repository token.
+After a manual update on a cluster member, it announces the Git commit to peers over TCP 442. Each connected member runs its own update in a separate systemd unit and relays the notice through normal cluster synchronization. A node that is offline updates after reconnecting. All existing nodes must first receive a version with this feature once by running `./pnt.sh update` locally.
+
+`install -r root@ip` opens an SSH connection and asks for the remote root password or SSH key passphrase when needed. It installs from public GitHub on the remote Debian server, then creates and accepts a one-time cluster invitation. The inviting node must be able to reach the remote node directly on TCP 442.
 
 ```sh
 sudo pnt create cluster '37004389'

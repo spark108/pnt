@@ -2,232 +2,320 @@
 set -eu
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+REPOSITORY=https://github.com/spark108/pnt.git
 INSTALL_DIR=/opt/pnt
 BIN=$INSTALL_DIR/pnt
 LINK=/usr/local/bin/pnt
 UNIT=/etc/systemd/system/pnt.service
-REPO_CONFIG=/etc/pnt/update.conf
-DEFAULT_REPOSITORY=https://gitea.alathea.ru/spark108/pnt.git
+SOURCE_FILE=/etc/pnt/source-dir
+INVOKER_FILE=/etc/pnt/invoker
+OPERATIONS=/var/lib/pnt/operations
 
 usage() {
     cat <<'EOF'
 Usage: sudo ./pnt.sh <command>
 
-  install                 Install Debian dependencies, build, and start the service
-  update [repository_url] Stop, pull, build, install, and start the service
+  install                 Install PNT on this Debian server
+  install -r root@ip      Install on another server and join it to this cluster
+  update                  Update this server and announce it to the cluster
   start                   Start pnt.service
   stop                    Stop pnt.service
   restart                 Restart pnt.service
-  status                  Show pnt.service status
+  status                  Show service and recent operation status
 
-Default repository: https://gitea.alathea.ru/spark108/pnt.git
-Git may ask for a username and password or access token.
-An optional URL is saved for later updates.
+Install and update run in a background systemd unit. Completed stages are
+shown here; closing the terminal does not stop the operation.
+Repository: https://github.com/spark108/pnt.git
 EOF
 }
 
 die() { printf 'pnt.sh: %s\n' "$*" >&2; exit 1; }
-
-require_root() {
-    [ "$(id -u)" -eq 0 ] || die 'Run this command as root (sudo ./pnt.sh ...).'
-    [ "$(uname -s)" = Linux ] || die 'This script supports Linux only.'
-}
-
-require_command() {
-    command -v "$1" >/dev/null 2>&1 || die "Required command not found: $1"
-}
-
-as_invoker() {
-    if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ]; then
-        require_command runuser
-        runuser -u "$SUDO_USER" -- "$@"
-    else
-        "$@"
-    fi
-}
+require_root() { [ "$(id -u)" -eq 0 ] || die 'Run with sudo or as root.'; [ "$(uname -s)" = Linux ] || die 'Debian Linux is required.'; }
+require_command() { command -v "$1" >/dev/null 2>&1 || die "Missing command: $1"; }
+invoker() { printf '%s\n' "${PNT_INVOKER:-${SUDO_USER:-root}}"; }
+as_invoker() { if [ "$(invoker)" = root ]; then "$@"; else runuser -u "$(invoker)" -- "$@"; fi; }
 
 runtime_id() {
-    if [ -n "${PNT_RUNTIME_ID:-}" ]; then printf '%s\n' "$PNT_RUNTIME_ID"; return; fi
     case "$(uname -m)" in
         x86_64) printf '%s\n' linux-x64 ;;
         aarch64) printf '%s\n' linux-arm64 ;;
-        *) die 'Unsupported architecture. Set PNT_RUNTIME_ID explicitly.' ;;
+        *) die 'Only x64 and ARM64 are supported.' ;;
     esac
 }
 
-publish_source() {
-    source_dir=$1
-    output_dir=$2
-    [ -f "$source_dir/pnt.csproj" ] || die 'The repository has no pnt.csproj.'
-    [ -f "$source_dir/deploy/pnt.service" ] || die 'The repository has no deploy/pnt.service.'
-    dotnet publish "$source_dir/pnt.csproj" -c Release -r "$(runtime_id)" --self-contained true \
-        -p:PublishSingleFile=true -o "$output_dir"
-    [ -s "$output_dir/pnt" ] || die 'Build did not produce the pnt executable.'
+step() {
+    CURRENT_STAGE=$1
+    shift
+    "$@"
+    printf '✓ %s\n' "$CURRENT_STAGE" >> "$PROGRESS"
 }
 
 install_dependencies() {
-    temporary_dir=$1
     require_command apt-get
     [ -r /etc/os-release ] || die 'Cannot read /etc/os-release.'
     . /etc/os-release
-    [ "$ID" = debian ] || die 'Automatic dependency installation supports Debian only.'
+    [ "$ID" = debian ] || die 'Automatic installation supports Debian only.'
     case "$VERSION_ID" in
         12) icu_package=libicu72; ssl_package=libssl3 ;;
         13) icu_package=libicu76; ssl_package=libssl3t64 ;;
-        *) die 'Automatic .NET 10 installation supports Debian 12 and 13 only.' ;;
+        *) die 'Debian 12 or 13 is required.' ;;
     esac
-    runtime_id >/dev/null
-
     export DEBIAN_FRONTEND=noninteractive
     apt-get update
-    apt-get install -y ca-certificates curl git openssh-client systemd nftables iptables \
-        libc6 libgcc-s1 libgssapi-krb5-2 libstdc++6 tzdata zlib1g \
-        "$icu_package" "$ssl_package"
-
+    apt-get install -y ca-certificates curl git openssh-client systemd nftables iptables util-linux \
+        libc6 libgcc-s1 libgssapi-krb5-2 libstdc++6 tzdata zlib1g "$icu_package" "$ssl_package"
     if ! command -v dotnet >/dev/null 2>&1 || ! dotnet --list-sdks 2>/dev/null | grep -q '^10\.'; then
-        require_command dpkg
         curl -fsSL "https://packages.microsoft.com/config/debian/$VERSION_ID/packages-microsoft-prod.deb" \
-            -o "$temporary_dir/packages-microsoft-prod.deb"
-        dpkg -i "$temporary_dir/packages-microsoft-prod.deb"
+            -o "$TEMP_DIR/packages-microsoft-prod.deb"
+        dpkg -i "$TEMP_DIR/packages-microsoft-prod.deb"
         apt-get update
         apt-get install -y dotnet-sdk-10.0
     fi
     dotnet --list-sdks | grep -q '^10\.' || die '.NET 10 SDK installation failed.'
 }
 
-repository_url() {
-    if [ "$#" -gt 0 ]; then
-        printf '%s\n' "$1"
-    elif [ -n "${PNT_REPOSITORY:-}" ]; then
-        printf '%s\n' "$PNT_REPOSITORY"
-    elif [ -f "$REPO_CONFIG" ]; then
-        saved_repo=$(cat "$REPO_CONFIG")
-        case "$saved_repo" in
-            ssh://git@162.55.1.114:4022/spark108/pnt.git) printf '%s\n' "$DEFAULT_REPOSITORY" ;;
-            *) printf '%s\n' "$saved_repo" ;;
-        esac
-    else
-        printf '%s\n' "$DEFAULT_REPOSITORY"
-    fi
+publish_source() {
+    [ -f "$SCRIPT_DIR/pnt.csproj" ] || die 'pnt.csproj is missing.'
+    as_invoker dotnet publish "$SCRIPT_DIR/pnt.csproj" -c Release -r "$(runtime_id)" --self-contained true \
+        -p:PublishSingleFile=true -o "$TEMP_DIR/build"
+    [ -s "$TEMP_DIR/build/pnt" ] || die 'Build did not produce pnt.'
 }
 
-check_repository_url() {
-    case "$1" in
-        https://gitea.alathea.ru/spark108/pnt.git) return ;;
-    esac
-    printf '%s\n' "$1" | grep -Eq '^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(\.git)?$' ||
-        die 'The repository must be the configured Gitea URL or a GitHub HTTPS URL.'
+save_source_dir() {
+    install -d -m 700 /etc/pnt
+    printf '%s\n' "$SCRIPT_DIR" > "$SOURCE_FILE"
+    printf '%s\n' "$(invoker)" > "$INVOKER_FILE"
+    chmod 600 "$SOURCE_FILE" "$INVOKER_FILE"
 }
 
-install_current() {
-    require_root
-    [ ! -e "$BIN" ] || die 'PNT is already installed. Use update to install a new version.'
-    temp_dir=$(mktemp -d)
-    trap 'rm -rf -- "$temp_dir"' EXIT HUP INT TERM
-    install_dependencies "$temp_dir"
-    require_command systemctl
-    publish_source "$SCRIPT_DIR" "$temp_dir/build"
+install_local() {
+    [ ! -e "$BIN" ] || die 'PNT is already installed; use update.'
+    step 'Зависимости Debian и .NET установлены' install_dependencies
+    if [ "$(invoker)" != root ]; then chown "$(invoker)" "$TEMP_DIR"; fi
+    step 'Бинарник собран' publish_source
     install -d -m 755 "$INSTALL_DIR"
     install -d -m 700 /var/lib/pnt
-    install -m 755 "$temp_dir/build/pnt" "$BIN"
+    INSTALLED=1
+    install -m 755 "$TEMP_DIR/build/pnt" "$BIN"
     ln -sfn "$BIN" "$LINK"
     install -m 644 "$SCRIPT_DIR/deploy/pnt.service" "$UNIT"
+    save_source_dir
     systemctl daemon-reload
     systemctl enable --now pnt.service
-    printf 'PNT installed and started.\n'
+    sleep 2
+    systemctl is-active --quiet pnt.service || die 'Service did not start.'
+    printf '✓ Служба установлена и запущена\n' >> "$PROGRESS"
 }
 
-update_from_repository() {
-    require_root
+update_local() {
     require_command git
     require_command dotnet
-    require_command systemctl
-    [ -f "$BIN" ] || die 'PNT is not installed. Run: sudo ./pnt.sh install'
-    [ -f "$UNIT" ] || die 'The pnt.service unit is missing.'
-    [ "$#" -le 1 ] || die 'update accepts one repository URL at most.'
-    repo=$(repository_url "$@")
-    check_repository_url "$repo"
-    checkout_root=$(as_invoker git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null) ||
-        die 'Update must run from a Git checkout of PNT.'
-    [ "$checkout_root" = "$SCRIPT_DIR" ] || die 'The script must be in the root of the PNT checkout.'
-    branch=$(as_invoker git -C "$SCRIPT_DIR" symbolic-ref --quiet --short HEAD) ||
-        die 'The checkout must be on a branch.'
-
-    temp_dir=$(mktemp -d)
-    staged_bin=''
-    backup_bin=$(mktemp "$INSTALL_DIR/.pnt-old.XXXXXX")
-    cp -p "$BIN" "$backup_bin"
-    cp -p "$UNIT" "$temp_dir/pnt.service.old"
-    swapped=0
-    service_stopped=0
-    update_ok=0
-    was_active=0
-    if systemctl is-active --quiet pnt.service; then was_active=1; fi
-    cleanup_update() {
-        result=$?
-        trap - EXIT HUP INT TERM
-        if [ "$update_ok" -eq 0 ]; then
-            if [ "$swapped" -eq 1 ]; then
-                mv -f "$backup_bin" "$BIN" || true
-                backup_bin=''
-                install -m 644 "$temp_dir/pnt.service.old" "$UNIT" || true
-                systemctl daemon-reload || true
-            fi
-            if [ "$service_stopped" -eq 1 ] && [ "$was_active" -eq 1 ]; then
-                systemctl start pnt.service || true
-            fi
-            printf 'pnt.sh: update failed; the previous service was restored.\n' >&2
-        fi
-        rm -rf -- "$temp_dir"
-        [ -z "$staged_bin" ] || rm -f -- "$staged_bin"
-        [ -z "$backup_bin" ] || rm -f -- "$backup_bin"
-        exit "$result"
-    }
-    trap cleanup_update EXIT
-    trap 'exit 1' HUP INT TERM
-
+    [ -f "$BIN" ] || die 'PNT is not installed.'
+    [ -f "$UNIT" ] || die 'pnt.service is missing.'
+    checkout=$(as_invoker git -C "$SCRIPT_DIR" rev-parse --show-toplevel) || die 'Git checkout is required.'
+    [ "$checkout" = "$SCRIPT_DIR" ] || die 'Run pnt.sh from the checkout root.'
+    branch=$(as_invoker git -C "$SCRIPT_DIR" symbolic-ref --quiet --short HEAD) || die 'A Git branch is required.'
+    BACKUP_BIN=$(mktemp "$INSTALL_DIR/.pnt-old.XXXXXX")
+    cp -p "$BIN" "$BACKUP_BIN"
+    cp -p "$UNIT" "$TEMP_DIR/pnt.service.old"
+    OLD_ACTIVE=0
+    if systemctl is-active --quiet pnt.service; then OLD_ACTIVE=1; fi
     systemctl stop pnt.service
-    service_stopped=1
-    as_invoker git -C "$SCRIPT_DIR" pull --ff-only "$repo" "$branch"
-    if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ]; then
-        chown "$SUDO_USER" "$temp_dir"
-    fi
-    [ -f "$SCRIPT_DIR/pnt.csproj" ] || die 'The updated checkout has no pnt.csproj.'
-    [ -f "$SCRIPT_DIR/deploy/pnt.service" ] || die 'The updated checkout has no deploy/pnt.service.'
-    as_invoker dotnet publish "$SCRIPT_DIR/pnt.csproj" -c Release -r "$(runtime_id)" \
-        --self-contained true -p:PublishSingleFile=true -o "$temp_dir/build"
-    [ -s "$temp_dir/build/pnt" ] || die 'Build did not produce the pnt executable.'
-
-    # Keep both executable files on one filesystem so each replacement is atomic.
-    staged_bin=$(mktemp "$INSTALL_DIR/.pnt-new.XXXXXX")
-    install -m 755 "$temp_dir/build/pnt" "$staged_bin"
-    mv -f "$staged_bin" "$BIN"
-    staged_bin=''
-    swapped=1
+    STOPPED=1
+    printf '✓ Служба остановлена\n' >> "$PROGRESS"
+    as_invoker git -C "$SCRIPT_DIR" remote set-url origin "$REPOSITORY"
+    step 'Исходники обновлены из GitHub' as_invoker git -C "$SCRIPT_DIR" pull --ff-only origin "$branch"
+    if [ "$(invoker)" != root ]; then chown "$(invoker)" "$TEMP_DIR"; fi
+    step 'Бинарник собран' as_invoker dotnet publish "$SCRIPT_DIR/pnt.csproj" -c Release \
+        -r "$(runtime_id)" --self-contained true -p:PublishSingleFile=true -o "$TEMP_DIR/build"
+    [ -s "$TEMP_DIR/build/pnt" ] || die 'Build did not produce pnt.'
+    STAGED_BIN=$(mktemp "$INSTALL_DIR/.pnt-new.XXXXXX")
+    install -m 755 "$TEMP_DIR/build/pnt" "$STAGED_BIN"
+    mv -f "$STAGED_BIN" "$BIN"
+    STAGED_BIN=''
+    SWAPPED=1
     install -m 644 "$SCRIPT_DIR/deploy/pnt.service" "$UNIT"
+    save_source_dir
     systemctl daemon-reload
     systemctl start pnt.service
     sleep 2
-    systemctl is-active --quiet pnt.service || die 'The updated service failed to start.'
-
-    if [ "$#" -eq 1 ]; then
-        install -d -m 700 /etc/pnt
-        printf '%s\n' "$repo" > "$REPO_CONFIG"
-        chmod 600 "$REPO_CONFIG"
+    systemctl is-active --quiet pnt.service || die 'Updated service did not start.'
+    printf '✓ Служба запущена с новой версией\n' >> "$PROGRESS"
+    if [ -n "$EVENT_ID" ]; then
+        step 'Обновление узла подтверждено' "$BIN" cluster update applied "$EVENT_ID"
+    elif "$BIN" cluster status >/dev/null 2>&1; then
+        commit=$(as_invoker git -C "$SCRIPT_DIR" rev-parse HEAD)
+        step 'Обновление объявлено кластеру' "$BIN" cluster update announce "$commit"
     fi
-    update_ok=1
-    printf 'PNT sources, executable, and service updated.\n'
+    UPDATE_OK=1
+}
+
+remote_ssh() { ssh -S "$SSH_SOCKET" -o BatchMode=yes "$REMOTE_HOST" "$@"; }
+
+install_remote() {
+    REMOTE_HOST=$1
+    SSH_SOCKET=$2
+    remote_ip=${REMOTE_HOST#root@}
+    step 'Связь с удалённым сервером установлена' remote_ssh true
+    CURRENT_STAGE='PNT установлен на удалённом сервере'
+    remote_ssh "set -e; export DEBIAN_FRONTEND=noninteractive; apt-get update; apt-get install -y git ca-certificates; touch /etc/default/pnt; sed -i '/^PNT_ADVERTISE_IP=/d' /etc/default/pnt; printf 'PNT_ADVERTISE_IP=%s\\n' '$remote_ip' >> /etc/default/pnt; if [ -d /root/pnt/.git ]; then git -C /root/pnt remote set-url origin $REPOSITORY; git -C /root/pnt pull --ff-only origin master; else git clone $REPOSITORY /root/pnt; fi; if [ -x /usr/local/bin/pnt ]; then /root/pnt/pnt.sh update; else /root/pnt/pnt.sh install; fi"
+    printf '✓ %s\n' "$CURRENT_STAGE" >> "$PROGRESS"
+    CURRENT_STAGE='Приглашение в кластер создано'
+    invite=$("$BIN" cluster add "$remote_ip")
+    printf '✓ %s\n' "$CURRENT_STAGE" >> "$PROGRESS"
+    step 'Удалённый сервер добавлен в кластер' remote_ssh "pnt accept cluster '$invite'"
+}
+
+finish_worker() {
+    code=$?
+    trap - EXIT HUP INT TERM
+    set +e
+    if [ "$code" -ne 0 ]; then
+        if [ "$ACTION" = install ] && [ "$INSTALLED" -eq 1 ]; then
+            systemctl disable --now pnt.service >/dev/null 2>&1
+            rm -f "$LINK" "$BIN" "$UNIT"
+            systemctl daemon-reload
+        fi
+        if [ "$ACTION" = update ] && [ "$UPDATE_OK" -eq 0 ]; then
+            if [ "$SWAPPED" -eq 1 ]; then
+                mv -f "$BACKUP_BIN" "$BIN"
+                BACKUP_BIN=''
+                install -m 644 "$TEMP_DIR/pnt.service.old" "$UNIT"
+                systemctl daemon-reload
+            fi
+            if [ "$STOPPED" -eq 1 ] && [ "$OLD_ACTIVE" -eq 1 ]; then systemctl start pnt.service; fi
+        fi
+        printf '✗ %s\n' "${CURRENT_STAGE:-Операция завершилась ошибкой}" >> "$PROGRESS"
+    fi
+    if [ -n "$SSH_SOCKET" ] && [ -n "$REMOTE_HOST" ]; then
+        ssh -S "$SSH_SOCKET" -O exit "$REMOTE_HOST" >/dev/null 2>&1
+    fi
+    [ -z "$STAGED_BIN" ] || rm -f "$STAGED_BIN"
+    [ -z "$BACKUP_BIN" ] || rm -f "$BACKUP_BIN"
+    [ -z "$TEMP_DIR" ] || rm -rf "$TEMP_DIR"
+    printf '%s\n' "$code" > "$RESULT"
+    exit "$code"
+}
+
+worker() {
+    require_root
+    ACTION=$1
+    OP_ID=$2
+    EVENT_ID=${3:-}
+    SSH_SOCKET=''
+    REMOTE_HOST=''
+    if [ "$ACTION" = remote ]; then REMOTE_HOST=$3; SSH_SOCKET=$4; EVENT_ID=''; fi
+    case "$OP_ID" in *[!a-zA-Z0-9-]*|'') die 'Invalid operation ID.' ;; esac
+    install -d -m 700 "$OPERATIONS"
+    PROGRESS=$OPERATIONS/$OP_ID.progress
+    RESULT=$OPERATIONS/$OP_ID.result
+    LOG=$OPERATIONS/$OP_ID.log
+    : > "$PROGRESS"
+    exec >> "$LOG" 2>&1
+    TEMP_DIR=$(mktemp -d)
+    STAGED_BIN=''
+    BACKUP_BIN=''
+    SWAPPED=0
+    STOPPED=0
+    OLD_ACTIVE=0
+    UPDATE_OK=0
+    INSTALLED=0
+    CURRENT_STAGE='Подготовка'
+    trap finish_worker EXIT
+    trap 'exit 1' HUP INT TERM
+    require_command flock
+    exec 9>/run/pnt-maintenance.lock
+    flock -n 9 || die 'Another PNT installation or update is already running.'
+    case "$ACTION" in
+        install) install_local ;;
+        update) update_local ;;
+        remote) install_remote "$REMOTE_HOST" "$SSH_SOCKET" ;;
+        *) die 'Unknown worker action.' ;;
+    esac
+}
+
+watch_operation() {
+    op_id=$1
+    progress_file=$OPERATIONS/$op_id.progress
+    result_file=$OPERATIONS/$op_id.result
+    log_file=$OPERATIONS/$op_id.log
+    shown=0
+    while :; do
+        if [ -f "$progress_file" ]; then
+            lines=$(wc -l < "$progress_file")
+            if [ "$lines" -gt "$shown" ]; then
+                sed -n "$((shown + 1)),${lines}p" "$progress_file"
+                shown=$lines
+            fi
+        fi
+        if [ -f "$result_file" ]; then
+            result=$(cat "$result_file")
+            if [ "$result" -ne 0 ]; then tail -n 15 "$log_file" >&2; fi
+            return "$result"
+        fi
+        if ! systemctl is-active --quiet "pnt-operation-$op_id"; then
+            printf '✗ Фоновый процесс завершился без результата\n' >&2
+            tail -n 15 "$log_file" >&2
+            return 1
+        fi
+        sleep 1
+    done
+}
+
+launch_operation() {
+    require_root
+    require_command systemd-run
+    action=$1
+    shift
+    install -d -m 700 "$OPERATIONS"
+    op_id=$(date +%s)-$$
+    printf 'Запущена фоновая операция: %s\n' "$action"
+    if ! systemd-run --unit="pnt-operation-$op_id" --collect --property=Type=exec --setenv="PNT_INVOKER=$(invoker)" \
+        /bin/sh "$SCRIPT_DIR/pnt.sh" _worker "$action" "$op_id" "$@" >/dev/null; then
+        if [ "$action" = remote ]; then ssh -S "$2" -O exit "$1" >/dev/null 2>&1 || true; fi
+        die 'Could not launch background worker.'
+    fi
+    watch_operation "$op_id"
+}
+
+start_remote_install() {
+    require_root
+    require_command ssh
+    host=$1
+    printf '%s\n' "$host" | grep -Eq '^root@([0-9]{1,3}\.){3}[0-9]{1,3}$' || die 'Use root@IPv4.'
+    ip=${host#root@}
+    old_ifs=$IFS
+    IFS=.
+    set -- $ip
+    IFS=$old_ifs
+    for octet do [ "$octet" -le 255 ] || die 'Invalid IPv4 address.'; done
+    "$BIN" cluster status >/dev/null || die 'Create or join a cluster on this server first.'
+    install -d -m 700 /run/pnt
+    socket=/run/pnt/ssh-$(date +%s)-$$.sock
+    ssh -M -S "$socket" -o ControlPersist=3600 -fN "$host"
+    launch_operation remote "$host" "$socket"
 }
 
 command_name=${1:-}
 if [ "$#" -gt 0 ]; then shift; fi
 case "$command_name" in
-    install) [ "$#" -eq 0 ] || die 'install takes no arguments.'; install_current ;;
-    update) update_from_repository "$@" ;;
-    start) [ "$#" -eq 0 ] || die 'start takes no arguments.'; require_root; systemctl start pnt.service ;;
-    stop) [ "$#" -eq 0 ] || die 'stop takes no arguments.'; require_root; systemctl stop pnt.service ;;
-    restart) [ "$#" -eq 0 ] || die 'restart takes no arguments.'; require_root; systemctl restart pnt.service ;;
-    status) [ "$#" -eq 0 ] || die 'status takes no arguments.'; require_command systemctl; systemctl status --no-pager --full pnt.service ;;
+    install)
+        case "$#" in
+            0) launch_operation install ;;
+            2) [ "$1" = -r ] || die 'Use install -r root@ip.'; start_remote_install "$2" ;;
+            *) die 'Use install or install -r root@ip.' ;;
+        esac ;;
+    update) [ "$#" -eq 0 ] || die 'update takes no arguments.'; launch_operation update ;;
+    _worker) worker "$@" ;;
+    start) require_root; systemctl start pnt.service ;;
+    stop) require_root; systemctl stop pnt.service ;;
+    restart) require_root; systemctl restart pnt.service ;;
+    status)
+        systemctl status --no-pager --full pnt.service || true
+        if [ -d "$OPERATIONS" ]; then
+            latest=$(ls -t "$OPERATIONS"/*.progress 2>/dev/null | head -n 1 || true)
+            if [ -n "$latest" ]; then printf '\nПоследняя операция:\n'; cat "$latest"; fi
+        fi ;;
     help|--help|-h|'') usage ;;
     *) usage >&2; exit 2 ;;
 esac

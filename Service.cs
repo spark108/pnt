@@ -46,7 +46,7 @@ sealed class Service(Store db, X509Certificate2 cert)
         var known = db.Nodes().FirstOrDefault(x => x.Id == request.Id && x.Cert == peer.RemoteFingerprint);
         if (known?.Removed == true && request.Type == "sync")
         {
-            await Peer.Send(peer.Stream, new Message("sync", id, Nodes: db.Nodes().ToArray(), Rules: db.Rules().ToArray()));
+            await Peer.Send(peer.Stream, Sync());
             return;
         }
         if (known == null || known.Removed || db.Get("left") == "1" || db.Self()?.Removed == true)
@@ -57,7 +57,7 @@ sealed class Service(Store db, X509Certificate2 cert)
         {
             case "sync":
                 Merge(request);
-                await Peer.Send(peer.Stream, new Message("sync", id, Nodes: db.Nodes().ToArray(), Rules: db.Rules().ToArray()));
+                await Peer.Send(peer.Stream, Sync());
                 break;
             case "probe":
                 if (request.Target == id) await Peer.Send(peer.Stream, new Message("ok"));
@@ -83,8 +83,10 @@ sealed class Service(Store db, X509Certificate2 cert)
         }
         if (!db.Consume(invite)) { await Peer.Send(peer.Stream, new Message("error", Error: "Приглашение уже использовано.")); return; }
         db.Put(new Node(m.Id, m.Name, m.Ip, m.Cert, App.Now));
-        await Peer.Send(peer.Stream, new Message("welcome", id, Nodes: db.Nodes().ToArray(), Rules: db.Rules().ToArray(), KeyHash: db.Get("key_hash")));
+        await Peer.Send(peer.Stream, new Message("welcome", id, Nodes: db.Nodes().ToArray(), Rules: db.Rules().ToArray(), KeyHash: db.Get("key_hash"), Update: db.Update()));
     }
+
+    Message Sync() => new("sync", id, Nodes: db.Nodes().ToArray(), Rules: db.Rules().ToArray(), Update: db.Update());
 
     void Merge(Message m)
     {
@@ -97,6 +99,7 @@ sealed class Service(Store db, X509Certificate2 cert)
             db.Put(n);
         }
         foreach (var r in m.Rules ?? []) db.Put(r);
+        if (m.Update is not null) db.PutUpdate(m.Update);
     }
 
     async Task Maintain()
@@ -114,17 +117,43 @@ sealed class Service(Store db, X509Certificate2 cert)
                         {
                             var watch = Stopwatch.StartNew();
                             using var p = await Peer.Connect(n.Ip, n.Cert, cert);
-                            await Peer.Send(p.Stream, new Message("sync", id, Nodes: db.Nodes().ToArray(), Rules: db.Rules().ToArray()));
+                            await Peer.Send(p.Stream, Sync());
                             var reply = await Peer.Read(p.Stream);
                             if (reply?.Type == "sync") { Merge(reply); db.SetPing(n.Id, watch.Elapsed.TotalMilliseconds); }
                         }
                         catch { try { await Probe(n.Id, []); } catch { } }
                     }
+                    if (db.Self()?.Removed != true) LaunchPendingUpdate();
                 }
             }
             catch (Exception e) { Console.Error.WriteLine("pnt: maintenance: " + e.Message); }
             await Task.Delay(5000, stop.Token);
         }
+    }
+
+    void LaunchPendingUpdate()
+    {
+        var update = db.Update();
+        if (update is null || db.Get("update_applied") == update.Id) return;
+        if (db.Get("update_attempt_id") == update.Id && long.TryParse(db.Get("update_attempt_time"), out var last) && App.Now - last < 300_000) return;
+        db.Set("update_attempt_id", update.Id);
+        db.Set("update_attempt_time", App.Now.ToString());
+        const string sourceFile = "/etc/pnt/source-dir";
+        if (!File.Exists(sourceFile)) { Console.Error.WriteLine("pnt: путь исходников для автообновления не настроен."); return; }
+        var script = Path.Combine(File.ReadAllText(sourceFile).Trim(), "pnt.sh");
+        if (!File.Exists(script)) { Console.Error.WriteLine("pnt: скрипт автообновления не найден: " + script); return; }
+        try
+        {
+            using var process = new Process { StartInfo = new ProcessStartInfo("systemd-run") { UseShellExecute = false, RedirectStandardError = true, RedirectStandardOutput = true } };
+            var invoker = File.Exists("/etc/pnt/invoker") ? File.ReadAllText("/etc/pnt/invoker").Trim() : "root";
+            foreach (var arg in new[] { "--unit=pnt-update-" + update.Id[..12], "--collect", "--property=Type=exec", "--setenv=PNT_INVOKER=" + invoker, "/bin/sh", script, "_worker", "update", update.Id, update.Id }) process.StartInfo.ArgumentList.Add(arg);
+            process.Start();
+            var output = process.StandardOutput.ReadToEnd() + process.StandardError.ReadToEnd();
+            process.WaitForExit(10_000);
+            if (!process.HasExited || process.ExitCode != 0) Console.Error.WriteLine("pnt: автообновление не запущено: " + output);
+            else Console.WriteLine("pnt: запущено автообновление " + update.Commit);
+        }
+        catch (Exception e) { Console.Error.WriteLine("pnt: автообновление: " + e.Message); }
     }
 
     async Task RefreshListeners()

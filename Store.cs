@@ -39,6 +39,18 @@ sealed class Store : IDisposable
         q.CommandText = "INSERT INTO meta VALUES($k,$v) ON CONFLICT(k) DO UPDATE SET v=excluded.v";
         q.Parameters.AddWithValue("$k", key); q.Parameters.AddWithValue("$v", value); q.ExecuteNonQuery();
     }
+    public UpdateNotice? Update()
+    {
+        var json = Get("update_notice");
+        return json is null ? null : JsonSerializer.Deserialize<UpdateNotice>(json, App.Json);
+    }
+    public void PutUpdate(UpdateNotice notice)
+    {
+        if (notice.Id.Length != 32 || !notice.Id.All(Uri.IsHexDigit) || notice.Commit.Length != 40 || !notice.Commit.All(Uri.IsHexDigit)) return;
+        var old = Update();
+        if (old is not null && (old.Version > notice.Version || old.Version == notice.Version && string.CompareOrdinal(old.Id, notice.Id) >= 0)) return;
+        Set("update_notice", JsonSerializer.Serialize(notice, App.Json));
+    }
     public void Put(Node value)
     {
         var old = Nodes().FirstOrDefault(x => x.Id == value.Id);
