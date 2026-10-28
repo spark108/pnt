@@ -157,6 +157,9 @@ install_remote() {
     SSH_SOCKET=$2
     remote_ip=${REMOTE_HOST#root@}
     step 'Связь с удалённым сервером установлена' remote_ssh true
+    if remote_ssh 'test -x /usr/local/bin/pnt && pnt cluster status >/dev/null 2>&1'; then
+        die 'The remote server already belongs to a cluster.'
+    fi
     CURRENT_STAGE='PNT установлен на удалённом сервере'
     remote_ssh "set -e; export DEBIAN_FRONTEND=noninteractive; apt-get update; apt-get install -y git ca-certificates; touch /etc/default/pnt; sed -i '/^PNT_ADVERTISE_IP=/d' /etc/default/pnt; printf 'PNT_ADVERTISE_IP=%s\\n' '$remote_ip' >> /etc/default/pnt; if [ -d /root/pnt/.git ]; then git -C /root/pnt remote set-url origin $REPOSITORY; git -C /root/pnt pull --ff-only origin master; else git clone $REPOSITORY /root/pnt; fi; if [ -x /usr/local/bin/pnt ]; then /root/pnt/pnt.sh update; else /root/pnt/pnt.sh install; fi"
     printf '✓ %s\n' "$CURRENT_STAGE" >> "$PROGRESS"
@@ -210,6 +213,7 @@ worker() {
     PROGRESS=$OPERATIONS/$OP_ID.progress
     RESULT=$OPERATIONS/$OP_ID.result
     LOG=$OPERATIONS/$OP_ID.log
+    rm -f "$RESULT"
     : > "$PROGRESS"
     exec >> "$LOG" 2>&1
     TEMP_DIR=$(mktemp -d)
