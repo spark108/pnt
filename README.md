@@ -96,6 +96,15 @@ sudo pnt sh <node-id> 'journalctl -u pnt -n 20 --no-pager'
 
 The CLI shows each attempted connection and the selected route. It streams stdout and stderr from the target as they are produced and returns the remote command's exit status. The command is noninteractive and runs through `/bin/sh -c` as the PNT service user (`root` in the supplied systemd unit). If the direct connection fails, PNT tries relays selected from fresh direct-link pings. After sending the command, a lost connection is treated as an uncertain result: the CLI does not retry it on another route, because the command might already have run. Every current cluster member can execute commands on every other member; protect cluster membership and node certificates accordingly.
 
+## Ping from every node
+
+```sh
+sudo pnt ping 203.0.113.10
+sudo pnt ping example.com
+```
+
+Each node sends three ICMP echo requests to the target and reports the average of successful replies. For a domain, each node resolves its own IPv4 address and the result shows that address. PNT contacts nodes directly or through relays over TCP 442, prints the path used to reach each responding node, and marks unreachable nodes separately. The final line names the node with the lowest ICMP latency to the target; relay latency between cluster nodes is not included in that comparison. ICMP may be blocked by a target or firewall, in which case the node reports the failure.
+
 ## Current limits
 
 - Port forwarding supports TCP only; UDP is not implemented.

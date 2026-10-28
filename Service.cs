@@ -67,7 +67,11 @@ sealed class Service(Store db, X509Certificate2 cert)
                 break;
             case "exec":
                 if (request.Target == id) await Execute(peer.Stream, request);
-                else await RelayExec(peer.Stream, request);
+                else await RelayRequest(peer.Stream, request);
+                break;
+            case "ping-external":
+                if (request.Target == id) await ExecuteExternalPing(peer.Stream, request);
+                else await RelayRequest(peer.Stream, request);
                 break;
             case "tunnel": await Tunnel(peer.Stream, request); break;
             default: await Peer.Send(peer.Stream, new Message("error", Error: "Неизвестный запрос.")); break;
@@ -288,7 +292,7 @@ sealed class Service(Store db, X509Certificate2 cert)
         throw new Exception("Нет связи.");
     }
 
-    async Task RelayExec(Stream incoming, Message request)
+    async Task RelayRequest(Stream incoming, Message request)
     {
         if (request.Hops?.Contains(id) == true || (request.Hops?.Length ?? 0) > 8 ||
             request.Target is null || db.Resolve(request.Target) is null)
@@ -305,6 +309,17 @@ sealed class Service(Store db, X509Certificate2 cert)
             await CopyBoth(incoming, route.Stream);
         }
         catch (Exception e) { await Peer.Send(incoming, new Message("error", Error: e.Message)); }
+    }
+
+    async Task ExecuteExternalPing(Stream incoming, Message request)
+    {
+        if (request.Host is null)
+        {
+            await Peer.Send(incoming, new Message("error", Error: "Не указана цель пинга.")); return;
+        }
+        await Peer.Send(incoming, new Message("ready", Hops: (request.Hops ?? []).Append(id).ToArray()));
+        var result = await ExternalPing.Measure(request.Host);
+        await Peer.Send(incoming, new Message("ping-result", Ip: result.Ip, PingMs: result.Ms, Error: result.Error));
     }
 
     async Task Execute(Stream incoming, Message request)

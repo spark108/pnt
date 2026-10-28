@@ -22,7 +22,8 @@ record Message(string Type, string? Id = null, string? Name = null, string? Ip =
     string? Secret = null, string? Target = null, int Port = 0, string? Via = null,
     string[]? Hops = null, Node[]? Nodes = null, Rule[]? Rules = null, string? Error = null, string? KeyHash = null,
     UpdateNotice? Update = null, PingReport[]? Pings = null, WebConfig? Web = null,
-    string? Command = null, string? Output = null, bool Stderr = false, int ExitCode = 0);
+    string? Command = null, string? Output = null, bool Stderr = false, int ExitCode = 0,
+    string? Host = null, double? PingMs = null);
 
 static class App
 {
@@ -91,6 +92,8 @@ static class App
                 case ["nodes", var fromNode]: PrintNodes(db, fromNode); break;
                 case ["sh", var target, .. var command] when command.Length > 0:
                     return await RemoteCommands.Run(db, cert, target, string.Join(' ', command));
+                case ["ping", var host]:
+                    return await ExternalPing.Run(db, cert, host);
                 case ["cluster", "status"]:
                     Active(db); Console.WriteLine($"Кластер: {db.Get("cluster")}\nУзел: {me}\nIP: {db.Self()!.Ip}\nУзлов: {db.Nodes().Count(x => !x.Removed)}"); break;
                 case ["cluster", "invites"]:
@@ -279,6 +282,7 @@ static class App
         pnt cluster add <ip> | remove <node|ip> | leave | nodes [node-id] | status | invites
         pnt nodes [node-id]
         pnt sh <node-id> <command...>
+        pnt ping <IPv4|domain>
         pnt cluster invite revoke <id>
         pnt accept cluster <invite_key>
         pnt name <name>
