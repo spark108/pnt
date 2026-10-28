@@ -16,11 +16,12 @@ record Rule(string Id, string In, int InPort, string? Via, string To, int ToPort
 record Invite(string Id, string Secret, string Ip, long Expires, bool Used = false);
 record Token(string Cluster, string Host, string Cert, string Id, string Secret);
 record UpdateNotice(string Id, string Commit, long Version);
-record PingReport(string Source, string Target, double Ms, long Updated);
+record WebConfig(string Id, bool Enabled, string Salt, string Hash, long Version);
+record PingReport(string Source, string Target, double Ms, long Updated, bool Direct = false);
 record Message(string Type, string? Id = null, string? Name = null, string? Ip = null, string? Cert = null,
     string? Secret = null, string? Target = null, int Port = 0, string? Via = null,
     string[]? Hops = null, Node[]? Nodes = null, Rule[]? Rules = null, string? Error = null, string? KeyHash = null,
-    UpdateNotice? Update = null, PingReport[]? Pings = null);
+    UpdateNotice? Update = null, PingReport[]? Pings = null, WebConfig? Web = null);
 
 static class App
 {
@@ -109,6 +110,25 @@ static class App
                     await SetMaintenance(db, cert, true); break;
                 case ["cluster", "maintenance", "done"]:
                     await SetMaintenance(db, cert, false); break;
+                case ["web", "enable"]:
+                    Active(db);
+                    if (db.Rules().Any(x => !x.Removed && x.InPort == 600))
+                        throw new Exception("Порт 600 занят правилом проброса. Удалите правило перед включением веб интерфейса.");
+                    var password = ReadPassword();
+                    var salt = RandomNumberGenerator.GetBytes(32);
+                    var hash = Rfc2898DeriveBytes.Pbkdf2(password, salt, 210_000, HashAlgorithmName.SHA256, 32);
+                    var previous = db.Web();
+                    db.PutWeb(new WebConfig(Guid.NewGuid().ToString("N"), true, Convert.ToHexString(salt),
+                        Convert.ToHexString(hash), Math.Max(Now, (previous?.Version ?? 0) + 1)));
+                    await Broadcast(db, cert);
+                    Console.WriteLine("Веб интерфейс включён на https://<IP>:600/ (логин admin). Изменение отправлено узлам."); break;
+                case ["web", "disable"]:
+                    Active(db);
+                    var currentWeb = db.Web();
+                    db.PutWeb(new WebConfig(Guid.NewGuid().ToString("N"), false, "", "",
+                        Math.Max(Now, (currentWeb?.Version ?? 0) + 1)));
+                    await Broadcast(db, cert);
+                    Console.WriteLine("Веб интерфейс выключен; пароль сброшен. Изменение отправлено узлам."); break;
                 case ["name", .. var words] when words.Length > 0:
                     Active(db); var name = string.Join(' ', words).Trim();
                     if (name.Length is < 1 or > 64) throw new Exception("Имя: от 1 до 64 символов.");
@@ -154,8 +174,32 @@ static class App
         var self = db.Self()!;
         db.Put(self with { Updating = updating, UpdatingSince = updating ? Now : 0,
             Version = Math.Max(Now, self.Version + 1) });
+        var notified = await Broadcast(db, cert);
+        Console.WriteLine($"Статус {(updating ? "update" : "рабочий")} сохранён; оповещено узлов: {notified}.");
+    }
+
+    static string ReadPassword()
+    {
+        if (Console.IsInputRedirected) throw new Exception("Для задания пароля нужен интерактивный терминал.");
+        Console.Write("Пароль веб интерфейса: ");
+        var password = new StringBuilder();
+        while (true)
+        {
+            var key = Console.ReadKey(true);
+            if (key.Key == ConsoleKey.Enter) break;
+            if (key.Key == ConsoleKey.Backspace) { if (password.Length > 0) password.Length--; continue; }
+            if (!char.IsControl(key.KeyChar) && password.Length < 1024) password.Append(key.KeyChar);
+        }
+        Console.WriteLine();
+        if (password.Length == 0) throw new Exception("Пароль не может быть пустым.");
+        return password.ToString();
+    }
+
+    static async Task<string> Broadcast(Store db, X509Certificate2 cert)
+    {
+        var self = db.Self()!;
         var message = new Message("sync", self.Id, Nodes: db.Nodes().ToArray(),
-            Rules: db.Rules().ToArray(), Update: db.Update(), Pings: db.Pings().ToArray());
+            Rules: db.Rules().ToArray(), Update: db.Update(), Pings: db.Pings().ToArray(), Web: db.Web());
         var peers = db.Nodes().Where(x => !x.Removed && x.Id != self.Id).ToArray();
         var results = await Task.WhenAll(peers.Select(async node =>
         {
@@ -167,7 +211,7 @@ static class App
             }
             catch { return false; }
         }));
-        Console.WriteLine($"Статус {(updating ? "update" : "рабочий")} сохранён; оповещено узлов: {results.Count(x => x)}/{peers.Length}.");
+        return $"{results.Count(x => x)}/{peers.Length}";
     }
 
     static void AddRule(Store db, string[] args)
@@ -182,6 +226,8 @@ static class App
         if (!m.TryGetValue("--listen", out var input) || !m.TryGetValue("--to", out var output)) throw new Exception("Укажите --listen и --to.");
         var (inputHost, inputPort) = ParseEndpoint(input);
         var (outputHost, outputPort) = ParseEndpoint(output);
+        if (inputPort == 442 || inputPort == 600 && db.Web()?.Enabled == true)
+            throw new Exception("Этот порт зарезервирован службой PNT.");
         var ingress = db.Resolve(inputHost) ?? throw new Exception("Узел входа не найден.");
         if (db.Rules().Any(x => !x.Removed && x.In == ingress.Id && x.InPort == inputPort)) throw new Exception("Этот входной порт уже используется другим правилом.");
         var via = m.GetValueOrDefault("--via");
@@ -216,6 +262,7 @@ static class App
         db.Put(new Node(Certificate.Id(cert), Environment.MachineName, OwnIp, Certificate.Fingerprint(cert), Now));
         foreach (var r in reply.Rules ?? []) db.Put(r);
         if (reply.Update is not null) db.PutUpdate(reply.Update);
+        if (reply.Web is not null) db.PutWeb(reply.Web);
         Console.WriteLine("Присоединён к кластеру. ID: " + Certificate.Id(cert));
     }
 
@@ -227,6 +274,7 @@ static class App
         pnt name <name>
         pnt forward add --listen <node>:<port> [--via <node>] --to <node|ip>:<port> [--proto tcp]
         pnt forward list | show <id> | remove <id>
+        pnt web enable | disable
         pnt serve
         """);
 }

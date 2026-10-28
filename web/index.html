@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PNT · Кластер</title>
+<style>
+:root{color-scheme:dark;font:15px/1.45 system-ui,-apple-system,Segoe UI,sans-serif;background:#0b1020;color:#e9eefb}
+*{box-sizing:border-box}body{margin:0}header{display:flex;align-items:center;justify-content:space-between;padding:22px 32px;border-bottom:1px solid #25314a;background:#111a2d}
+.brand{font-size:23px;font-weight:800;letter-spacing:.08em}.brand span{color:#67e8c4}.small{color:#a6b5d0;font-size:13px}.live{display:inline-block;width:8px;height:8px;border-radius:50%;background:#4ade80;margin-right:8px;box-shadow:0 0 10px #4ade80}
+main{max-width:1500px;margin:auto;padding:24px 32px}.top{display:flex;justify-content:space-between;align-items:end;gap:20px;margin-bottom:20px}h1{font-size:28px;margin:0 0 4px}h2{margin:0;font-size:18px}p{margin:4px 0;color:#a6b5d0}
+.tabs{display:flex;gap:8px;margin-bottom:20px}.tabs button,.button{border:1px solid #33435f;background:#18233a;color:#dce7fa;padding:10px 15px;border-radius:10px;cursor:pointer;font:inherit}.tabs button.active,.button:hover{background:#254a69;border-color:#52d9bb;color:white}
+.grid{display:grid;grid-template-columns:minmax(0,1fr) 310px;gap:18px}.card{background:#111a2d;border:1px solid #25314a;border-radius:16px;box-shadow:0 10px 30px #02050e44}.panel-head{display:flex;justify-content:space-between;align-items:center;padding:17px 20px;border-bottom:1px solid #25314a}.panel-body{padding:18px}
+#graph{width:100%;height:min(68vh,650px);min-height:440px;display:block}.edge{stroke:#429d9b;stroke-width:2.3;opacity:.68}.edge.virtual{stroke:#70849e;stroke-dasharray:5 7;stroke-width:1.4;opacity:.4}.edge.selected{stroke:#f8c66a;stroke-width:4;opacity:1;filter:drop-shadow(0 0 6px #eaae58)}.edge.virtual.selected{stroke:#f8c66a;stroke-width:2.5;opacity:.8}.edge-label{fill:#a6bed4;font-size:11px;text-anchor:middle;paint-order:stroke;stroke:#111a2d;stroke-width:4}.edge-label.selected{fill:#ffe1a8;font-weight:700}.node circle{fill:#1b3c55;stroke:#67e8c4;stroke-width:2}.node.selected circle{fill:#66502f;stroke:#f8c66a;stroke-width:3}.node text{fill:#e9eefb;text-anchor:middle;font-size:12px;font-weight:600}.node .sub{fill:#99abc6;font-size:10px;font-weight:400}.node{cursor:pointer}
+label{display:block;font-size:12px;color:#a6b5d0;margin:14px 0 6px}select{width:100%;border:1px solid #344563;background:#0d1628;color:#e9eefb;padding:10px;border-radius:9px;font:inherit}.row{display:flex;gap:8px;align-items:end}.row select{min-width:0}.row .button{white-space:nowrap}.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:12px}.chip{border:1px solid #6f5b39;background:#382d20;color:#ffe1a8;border-radius:20px;padding:5px 9px;font-size:12px;cursor:pointer}.result{margin-top:20px;padding:14px;background:#0c2330;border:1px solid #23546b;border-radius:10px}.result strong{color:#74ebce;font-size:21px}.route{margin-top:8px;word-break:break-word;color:#cad8eb;font-size:13px}.legend{display:flex;gap:15px;flex-wrap:wrap;color:#99abc6;font-size:12px}.legend i{display:inline-block;width:23px;border-top:2px solid #429d9b;vertical-align:middle;margin-right:5px}.legend i.dash{border-color:#8193a8;border-top-style:dashed}
+.forward-list{display:grid;gap:12px;padding:18px}.forward{display:grid;grid-template-columns:1fr auto 1fr auto 1fr;align-items:center;gap:10px;padding:16px;background:#0e1728;border:1px solid #283953;border-radius:12px}.point{min-width:0}.point b{display:block;overflow-wrap:anywhere}.point small{color:#8ea3c1}.arrow{color:#75d9c4;font-size:22px}.tag{font-size:11px;color:#8da6c8;background:#1d2b43;padding:3px 7px;border-radius:12px}.empty{padding:35px;text-align:center;color:#a6b5d0}.hidden{display:none!important}
+@media(max-width:900px){.grid{grid-template-columns:1fr}header,main{padding-left:16px;padding-right:16px}.forward{grid-template-columns:1fr}.arrow{transform:rotate(90deg);text-align:center}}
+</style>
+</head>
+<body>
+<header><div class="brand">PNT <span>●</span> <span class="small">КЛАСТЕР</span></div><div class="small"><i class="live"></i><span id="updated">Загрузка…</span></div></header>
+<main>
+<div class="top"><div><h1>Карта сети</h1><p>Прямые связи, маршруты через узлы и пробросы портов</p></div><div class="small" id="summary"></div></div>
+<div class="tabs"><button id="tab-graph" class="active">Схема узлов</button><button id="tab-forward">Пробросы портов</button></div>
+<section id="section-graph" class="grid">
+<div class="card"><div class="panel-head"><h2>Связи между узлами</h2><div class="legend"><span><i></i> прямая</span><span><i class="dash"></i> через узлы</span></div></div><svg id="graph" role="img" aria-label="Схема узлов кластера"></svg></div>
+<div class="card"><div class="panel-head"><h2>Построить маршрут</h2></div><div class="panel-body">
+<label for="from">Сервер А</label><select id="from"></select>
+<label for="to">Сервер Б</label><select id="to"></select>
+<label for="transit">Транзитные серверы по порядку</label><div class="row"><select id="transit"></select><button class="button" id="add-transit">Добавить</button></div>
+<div class="chips" id="transits"></div><div class="result"><div id="route-time">Выберите два сервера</div><div class="route" id="route-nodes"></div></div>
+<p class="small" style="margin-top:16px">Пунктир показывает минимальный путь через промежуточные узлы. Данные пинга обновляются каждые 5 секунд; старше 30 секунд не используются.</p>
+</div></div></section>
+<section id="section-forward" class="card hidden"><div class="panel-head"><h2>Пробросы портов</h2><span class="small" id="forward-count"></span></div><div class="forward-list" id="forwards"></div></section>
+</main>
+<script>
+const $=id=>document.getElementById(id),svg=$('graph'),ns='http://www.w3.org/2000/svg';
+let state={nodes:[],pings:[],rules:[]},from='',to='',via=[],pickTarget=false;
+const node=id=>state.nodes.find(n=>n.id===id),name=id=>node(id)?.name||id;
+const label=id=>{const n=node(id);return n?`${n.name} (${n.ip})`:id};
+function option(select,id,text){const o=document.createElement('option');o.value=id;o.textContent=text;select.append(o)}
+function controls(){for(const id of ['from','to','transit'])$(id).replaceChildren();for(const n of state.nodes){for(const id of ['from','to','transit'])option($(id),n.id,`${n.name} · ${n.id}`)}
+ if(!node(from))from=state.self||state.nodes[0]?.id||'';if(!node(to)||to===from)to=state.nodes.find(n=>n.id!==from)?.id||from;
+ $('from').value=from;$('to').value=to;via=via.filter(id=>node(id)&&id!==from&&id!==to);$('transit').value=state.nodes.find(n=>!via.includes(n.id)&&n.id!==from&&n.id!==to)?.id||'';
+ $('transits').replaceChildren();via.forEach((id,i)=>{const b=document.createElement('button');b.className='chip';b.textContent=`${i+1}. ${name(id)} ×`;b.title='Удалить транзит';b.onclick=()=>{via.splice(i,1);controls();render()};$('transits').append(b)})}
+function edges(){const active=new Set(state.nodes.map(n=>n.id));return state.pings.filter(p=>p.direct&&active.has(p.source)&&active.has(p.target)&&p.source!==p.target).map(p=>({a:p.source,b:p.target,ms:p.ms}))}
+function pairs(graph){const map=new Map();for(const e of graph){const key=[e.a,e.b].sort().join('|');if(!map.has(key)||e.ms<map.get(key).ms)map.set(key,e)}return [...map.values()]}
+function shortest(a,b,graph,blocked=new Set()){if(a===b)return {path:[a],ms:0};const dist=new Map([[a,0]]),prev=new Map(),todo=new Set(state.nodes.map(n=>n.id).filter(id=>!blocked.has(id)));while(todo.size){let u=null,best=Infinity;for(const id of todo)if((dist.get(id)??Infinity)<best){best=dist.get(id);u=id}if(!u||u===b)break;todo.delete(u);for(const e of graph){if(e.a!==u||!todo.has(e.b))continue;const d=best+e.ms;if(d<(dist.get(e.b)??Infinity)){dist.set(e.b,d);prev.set(e.b,u)}}}if(!dist.has(b))return null;const path=[b];while(path[0]!==a)path.unshift(prev.get(path[0]));return {path,ms:dist.get(b)}}
+function route(graph){const stops=[from,...via,to];let path=[],ms=0;for(let i=0;i<stops.length-1;i++){const blocked=new Set(stops.filter((_,j)=>j!==i&&j!==i+1));const part=shortest(stops[i],stops[i+1],graph,blocked);if(!part)return null;path.push(...part.path.slice(i?1:0));ms+=part.ms}return {path,ms}}
+function element(tag,attrs={}){const e=document.createElementNS(ns,tag);for(const [k,v]of Object.entries(attrs))e.setAttribute(k,String(v));return e}
+function line(a,b,positions,cls,ms,offset=0){const p=positions.get(a),q=positions.get(b);if(!p||!q)return;const g=element('g');g.append(element('line',{x1:p.x,y1:p.y,x2:q.x,y2:q.y,class:cls}));const t=element('text',{x:(p.x+q.x)/2,y:(p.y+q.y)/2-7-offset,class:'edge-label'+(cls.includes('selected')?' selected':'')});t.textContent=`${ms.toFixed(1)} ms`;g.append(t);svg.append(g)}
+function render(){const graph=edges(),selected=from&&to?route(graph):null;
+ $('route-time').replaceChildren();const strong=document.createElement('strong');strong.textContent=selected?`${selected.ms.toFixed(1)} ms`:'Нет доступного маршрута';$('route-time').append(strong);
+ $('route-nodes').textContent=selected?selected.path.map(name).join(' → '):'Для пути нужны свежие измерения прямых связей.';
+ const width=Math.max(svg.clientWidth,440),height=Math.max(svg.clientHeight,440);svg.setAttribute('viewBox',`0 0 ${width} ${height}`);svg.replaceChildren();const positions=new Map(),nodes=state.nodes,n=nodes.length,cx=width/2,cy=height/2,rx=Math.max(80,Math.min(width*.37,370)),ry=Math.max(95,Math.min(height*.34,230));nodes.forEach((item,i)=>{const angle=-Math.PI/2+2*Math.PI*i/Math.max(n,1);positions.set(item.id,{x:cx+rx*Math.cos(angle),y:cy+ry*Math.sin(angle)})});
+ const direct=pairs(graph),keys=new Set(direct.map(e=>[e.a,e.b].sort().join('|'))),marked=new Set();if(selected)for(let i=0;i<selected.path.length-1;i++)marked.add([selected.path[i],selected.path[i+1]].sort().join('|'));
+ for(let i=0;i<nodes.length;i++)for(let j=i+1;j<nodes.length;j++){const a=nodes[i].id,b=nodes[j].id,key=[a,b].sort().join('|');if(keys.has(key))continue;const paths=[shortest(a,b,graph),shortest(b,a,graph)].filter(Boolean).sort((x,y)=>x.ms-y.ms);const path=paths[0];if(path&&path.path.length>2)line(a,b,positions,'edge virtual'+(selected&&from===a&&to===b||selected&&from===b&&to===a?' selected':''),path.ms,14)}
+ for(const e of direct)line(e.a,e.b,positions,'edge'+(marked.has([e.a,e.b].sort().join('|'))?' selected':''),e.ms);
+ for(const item of nodes){const p=positions.get(item.id),g=element('g',{class:'node'+([from,to,...via].includes(item.id)?' selected':''),transform:`translate(${p.x},${p.y})`});g.append(element('circle',{r:27}));const initials=element('text',{y:4});initials.textContent=item.name.slice(0,2).toUpperCase();g.append(initials);const title=element('text',{y:47});title.textContent=item.name;g.append(title);const sub=element('text',{y:63,class:'sub'});sub.textContent=item.updating&&Date.now()-item.updatingSince<3600000?'update':item.ip;g.append(sub);g.onclick=()=>{if(pickTarget&&item.id!==from){to=item.id;pickTarget=false}else{from=item.id;to='';pickTarget=true}controls();render()};svg.append(g)}
+}
+function forwards(){const root=$('forwards');root.replaceChildren();$('forward-count').textContent=`${state.rules.length} правил`;if(!state.rules.length){const e=document.createElement('div');e.className='empty';e.textContent='Пробросов пока нет';root.append(e);return}
+ for(const r of state.rules){const card=document.createElement('div');card.className='forward';const exit=r.via||node(r.to)?.id||'';const points=[['Вход',`${name(r.in)}:${r.inPort}`],['Выход',exit?name(exit):'Автоматически'],['Назначение',`${name(r.to)}:${r.toPort}`]];points.forEach(([kind,value],i)=>{if(i){const arrow=document.createElement('span');arrow.className='arrow';arrow.textContent='→';card.append(arrow)}const p=document.createElement('div');p.className='point';const s=document.createElement('small');s.textContent=kind;const b=document.createElement('b');b.textContent=value;p.append(s,b);card.append(p)});card.title=`Правило ${r.id} · TCP`;root.append(card)}}
+async function refresh(){try{const response=await fetch('/api/state',{cache:'no-store'});if(!response.ok)throw Error(`HTTP ${response.status}`);state=await response.json();controls();render();forwards();$('summary').textContent=`${state.nodes.length} узлов · ${state.rules.length} пробросов`;$('updated').textContent=`Обновлено ${new Date().toLocaleTimeString('ru-RU')}`}catch(e){$('updated').textContent='Нет связи с панелью';console.error(e)}}
+$('from').onchange=e=>{from=e.target.value;pickTarget=false;controls();render()};$('to').onchange=e=>{to=e.target.value;pickTarget=false;controls();render()};$('add-transit').onclick=()=>{const id=$('transit').value;if(id&&!via.includes(id)&&id!==from&&id!==to){via.push(id);controls();render()}};
+for(const tab of ['graph','forward'])$('tab-'+tab).onclick=()=>{for(const t of ['graph','forward']){$('tab-'+t).classList.toggle('active',t===tab);$('section-'+t).classList.toggle('hidden',t!==tab)}if(tab==='graph')render()};
+window.addEventListener('resize',()=>{if(!$('section-graph').classList.contains('hidden'))render()});refresh();setInterval(refresh,5000);
+</script>
+</body>
+</html>

@@ -19,6 +19,13 @@ sealed class Store : IDisposable
             "CREATE TABLE IF NOT EXISTS pings(id TEXT PRIMARY KEY,ms REAL NOT NULL,updated INTEGER NOT NULL)",
             "CREATE TABLE IF NOT EXISTS peer_pings(source TEXT NOT NULL,target TEXT NOT NULL,ms REAL NOT NULL,updated INTEGER NOT NULL,PRIMARY KEY(source,target))"
         }) { using var cmd = c.CreateCommand(); cmd.CommandText = sql; cmd.ExecuteNonQuery(); }
+        using var columns = c.CreateCommand();
+        columns.CommandText = "PRAGMA table_info(peer_pings)";
+        using var reader = columns.ExecuteReader();
+        var hasDirect = false;
+        while (reader.Read()) if (reader.GetString(1) == "direct") hasDirect = true;
+        reader.Close();
+        if (!hasDirect) { using var alter = c.CreateCommand(); alter.CommandText = "ALTER TABLE peer_pings ADD COLUMN direct INTEGER NOT NULL DEFAULT 0"; alter.ExecuteNonQuery(); }
     }
     SqliteConnection Open()
     {
@@ -51,6 +58,22 @@ sealed class Store : IDisposable
         var old = Update();
         if (old is not null && (old.Version > notice.Version || old.Version == notice.Version && string.CompareOrdinal(old.Id, notice.Id) >= 0)) return;
         Set("update_notice", JsonSerializer.Serialize(notice, App.Json));
+    }
+    public WebConfig? Web()
+    {
+        var json = Get("web_config");
+        return json is null ? null : JsonSerializer.Deserialize<WebConfig>(json, App.Json);
+    }
+    public void PutWeb(WebConfig config)
+    {
+        if (config.Id.Length != 32 || !config.Id.All(Uri.IsHexDigit) ||
+            (config.Enabled && (config.Salt.Length != 64 || config.Hash.Length != 64 ||
+                !config.Salt.All(Uri.IsHexDigit) || !config.Hash.All(Uri.IsHexDigit))) ||
+            (!config.Enabled && (config.Salt.Length != 0 || config.Hash.Length != 0))) return;
+        var old = Web();
+        if (old is not null && (old.Version > config.Version ||
+            old.Version == config.Version && string.CompareOrdinal(old.Id, config.Id) >= 0)) return;
+        Set("web_config", JsonSerializer.Serialize(config, App.Json));
     }
     public void Put(Node value)
     {
@@ -104,29 +127,30 @@ sealed class Store : IDisposable
         using var c = Open(); using var q = c.CreateCommand(); q.CommandText = "DELETE FROM invites WHERE id=$id";
         q.Parameters.AddWithValue("$id", id); if (q.ExecuteNonQuery() == 0) throw new Exception("Приглашение не найдено.");
     }
-    public void SetPing(string id, double ms)
+    public void SetPing(string id, double ms, bool direct = false)
     {
         using var c = Open(); using var q = c.CreateCommand();
         q.CommandText = "INSERT INTO pings VALUES($id,$ms,$time) ON CONFLICT(id) DO UPDATE SET ms=excluded.ms,updated=excluded.updated";
         q.Parameters.AddWithValue("$id", id); q.Parameters.AddWithValue("$ms", ms); q.Parameters.AddWithValue("$time", App.Now); q.ExecuteNonQuery();
-        if (Get("self") is string self) PutPing(new PingReport(self, id, ms, App.Now));
+        if (Get("self") is string self) PutPing(new PingReport(self, id, ms, App.Now, direct));
     }
     public void PutPing(PingReport report)
     {
         if (report.Source.Length != 16 || report.Target.Length != 16 || !double.IsFinite(report.Ms) || report.Ms < 0 || report.Updated > App.Now + 60_000 || report.Updated < App.Now - 60_000) return;
         if (!Nodes().Any(x => x.Id == report.Source && !x.Removed) || !Nodes().Any(x => x.Id == report.Target && !x.Removed)) return;
         using var c = Open(); using var q = c.CreateCommand();
-        q.CommandText = "INSERT INTO peer_pings VALUES($source,$target,$ms,$updated) ON CONFLICT(source,target) DO UPDATE SET ms=excluded.ms,updated=excluded.updated WHERE excluded.updated>peer_pings.updated";
+        q.CommandText = "INSERT INTO peer_pings(source,target,ms,updated,direct) VALUES($source,$target,$ms,$updated,$direct) ON CONFLICT(source,target) DO UPDATE SET ms=excluded.ms,updated=excluded.updated,direct=excluded.direct WHERE excluded.updated>peer_pings.updated";
         q.Parameters.AddWithValue("$source", report.Source); q.Parameters.AddWithValue("$target", report.Target);
-        q.Parameters.AddWithValue("$ms", report.Ms); q.Parameters.AddWithValue("$updated", report.Updated); q.ExecuteNonQuery();
+        q.Parameters.AddWithValue("$ms", report.Ms); q.Parameters.AddWithValue("$updated", report.Updated);
+        q.Parameters.AddWithValue("$direct", report.Direct ? 1 : 0); q.ExecuteNonQuery();
     }
     public List<PingReport> Pings()
     {
         using var c = Open(); using var q = c.CreateCommand();
-        q.CommandText = "SELECT source,target,ms,updated FROM peer_pings WHERE updated>$minimum";
+        q.CommandText = "SELECT source,target,ms,updated,direct FROM peer_pings WHERE updated>$minimum";
         q.Parameters.AddWithValue("$minimum", App.Now - 30_000);
         using var reader = q.ExecuteReader(); var result = new List<PingReport>();
-        while (reader.Read()) result.Add(new PingReport(reader.GetString(0), reader.GetString(1), reader.GetDouble(2), reader.GetInt64(3)));
+        while (reader.Read()) result.Add(new PingReport(reader.GetString(0), reader.GetString(1), reader.GetDouble(2), reader.GetInt64(3), reader.GetInt64(4) != 0));
         return result;
     }
     public double? PingFrom(string source, string target)

@@ -11,6 +11,7 @@ sealed class Service(Store db, X509Certificate2 cert)
     readonly string id = Certificate.Id(cert);
     readonly Dictionary<string, TcpListener> listeners = new();
     readonly CancellationTokenSource stop = new();
+    readonly WebPanel web = new(db);
 
     public async Task Run()
     {
@@ -31,6 +32,7 @@ sealed class Service(Store db, X509Certificate2 cert)
         catch (OperationCanceledException) { }
         finally
         {
+            await web.Stop();
             control.Stop();
             foreach (var l in listeners.Values) { Firewall.Close(((IPEndPoint)l.LocalEndpoint).Port); l.Stop(); }
             Firewall.Close(442);
@@ -82,10 +84,10 @@ sealed class Service(Store db, X509Certificate2 cert)
         }
         if (!db.Consume(invite)) { await Peer.Send(peer.Stream, new Message("error", Error: "Приглашение уже использовано.")); return; }
         db.Put(new Node(m.Id, m.Name, m.Ip, m.Cert, App.Now));
-        await Peer.Send(peer.Stream, new Message("welcome", id, Nodes: db.Nodes().ToArray(), Rules: db.Rules().ToArray(), KeyHash: db.Get("key_hash"), Update: db.Update()));
+        await Peer.Send(peer.Stream, new Message("welcome", id, Nodes: db.Nodes().ToArray(), Rules: db.Rules().ToArray(), KeyHash: db.Get("key_hash"), Update: db.Update(), Web: db.Web()));
     }
 
-    Message Sync() => new("sync", id, Nodes: db.Nodes().ToArray(), Rules: db.Rules().ToArray(), Update: db.Update(), Pings: db.Pings().ToArray());
+    Message Sync() => new("sync", id, Nodes: db.Nodes().ToArray(), Rules: db.Rules().ToArray(), Update: db.Update(), Pings: db.Pings().ToArray(), Web: db.Web());
 
     void Merge(Message m)
     {
@@ -100,6 +102,7 @@ sealed class Service(Store db, X509Certificate2 cert)
         foreach (var r in m.Rules ?? []) db.Put(r);
         foreach (var ping in m.Pings ?? []) db.PutPing(ping);
         if (m.Update is not null) db.PutUpdate(m.Update);
+        if (m.Web is not null) db.PutWeb(m.Web);
     }
 
     async Task Maintain()
@@ -108,6 +111,7 @@ sealed class Service(Store db, X509Certificate2 cert)
         {
             try
             {
+                await web.Refresh();
                 await RefreshListeners();
                 if (db.Get("cluster") != null && (db.Self()?.Removed != true || db.Get("left") == "1"))
                 {
@@ -119,7 +123,7 @@ sealed class Service(Store db, X509Certificate2 cert)
                             using var p = await Peer.Connect(n.Ip, n.Cert, cert);
                             await Peer.Send(p.Stream, Sync());
                             var reply = await Peer.Read(p.Stream);
-                            if (reply?.Type == "sync") { Merge(reply); db.SetPing(n.Id, watch.Elapsed.TotalMilliseconds); }
+                            if (reply?.Type == "sync") { Merge(reply); db.SetPing(n.Id, watch.Elapsed.TotalMilliseconds, true); }
                         }
                         catch { try { await Probe(n.Id, []); } catch { } }
                     }

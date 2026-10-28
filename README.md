@@ -62,6 +62,17 @@ sudo pnt forward remove <id>
 
 Rules synchronize to all reachable members. The ingress service opens its listening socket and tries to add a firewall allow rule in `nftables` (`inet filter input`) or `iptables` (`INPUT`). It removes its tagged rule when a forwarding rule is removed. Keep TCP 442 accessible between directly connected neighbors.
 
+## Web interface
+
+```sh
+sudo pnt web enable     # Prompts for a password
+sudo pnt web disable    # Closes the panel on every connected node and clears the password
+```
+
+Open `https://<node-ip>:600/` and sign in with username `admin` and the chosen password. TCP 442 remains reserved for encrypted communication between nodes. The web interface uses a separate self-signed HTTPS certificate for each node, so the browser will ask you to trust it. The password is stored as a salted PBKDF2 hash; only the hash and salt are synchronized between cluster members. A disconnected node applies enable or disable when it reconnects and receives the latest configuration. All nodes must run this version to host the panel.
+
+The network map shows solid lines for fresh direct connections and dashed lines for routes through intermediate nodes. Labels show the latest direct ping or the sum of pings along the shortest path. Choose servers A and B, then add transit servers in order to highlight a route. The forwarding page shows ingress, exit node, and final destination for every active TCP rule. Ping data older than 30 seconds is ignored, so a route may temporarily disappear during an update or disconnection.
+
 ## Membership and status
 
 ```sh
