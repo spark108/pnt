@@ -1,0 +1,21 @@
+[Unit]
+Description=PNT decentralized cluster node
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+EnvironmentFile=-/etc/default/pnt
+ExecStart=/usr/local/bin/pnt serve
+Restart=on-failure
+RestartSec=3
+WorkingDirectory=/var/lib/pnt
+StateDirectory=pnt
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

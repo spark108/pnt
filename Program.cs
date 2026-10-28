@@ -1,0 +1,174 @@
+using System.Net;
+using System.Net.Sockets;
+using System.Net.Security;
+using System.Security.Authentication;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
+using System.Text;
+using System.Text.Json;
+using Microsoft.Data.Sqlite;
+
+namespace Pnt;
+
+record Node(string Id, string Name, string Ip, string Cert, long Version, bool Removed = false);
+record Rule(string Id, string In, int InPort, string? Via, string To, int ToPort, long Version, bool Removed = false);
+record Invite(string Id, string Secret, string Ip, long Expires, bool Used = false);
+record Token(string Cluster, string Host, string Cert, string Id, string Secret);
+record Message(string Type, string? Id = null, string? Name = null, string? Ip = null, string? Cert = null,
+    string? Secret = null, string? Target = null, int Port = 0, string? Via = null,
+    string[]? Hops = null, Node[]? Nodes = null, Rule[]? Rules = null, string? Error = null, string? KeyHash = null);
+
+static class App
+{
+    public static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
+    public static readonly string Dir = Environment.GetEnvironmentVariable("PNT_DATA_DIR") ?? "/var/lib/pnt";
+    public static long Now => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+    static string OwnIp
+    {
+        get
+        {
+            var configured = Environment.GetEnvironmentVariable("PNT_ADVERTISE_IP");
+            if (configured == null && File.Exists("/etc/default/pnt"))
+            {
+                var line = File.ReadLines("/etc/default/pnt").LastOrDefault(x => x.TrimStart().StartsWith("PNT_ADVERTISE_IP="));
+                configured = line?.Split('=', 2)[1].Trim().Trim('"', '\'');
+            }
+            var ip = configured ?? Dns.GetHostAddresses(Dns.GetHostName()).FirstOrDefault(x => x.AddressFamily == AddressFamily.InterNetwork && !IPAddress.IsLoopback(x))?.ToString() ?? "127.0.0.1";
+            if (!IPAddress.TryParse(ip, out _)) throw new Exception("PNT_ADVERTISE_IP должен быть IP-адресом.");
+            return ip;
+        }
+    }
+
+    static async Task<int> Main(string[] a)
+    {
+        try
+        {
+            if (a.Length == 0 || a[0] is "help" or "--help") { Help(); return 0; }
+            Directory.CreateDirectory(Dir);
+            if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(Dir, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            using var db = new Store(Path.Combine(Dir, "pnt.db"));
+            var cert = Certificate.Load(Path.Combine(Dir, "node.pfx"));
+            var me = Certificate.Id(cert);
+            switch (a)
+            {
+                case ["serve"]: await new Service(db, cert).Run(); break;
+                case ["create", "cluster", var key]:
+                    if (db.Get("cluster") != null) throw new Exception("Кластер уже создан или принят.");
+                    if (key.Length < 16) throw new Exception("Ключ должен содержать не менее 16 символов.");
+                    db.Set("cluster", Convert.ToHexString(RandomNumberGenerator.GetBytes(16)));
+                    db.Set("key_hash", Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(key))));
+                    db.Set("self", me);
+                    db.Put(new Node(me, Environment.MachineName, OwnIp, Certificate.Fingerprint(cert), Now));
+                    Console.WriteLine($"Кластер создан. ID узла: {me}"); break;
+                case ["cluster", "add", var ip]:
+                    Active(db);
+                    if (!IPAddress.TryParse(ip, out _)) throw new Exception("Ожидается IP-адрес.");
+                    var inviteId = Guid.NewGuid().ToString("N");
+                    var expires = Now + 3600_000;
+                    var secret = Convert.ToBase64String(HMACSHA256.HashData(Convert.FromHexString(db.Get("key_hash")!), Encoding.UTF8.GetBytes($"{inviteId}:{ip}:{expires}")));
+                    var inv = new Invite(inviteId, secret, ip, expires);
+                    db.Invite(inv);
+                    var invitationToken = new Token(db.Get("cluster")!, db.Self()!.Ip, Certificate.Fingerprint(cert), inv.Id, inv.Secret);
+                    Console.WriteLine(Convert.ToBase64String(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(invitationToken, Json)))); break;
+                case ["accept", "cluster", var token]: await Accept(db, cert, token); break;
+                case ["cluster", "remove", var node]:
+                    Active(db);
+                    var removed = db.Resolve(node) ?? throw new Exception("Узел не найден.");
+                    if (removed.Id == me) throw new Exception("Используйте cluster leave.");
+                    db.Put(removed with { Removed = true, Version = Now });
+                    Console.WriteLine("Узел исключён."); break;
+                case ["cluster", "leave"]:
+                    Active(db); db.Put(db.Self()! with { Removed = true, Version = Now });
+                    db.Set("left", "1"); Console.WriteLine("Выход зарегистрирован."); break;
+                case ["cluster", "nodes"]:
+                    Active(db);
+                    foreach (var n in db.Nodes()) Console.WriteLine($"{n.Id}  {n.Name,-20} {n.Ip,-16} {(n.Removed ? "исключён" : db.Ping(n.Id) is double p ? $"{p:0.0} ms" : "нет связи")}");
+                    break;
+                case ["cluster", "status"]:
+                    Active(db); Console.WriteLine($"Кластер: {db.Get("cluster")}\nУзел: {me}\nIP: {db.Self()!.Ip}\nУзлов: {db.Nodes().Count(x => !x.Removed)}"); break;
+                case ["cluster", "invites"]:
+                    foreach (var i in db.Invites()) Console.WriteLine($"{i.Id} {i.Ip} {DateTimeOffset.FromUnixTimeMilliseconds(i.Expires):u} {(i.Used ? "использовано" : "активно")}"); break;
+                case ["cluster", "invite", "revoke", var id]: db.Revoke(id); break;
+                case ["name", .. var words] when words.Length > 0:
+                    Active(db); var name = string.Join(' ', words).Trim();
+                    if (name.Length is < 1 or > 64) throw new Exception("Имя: от 1 до 64 символов.");
+                    db.Put(db.Self()! with { Name = name, Version = Now }); break;
+                case ["forward", "add", .. var options]: AddRule(db, options); break;
+                case ["forward", "list"]:
+                    foreach (var r in db.Rules().Where(x => !x.Removed)) Console.WriteLine($"{r.Id} tcp {r.In}:{r.InPort} via {r.Via ?? "auto"} -> {r.To}:{r.ToPort}"); break;
+                case ["forward", "show", var id]:
+                    Console.WriteLine(JsonSerializer.Serialize(db.Rules().FirstOrDefault(x => x.Id == id) ?? throw new Exception("Правило не найдено."), Json)); break;
+                case ["forward", "remove", var id]:
+                    var rule = db.Rules().FirstOrDefault(x => x.Id == id && !x.Removed) ?? throw new Exception("Правило не найдено.");
+                    db.Put(rule with { Removed = true, Version = Now }); break;
+                default: Help(); return 2;
+            }
+            return 0;
+        }
+        catch (Exception e) { Console.Error.WriteLine("pnt: " + e.Message); return 1; }
+    }
+
+    static void Active(Store db)
+    {
+        if (db.Get("cluster") == null || db.Get("left") == "1" || db.Self()?.Removed == true) throw new Exception("Узел не состоит в активном кластере.");
+    }
+
+    static void AddRule(Store db, string[] args)
+    {
+        Active(db);
+        var m = new Dictionary<string, string>();
+        for (var i = 0; i < args.Length; i += 2)
+        {
+            if (i + 1 == args.Length || !args[i].StartsWith("--")) throw new Exception("Неверные параметры.");
+            m[args[i]] = args[i + 1];
+        }
+        if (!m.TryGetValue("--listen", out var input) || !m.TryGetValue("--to", out var output)) throw new Exception("Укажите --listen и --to.");
+        var (inputHost, inputPort) = ParseEndpoint(input);
+        var (outputHost, outputPort) = ParseEndpoint(output);
+        var ingress = db.Resolve(inputHost) ?? throw new Exception("Узел входа не найден.");
+        if (db.Rules().Any(x => !x.Removed && x.In == ingress.Id && x.InPort == inputPort)) throw new Exception("Этот входной порт уже используется другим правилом.");
+        var via = m.GetValueOrDefault("--via");
+        if (via != null) via = (db.Resolve(via) ?? throw new Exception("Узел выхода не найден.")).Id;
+        var target = db.Resolve(outputHost);
+        if (target == null && (via == null || !IPAddress.TryParse(outputHost, out _))) throw new Exception("Для внешнего IP требуется --via <узел>.");
+        if (m.GetValueOrDefault("--proto", "tcp") != "tcp") throw new Exception("Пока поддерживается только TCP.");
+        var r = new Rule(Guid.NewGuid().ToString("N")[..12], ingress.Id, inputPort, via, target?.Id ?? outputHost, outputPort, Now);
+        db.Put(r); Console.WriteLine("Правило: " + r.Id);
+    }
+
+    static (string, int) ParseEndpoint(string s)
+    {
+        var p = s.LastIndexOf(':');
+        if (p < 1 || !int.TryParse(s[(p + 1)..], out var port) || port is < 1 or > 65535) throw new Exception("Адрес должен иметь вид узел:порт или IPv4:порт.");
+        return (s[..p], port);
+    }
+
+    static async Task Accept(Store db, X509Certificate2 cert, string encoded)
+    {
+        if (db.Get("cluster") != null) throw new Exception("Узел уже состоит в кластере.");
+        Token token;
+        try { token = JsonSerializer.Deserialize<Token>(Convert.FromBase64String(encoded), Json)!; }
+        catch { throw new Exception("Неверный ключ приглашения."); }
+        using var peer = await Peer.Connect(token.Host, token.Cert, cert);
+        await Peer.Send(peer.Stream, new Message("join", Certificate.Id(cert), Environment.MachineName, OwnIp, Certificate.Fingerprint(cert), token.Secret, token.Id));
+        var reply = await Peer.Read(peer.Stream) ?? throw new Exception("Нет ответа на приглашение.");
+        if (reply.Type != "welcome") throw new Exception(reply.Error ?? "Приглашение отклонено.");
+        if (reply.KeyHash == null || reply.KeyHash.Length != 64) throw new Exception("Ответ не содержит ключ кластера.");
+        db.Set("cluster", token.Cluster); db.Set("self", Certificate.Id(cert)); db.Set("key_hash", reply.KeyHash);
+        foreach (var n in reply.Nodes ?? []) db.Put(n);
+        db.Put(new Node(Certificate.Id(cert), Environment.MachineName, OwnIp, Certificate.Fingerprint(cert), Now));
+        foreach (var r in reply.Rules ?? []) db.Put(r);
+        Console.WriteLine("Присоединён к кластеру. ID: " + Certificate.Id(cert));
+    }
+
+    static void Help() => Console.WriteLine("""
+        pnt create cluster <key>
+        pnt cluster add <ip> | remove <node|ip> | leave | nodes | status | invites
+        pnt cluster invite revoke <id>
+        pnt accept cluster <invite_key>
+        pnt name <name>
+        pnt forward add --listen <node>:<port> [--via <node>] --to <node|ip>:<port> [--proto tcp]
+        pnt forward list | show <id> | remove <id>
+        pnt serve
+        """);
+}
