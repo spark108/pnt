@@ -4,13 +4,13 @@ PNT is a .NET 10 cluster service for Debian. It uses TCP 442 for encrypted node 
 
 ## Install on Debian
 
-Install the .NET 10 SDK, then run from this source directory:
+Run from this source directory on Debian 12 or 13:
 
 ```sh
 sudo ./pnt.sh install
 ```
 
-The script publishes a self-contained binary for the machine's architecture, installs a `systemd` service, and starts it. The service and CLI use `/var/lib/pnt`; run CLI commands with `sudo`. Set `PNT_ADVERTISE_IP` in `/etc/default/pnt` if automatic address selection is wrong, then restart the service before creating or joining a cluster.
+The script installs required Debian packages, including the .NET 10 SDK, Git, OpenSSH client, and firewall utilities. If .NET 10 is missing, it adds Microsoft's Debian package feed first. It then publishes a self-contained binary for the machine's architecture, installs a `systemd` service, and starts it. The service and CLI use `/var/lib/pnt`; run CLI commands with `sudo`. Set `PNT_ADVERTISE_IP` in `/etc/default/pnt` if automatic address selection is wrong, then restart the service before creating or joining a cluster.
 
 ```sh
 sudo ./pnt.sh start

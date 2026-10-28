@@ -13,7 +13,7 @@ usage() {
     cat <<'EOF'
 Usage: sudo ./pnt.sh <command>
 
-  install                 Build the current source and install the systemd service
+  install                 Install Debian dependencies, build, and start the service
   update [repository_url] Clone, build, and install an update from the private repository
   start                   Start pnt.service
   stop                    Stop pnt.service
@@ -55,6 +55,36 @@ publish_source() {
     [ -s "$output_dir/pnt" ] || die 'Build did not produce the pnt executable.'
 }
 
+install_dependencies() {
+    temporary_dir=$1
+    require_command apt-get
+    [ -r /etc/os-release ] || die 'Cannot read /etc/os-release.'
+    . /etc/os-release
+    [ "$ID" = debian ] || die 'Automatic dependency installation supports Debian only.'
+    case "$VERSION_ID" in
+        12) icu_package=libicu72; ssl_package=libssl3 ;;
+        13) icu_package=libicu76; ssl_package=libssl3t64 ;;
+        *) die 'Automatic .NET 10 installation supports Debian 12 and 13 only.' ;;
+    esac
+    runtime_id >/dev/null
+
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update
+    apt-get install -y ca-certificates curl git openssh-client systemd nftables iptables \
+        libc6 libgcc-s1 libgssapi-krb5-2 libstdc++6 tzdata zlib1g \
+        "$icu_package" "$ssl_package"
+
+    if ! command -v dotnet >/dev/null 2>&1 || ! dotnet --list-sdks 2>/dev/null | grep -q '^10\.'; then
+        require_command dpkg
+        curl -fsSL "https://packages.microsoft.com/config/debian/$VERSION_ID/packages-microsoft-prod.deb" \
+            -o "$temporary_dir/packages-microsoft-prod.deb"
+        dpkg -i "$temporary_dir/packages-microsoft-prod.deb"
+        apt-get update
+        apt-get install -y dotnet-sdk-10.0
+    fi
+    dotnet --list-sdks | grep -q '^10\.' || die '.NET 10 SDK installation failed.'
+}
+
 repository_url() {
     if [ "$#" -gt 0 ]; then
         printf '%s\n' "$1"
@@ -77,11 +107,11 @@ check_repository_url() {
 
 install_current() {
     require_root
-    require_command dotnet
-    require_command systemctl
     [ ! -e "$BIN" ] || die 'PNT is already installed. Use update to install a new version.'
     temp_dir=$(mktemp -d)
     trap 'rm -rf -- "$temp_dir"' EXIT HUP INT TERM
+    install_dependencies "$temp_dir"
+    require_command systemctl
     publish_source "$SCRIPT_DIR" "$temp_dir/build"
     install -d -m 755 "$INSTALL_DIR"
     install -d -m 700 /var/lib/pnt
