@@ -105,7 +105,7 @@ static class App
             }
             return 0;
         }
-        catch (Exception e) { Console.Error.WriteLine("pnt: " + e.Message); return 1; }
+        catch (Exception e) { Console.Error.WriteLine("pnt: " + e.GetBaseException().Message); return 1; }
     }
 
     static void Active(Store db)
