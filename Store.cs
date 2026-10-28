@@ -23,9 +23,15 @@ sealed class Store : IDisposable
         columns.CommandText = "PRAGMA table_info(peer_pings)";
         using var reader = columns.ExecuteReader();
         var hasDirect = false;
-        while (reader.Read()) if (reader.GetString(1) == "direct") hasDirect = true;
+        var hasRoute = false;
+        while (reader.Read())
+        {
+            if (reader.GetString(1) == "direct") hasDirect = true;
+            if (reader.GetString(1) == "route") hasRoute = true;
+        }
         reader.Close();
         if (!hasDirect) { using var alter = c.CreateCommand(); alter.CommandText = "ALTER TABLE peer_pings ADD COLUMN direct INTEGER NOT NULL DEFAULT 0"; alter.ExecuteNonQuery(); }
+        if (!hasRoute) { using var alter = c.CreateCommand(); alter.CommandText = "ALTER TABLE peer_pings ADD COLUMN route TEXT NOT NULL DEFAULT '[]'"; alter.ExecuteNonQuery(); }
     }
     SqliteConnection Open()
     {
@@ -127,30 +133,36 @@ sealed class Store : IDisposable
         using var c = Open(); using var q = c.CreateCommand(); q.CommandText = "DELETE FROM invites WHERE id=$id";
         q.Parameters.AddWithValue("$id", id); if (q.ExecuteNonQuery() == 0) throw new Exception("Приглашение не найдено.");
     }
-    public void SetPing(string id, double ms, bool direct = false)
+    public void SetPing(string id, double ms, bool direct = false, string[]? route = null)
     {
         using var c = Open(); using var q = c.CreateCommand();
         q.CommandText = "INSERT INTO pings VALUES($id,$ms,$time) ON CONFLICT(id) DO UPDATE SET ms=excluded.ms,updated=excluded.updated";
         q.Parameters.AddWithValue("$id", id); q.Parameters.AddWithValue("$ms", ms); q.Parameters.AddWithValue("$time", App.Now); q.ExecuteNonQuery();
-        if (Get("self") is string self) PutPing(new PingReport(self, id, ms, App.Now, direct));
+        if (Get("self") is string self) PutPing(new PingReport(self, id, ms, App.Now, direct, route));
     }
     public void PutPing(PingReport report)
     {
         if (report.Source.Length != 16 || report.Target.Length != 16 || !double.IsFinite(report.Ms) || report.Ms < 0 || report.Updated > App.Now + 60_000 || report.Updated < App.Now - 60_000) return;
+        if (report.Route is { Length: > 0 } route &&
+            (route.Length > 10 || route[0] != report.Source || route[^1] != report.Target ||
+             route.Any(x => x is null || x.Length != 16 || !x.All(Uri.IsHexDigit)))) return;
         if (!Nodes().Any(x => x.Id == report.Source && !x.Removed) || !Nodes().Any(x => x.Id == report.Target && !x.Removed)) return;
         using var c = Open(); using var q = c.CreateCommand();
-        q.CommandText = "INSERT INTO peer_pings(source,target,ms,updated,direct) VALUES($source,$target,$ms,$updated,$direct) ON CONFLICT(source,target) DO UPDATE SET ms=excluded.ms,updated=excluded.updated,direct=excluded.direct WHERE excluded.updated>peer_pings.updated";
+        q.CommandText = "INSERT INTO peer_pings(source,target,ms,updated,direct,route) VALUES($source,$target,$ms,$updated,$direct,$route) ON CONFLICT(source,target) DO UPDATE SET ms=excluded.ms,updated=excluded.updated,direct=excluded.direct,route=excluded.route WHERE excluded.updated>peer_pings.updated";
         q.Parameters.AddWithValue("$source", report.Source); q.Parameters.AddWithValue("$target", report.Target);
         q.Parameters.AddWithValue("$ms", report.Ms); q.Parameters.AddWithValue("$updated", report.Updated);
-        q.Parameters.AddWithValue("$direct", report.Direct ? 1 : 0); q.ExecuteNonQuery();
+        q.Parameters.AddWithValue("$direct", report.Direct ? 1 : 0);
+        q.Parameters.AddWithValue("$route", JsonSerializer.Serialize(report.Route ?? [], App.Json));
+        q.ExecuteNonQuery();
     }
     public List<PingReport> Pings()
     {
         using var c = Open(); using var q = c.CreateCommand();
-        q.CommandText = "SELECT source,target,ms,updated,direct FROM peer_pings WHERE updated>$minimum";
+        q.CommandText = "SELECT source,target,ms,updated,direct,route FROM peer_pings WHERE updated>$minimum";
         q.Parameters.AddWithValue("$minimum", App.Now - 30_000);
         using var reader = q.ExecuteReader(); var result = new List<PingReport>();
-        while (reader.Read()) result.Add(new PingReport(reader.GetString(0), reader.GetString(1), reader.GetDouble(2), reader.GetInt64(3), reader.GetInt64(4) != 0));
+        while (reader.Read()) result.Add(new PingReport(reader.GetString(0), reader.GetString(1), reader.GetDouble(2), reader.GetInt64(3), reader.GetInt64(4) != 0,
+            JsonSerializer.Deserialize<string[]>(reader.GetString(5), App.Json)));
         return result;
     }
     public double? PingFrom(string source, string target)

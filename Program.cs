@@ -17,11 +17,12 @@ record Invite(string Id, string Secret, string Ip, long Expires, bool Used = fal
 record Token(string Cluster, string Host, string Cert, string Id, string Secret);
 record UpdateNotice(string Id, string Commit, long Version);
 record WebConfig(string Id, bool Enabled, string Salt, string Hash, long Version);
-record PingReport(string Source, string Target, double Ms, long Updated, bool Direct = false);
+record PingReport(string Source, string Target, double Ms, long Updated, bool Direct = false, string[]? Route = null);
 record Message(string Type, string? Id = null, string? Name = null, string? Ip = null, string? Cert = null,
     string? Secret = null, string? Target = null, int Port = 0, string? Via = null,
     string[]? Hops = null, Node[]? Nodes = null, Rule[]? Rules = null, string? Error = null, string? KeyHash = null,
-    UpdateNotice? Update = null, PingReport[]? Pings = null, WebConfig? Web = null);
+    UpdateNotice? Update = null, PingReport[]? Pings = null, WebConfig? Web = null,
+    string? Command = null, string? Output = null, bool Stderr = false, int ExitCode = 0);
 
 static class App
 {
@@ -86,6 +87,10 @@ static class App
                     db.Set("left", "1"); Console.WriteLine("Выход зарегистрирован."); break;
                 case ["cluster", "nodes"]: PrintNodes(db, null); break;
                 case ["cluster", "nodes", var fromNode]: PrintNodes(db, fromNode); break;
+                case ["nodes"]: PrintNodes(db, null); break;
+                case ["nodes", var fromNode]: PrintNodes(db, fromNode); break;
+                case ["sh", var target, .. var command] when command.Length > 0:
+                    return await RemoteCommands.Run(db, cert, target, string.Join(' ', command));
                 case ["cluster", "status"]:
                     Active(db); Console.WriteLine($"Кластер: {db.Get("cluster")}\nУзел: {me}\nIP: {db.Self()!.Ip}\nУзлов: {db.Nodes().Count(x => !x.Removed)}"); break;
                 case ["cluster", "invites"]:
@@ -160,10 +165,13 @@ static class App
         if (fromNode is not null) Console.WriteLine($"Пинг от узла {source.Name} ({source.Id}), измерения за последние 30 секунд:");
         foreach (var node in db.Nodes())
         {
-            var ping = source.Id == db.Get("self") ? db.Ping(node.Id) : db.PingFrom(source.Id, node.Id);
+            var ping = source.Id == node.Id ? new PingReport(source.Id, node.Id, 0, Now, true, [source.Id])
+                : db.Pings().FirstOrDefault(x => x.Source == source.Id && x.Target == node.Id);
             var status = node.Removed ? "исключён"
                 : node.Updating && node.UpdatingSince > 0 && Now - node.UpdatingSince < 3600_000 ? "update"
-                : ping is double ms ? $"{ms:0.0} ms" : "нет связи";
+                : ping is not null ? $"{ping.Ms:0.0} ms" + (ping.Direct ? "" :
+                    ping.Route is { Length: > 2 } route ? " через " + string.Join(" → ", route.Skip(1).SkipLast(1).Select(x => db.Nodes().FirstOrDefault(n => n.Id == x)?.Name ?? x)) : " через другой узел")
+                : "нет связи";
             Console.WriteLine($"{node.Id}  {node.Name,-20} {node.Ip,-16} {status}");
         }
     }
@@ -269,6 +277,8 @@ static class App
     static void Help() => Console.WriteLine("""
         pnt create cluster <key>
         pnt cluster add <ip> | remove <node|ip> | leave | nodes [node-id] | status | invites
+        pnt nodes [node-id]
+        pnt sh <node-id> <command...>
         pnt cluster invite revoke <id>
         pnt accept cluster <invite_key>
         pnt name <name>

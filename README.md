@@ -41,6 +41,7 @@ sudo pnt accept cluster '<invite_key>'
 sudo pnt name 'edge-1'
 sudo pnt cluster nodes
 sudo pnt cluster nodes 93a3655e61179794  # Ping measured by this node to every cluster member
+sudo pnt nodes                          # Short form
 sudo pnt cluster status
 ```
 
@@ -71,7 +72,7 @@ sudo pnt web disable    # Closes the panel on every connected node and clears th
 
 Open `https://<node-ip>:600/` and sign in with username `admin` and the chosen password. TCP 442 remains reserved for encrypted communication between nodes. The web interface uses a separate self-signed HTTPS certificate for each node, so the browser will ask you to trust it. The password is stored as a salted PBKDF2 hash; only the hash and salt are synchronized between cluster members. A disconnected node applies enable or disable when it reconnects and receives the latest configuration. All nodes must run this version to host the panel.
 
-The network map shows solid lines for fresh direct connections and dashed lines for routes through intermediate nodes. Labels show the latest direct ping or the sum of pings along the shortest path. Choose servers A and B, then add transit servers in order to highlight a route. The forwarding page shows ingress, exit node, and final destination for every active TCP rule. Ping data older than 30 seconds is ignored, so a route may temporarily disappear during an update or disconnection.
+The network map shows solid lines for fresh direct connections and dashed lines for routes through intermediate nodes. Labels show the latest measured ping for a known route or the sum of direct-link pings for an inferred route. Choose servers A and B, then add transit servers in order to highlight a route. The forwarding page shows ingress, exit node, and final destination for every active TCP rule. Ping data older than 30 seconds is ignored, so a route may temporarily disappear during an update or disconnection.
 
 ## Membership and status
 
@@ -84,7 +85,16 @@ sudo pnt cluster leave
 journalctl -u pnt -f
 ```
 
-Nodes exchange their membership, forwarding records, and ping measurements every five seconds. `pnt cluster nodes [node-id]` shows measurements made by the specified node; values older than 30 seconds appear as `нет связи`. Records with newer timestamps replace older ones. `cluster remove` creates a removal record; peers reject that certificate after receiving it. `cluster leave` publishes the local node's own removal. A disconnected peer can retain stale membership until it reconnects or receives an update through another peer. Ping is the application-level response time, including relay hops when used.
+Nodes exchange their membership, forwarding records, and ping measurements every five seconds. `pnt cluster nodes [node-id]` and `pnt nodes [node-id]` show measurements made by the specified node; values older than 30 seconds appear as `нет связи`. When a direct connection fails, the node tries reachable cluster peers as relays, preferring the route with the lowest known direct-link latency. The measured response time is shown as `28.3 ms через gateway` (or multiple relay names). Records with newer timestamps replace older ones. `cluster remove` creates a removal record; peers reject that certificate after receiving it. `cluster leave` publishes the local node's own removal. A disconnected peer can retain stale membership until it reconnects or receives an update through another peer. Ping is the application-level response time, including relay hops when used.
+
+## Remote commands
+
+```sh
+sudo pnt sh <node-id> 'uptime'
+sudo pnt sh <node-id> 'journalctl -u pnt -n 20 --no-pager'
+```
+
+The CLI shows each attempted connection and the selected route. It streams stdout and stderr from the target as they are produced and returns the remote command's exit status. The command is noninteractive and runs through `/bin/sh -c` as the PNT service user (`root` in the supplied systemd unit). If the direct connection fails, PNT tries relays selected from fresh direct-link pings. After sending the command, a lost connection is treated as an uncertain result: the CLI does not retry it on another route, because the command might already have run. Every current cluster member can execute commands on every other member; protect cluster membership and node certificates accordingly.
 
 ## Current limits
 

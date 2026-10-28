@@ -30,6 +30,7 @@ sealed class Peer : IDisposable
 {
     readonly TcpClient socket;
     public SslStream Stream { get; }
+    public Message? RouteReady { get; set; }
     public IPAddress RemoteAddress => ((System.Net.IPEndPoint)socket.Client.RemoteEndPoint!).Address;
     public string RemoteFingerprint => Certificate.Fingerprint(new X509Certificate2(Stream.RemoteCertificate!));
     public string RemoteId => Certificate.Id(new X509Certificate2(Stream.RemoteCertificate!));
