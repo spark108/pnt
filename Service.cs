@@ -71,11 +71,10 @@ sealed class Service(Store db, X509Certificate2 cert)
     async Task Join(Peer peer, Message m)
     {
         var invite = db.Invites().FirstOrDefault(x => x.Id == m.Target && x.Secret == m.Secret && !x.Used && x.Expires > App.Now);
-        var remoteIp = peer.RemoteAddress;
         if (invite == null || m.Id != peer.RemoteId || m.Name == null || m.Ip == null || m.Cert != peer.RemoteFingerprint ||
-            m.Ip != invite.Ip || !IPAddress.TryParse(m.Ip, out _) || !IPAddress.TryParse(invite.Ip, out var allowed) || !remoteIp.Equals(allowed))
+            m.Ip != invite.Ip || !IPAddress.TryParse(m.Ip, out _))
         {
-            await Peer.Send(peer.Stream, new Message("error", Error: "Недействительное приглашение или неверный IP.")); return;
+            await Peer.Send(peer.Stream, new Message("error", Error: "Недействительное приглашение, сертификат или адрес узла.")); return;
         }
         if (m.Name.Length is < 1 or > 64 || db.Nodes().Any(x => x.Id == m.Id))
         {
