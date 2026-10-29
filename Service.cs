@@ -472,18 +472,7 @@ sealed class Service(Store db, X509Certificate2 cert)
             await Peer.Send(incoming, new Message("error", Error: "Пустая или слишком длинная команда.", RequestId: request.RequestId)); return;
         }
         var windows=OperatingSystem.IsWindows();
-        using var process = new Process { StartInfo = new ProcessStartInfo(windows ? "cmd.exe" : request.Interactive ? "/usr/bin/script" : "/bin/sh")
-        {
-            UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true,
-            RedirectStandardInput = request.Interactive, WorkingDirectory = App.Dir
-        } };
-        if(windows)process.StartInfo.Arguments="/d /s /c \"chcp 65001>nul & "+request.Command+"\"";
-        else
-        {
-            if (request.Interactive) process.StartInfo.ArgumentList.Add("-qef");
-            process.StartInfo.ArgumentList.Add("-c");process.StartInfo.ArgumentList.Add(request.Command);
-            if (request.Interactive) process.StartInfo.ArgumentList.Add("/dev/null");
-        }
+        using var process = new Process { StartInfo = ShellProcess.Create(request.Command,request.Interactive,App.Dir) };
         try { process.Start(); }
         catch (Exception e) { await Peer.Send(incoming, new Message("error", Error: e.Message, RequestId: request.RequestId)); return; }
         try
