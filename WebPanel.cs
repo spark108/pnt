@@ -142,7 +142,7 @@ sealed class WebPanel(Store db, X509Certificate2 cert)
             [new System.Security.Cryptography.Oid("1.3.6.1.5.5.7.3.1")], false));
         using var created = request.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddYears(5));
         File.WriteAllBytes(path, created.Export(X509ContentType.Pkcs12));
-        if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead | UnixFileMode.GroupWrite);
         return X509CertificateLoader.LoadPkcs12FromFile(path, null, X509KeyStorageFlags.Exportable);
     }
 

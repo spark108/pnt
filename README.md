@@ -2,6 +2,26 @@
 
 PNT is a .NET 10 cluster service for Debian and Windows. It uses TCP 442 for encrypted node communication, SQLite for local cluster state, and TCP streams for port forwarding. Every node has a persistent self-signed TLS certificate and a 16-character node ID derived from its public key. Connections pin the stored certificate fingerprint. New nodes request membership and an existing member explicitly approves their identity. The shared cluster key hash is distributed to approved members over TLS.
 
+## Local access
+
+The installed CLI permits only `root` or members of `pnt` on Linux, and elevated administrators, LocalSystem, or members of the local `PNTAdmin` group on Windows. Authorization is checked before processing commands or opening cluster state, including help. Install/update creates the relevant group; it does not add ordinary users automatically.
+
+```sh
+sudo usermod -aG pnt <user>
+# Log in again, or start a new shell with: newgrp pnt
+```
+
+In an elevated Windows PowerShell:
+
+```powershell
+Add-LocalGroupMember -Group PNTAdmin -Member '<user>'
+# Log off and log in again to refresh the access token.
+```
+
+Members can run cluster commands without elevation. Linux data directories use setgid group `pnt` and mode `2770`; database and certificate files are group writable without access for other users. Windows grants `PNTAdmin` modify access to the protected data directory. Membership grants full PNT administration, including the node identity and remote commands; assign these groups only to trusted cluster administrators. Installing/updating system files or controlling the OS service directly still requires root/elevation.
+
+Linux service startup and Windows service startup migrate existing state permissions, so the first update also applies group access when launched through an older installer. The migration command itself requires root/elevation.
+
 ## Install on Debian
 
 Once the PNT binary is available, management commands are also available directly:

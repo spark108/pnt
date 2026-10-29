@@ -10,12 +10,13 @@ Group=root
 EnvironmentFile=-/etc/default/pnt
 Environment=DOTNET_BUNDLE_EXTRACT_BASE_DIR=/var/lib/pnt/.net
 ExecStart=/usr/local/bin/pnt serve
+ExecStartPre=/usr/local/bin/pnt _prepare-access
 Restart=on-failure
 RestartSec=3
 WorkingDirectory=/var/lib/pnt
 StateDirectory=pnt
-StateDirectoryMode=0700
-UMask=0077
+StateDirectoryMode=2770
+UMask=0007
 NoNewPrivileges=true
 
 [Install]

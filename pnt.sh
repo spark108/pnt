@@ -32,6 +32,7 @@ EOF
 die() { printf 'pnt.sh: %s\n' "$*" >&2; exit 1; }
 require_root() { [ "$(id -u)" -eq 0 ] || die 'Run with sudo or as root.'; [ "$(uname -s)" = Linux ] || die 'Debian Linux is required.'; }
 require_command() { command -v "$1" >/dev/null 2>&1 || die "Missing command: $1"; }
+require_access() { [ "$(id -u)" -eq 0 ] || id -Gn | tr ' ' '\n' | grep -qx pnt || die 'Only root or members of pnt may use PNT.'; }
 invoker() { printf '%s\n' "${PNT_INVOKER:-${SUDO_USER:-root}}"; }
 as_invoker() { if [ "$(invoker)" = root ]; then "$@"; else runuser -u "$(invoker)" -- "$@"; fi; }
 
@@ -88,6 +89,12 @@ save_source_dir() {
     chmod 600 "$SOURCE_FILE" "$INVOKER_FILE"
 }
 
+configure_access() {
+    "$BIN" _prepare-access
+    chown root:pnt "$BIN"
+    chmod 750 "$BIN"
+}
+
 install_local() {
     [ ! -e "$BIN" ] || die 'PNT is already installed; use update.'
     step 'Зависимости Debian и .NET установлены' install_dependencies
@@ -100,6 +107,7 @@ install_local() {
     ln -sfn "$BIN" "$LINK"
     install -m 644 "$SCRIPT_DIR/deploy/pnt.service" "$UNIT"
     save_source_dir
+    step 'Группа pnt и права доступа настроены' configure_access
     systemctl daemon-reload
     systemctl enable --now pnt.service
     sleep 2
@@ -145,6 +153,7 @@ update_local() {
     SWAPPED=1
     install -m 644 "$SCRIPT_DIR/deploy/pnt.service" "$UNIT"
     save_source_dir
+    step 'Группа pnt и права доступа настроены' configure_access
     systemctl daemon-reload
     systemctl start pnt.service
     sleep 2
@@ -333,6 +342,7 @@ start_remote_install() {
 }
 
 command_name=${1:-}
+require_access
 if [ "$#" -gt 0 ]; then shift; fi
 case "$command_name" in
     install)

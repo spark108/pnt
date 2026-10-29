@@ -9,6 +9,7 @@ static class Management
 {
     public static async Task<int> Local(string action)
     {
+        LocalAccess.DemandAdministrator();
         if(OperatingSystem.IsWindows())return await Windows(action);
         RequireLinux();
         var source = File.Exists("/etc/pnt/source-dir")

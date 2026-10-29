@@ -33,7 +33,7 @@ static class App
 {
     public static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     public static readonly string Dir = Environment.GetEnvironmentVariable("PNT_DATA_DIR") ?? (OperatingSystem.IsWindows() ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),"PNT","data") : "/var/lib/pnt");
-    public static string ConfigDir => OperatingSystem.IsWindows() ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),"PNT","config") : "/etc/pnt";
+    public static string ConfigDir => Environment.GetEnvironmentVariable("PNT_CONFIG_DIR") ?? (OperatingSystem.IsWindows() ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),"PNT","config") : "/etc/pnt");
     public static string Platform => OperatingSystem.IsWindows() ? "windows" : "linux";
     public static long Now => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
     internal static string OwnIp
@@ -56,9 +56,10 @@ static class App
     {
         try
         {
+            LocalAccess.Demand();
+            if(a is ["_prepare-access"]){LocalAccess.Prepare();return 0;}
             if (a.Length == 0 || a[0] is "help" or "--help") { Help(); return 0; }
             Directory.CreateDirectory(Dir);
-            if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(Dir, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
             using var db = new Store(Path.Combine(Dir, "pnt.db"));
             var cert = Certificate.Load(Path.Combine(Dir, "node.pfx"));
             var me = Certificate.Id(cert);

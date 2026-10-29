@@ -31,6 +31,11 @@ function Remove-Managed([string]$Path){
 }
 try {
     $principal=[Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())
+    $authorized=$principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    if(-not $authorized){
+        try{$groupSid=([Security.Principal.NTAccount]::new([Environment]::MachineName,'PNTAdmin')).Translate([Security.Principal.SecurityIdentifier]);$authorized=$principal.IsInRole($groupSid)}catch{}
+    }
+    if(-not $authorized){throw 'Only Administrator or members of PNTAdmin may use PNT.'}
     if($Action -eq 'status'){
         $service=Get-Service PNT -ErrorAction SilentlyContinue
         if($service){$service | Format-Table Name,Status,StartType}else{Write-Output 'PNT service is not installed.'}
@@ -63,6 +68,8 @@ try {
     $lock=$null;$temp=$null;$backup=$null;$stopped=$false;$maintenance=$false;$success=$false;$createdService=$false;$installedApp=$false
     try{
         $lock=[IO.File]::Open((Join-Path $root 'maintenance.lock'),[IO.FileMode]::OpenOrCreate,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)
+        $pntGroup=Get-LocalGroup -Name PNTAdmin -ErrorAction SilentlyContinue
+        if(-not $pntGroup){$pntGroup=New-LocalGroup -Name PNTAdmin -Description 'PNT cluster administrators'}
         if($Action -eq 'install' -and (Test-Path $exe)){throw 'PNT is installed; use update.'}
         if($Action -eq 'update' -and -not (Test-Path $exe)){throw 'Install PNT first.'}
         if($Action -eq 'update'){
@@ -102,7 +109,8 @@ try {
         $rid=if($env:PROCESSOR_ARCHITECTURE -eq 'ARM64'){'win-arm64'}else{'win-x64'}
         $build=Join-Path $temp 'publish';Native dotnet -Arguments @('publish',(Join-Path $source 'pnt.csproj'),'-c','Release','-r',$rid,'--self-contained','true','-p:PublishSingleFile=true','-o',$build);Stage 'Binary built'
         $data=Join-Path $root 'data';New-Item -ItemType Directory -Force $data,$config,(Join-Path $root 'bin') | Out-Null
-        Native icacls -Arguments @($data,'/inheritance:r','/grant:r','*S-1-5-18:(OI)(CI)F','*S-1-5-32-544:(OI)(CI)F')
+        $groupAccess='*'+$pntGroup.SID.Value+':(OI)(CI)M'
+        Native icacls -Arguments @($data,'/inheritance:r','/grant:r','*S-1-5-18:(OI)(CI)F','*S-1-5-32-544:(OI)(CI)F',$groupAccess,'/T','/C','/L')
         if(Test-Path $app){$backup=Join-Path $root ('app-backup-'+$Operation);Move-Managed $app $backup}
         Move-Managed $build $app;$installedApp=$true
         [IO.File]::WriteAllText($sourceFile,$source)
