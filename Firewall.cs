@@ -7,6 +7,8 @@ static class Firewall
 {
     public static void Open(int port)
     {
+        if(Environment.GetEnvironmentVariable("PNT_MANAGE_FIREWALL")=="0")return;
+        if(OperatingSystem.IsWindows()) {WindowsRule(port,true);return;}
         if (!OperatingSystem.IsLinux()) return;
         try
         {
@@ -35,6 +37,8 @@ static class Firewall
 
     public static void Close(int port)
     {
+        if(Environment.GetEnvironmentVariable("PNT_MANAGE_FIREWALL")=="0")return;
+        if(OperatingSystem.IsWindows()) {WindowsRule(port,false);return;}
         if (!OperatingSystem.IsLinux()) return;
         try
         {
@@ -54,15 +58,26 @@ static class Firewall
         catch { }
     }
 
+    static void WindowsRule(int port,bool open)
+    {
+        try
+        {
+            var command=open ? $"if (-not (Get-NetFirewallRule -Name PNT-TCP-{port} -ErrorAction SilentlyContinue)) {{ New-NetFirewallRule -Name PNT-TCP-{port} -DisplayName 'PNT TCP {port}' -Direction Inbound -Action Allow -Protocol TCP -LocalPort {port} | Out-Null }}"
+                : $"Get-NetFirewallRule -Name PNT-TCP-{port} -ErrorAction SilentlyContinue | Remove-NetFirewallRule";
+            var result=Run("powershell.exe","-NoProfile","-NonInteractive","-Command",command);
+            if(result.code!=0)Console.Error.WriteLine("pnt: Windows firewall: "+result.output);
+        }
+        catch(Exception e){Console.Error.WriteLine("pnt: Windows firewall: "+e.Message);}
+    }
+
     static (int code, string output) Run(string executable, params string[] args)
     {
-        using var process = new Process { StartInfo = new ProcessStartInfo(executable) { RedirectStandardError = true, RedirectStandardOutput = true, UseShellExecute = false } };
+        using var process = new Process { StartInfo = new ProcessStartInfo(executable) { RedirectStandardError = true, RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow=true } };
         foreach (var arg in args) process.StartInfo.ArgumentList.Add(arg);
         process.Start();
-        var stdout = process.StandardOutput.ReadToEnd();
-        var stderr = process.StandardError.ReadToEnd();
-        process.WaitForExit(3000);
-        if (!process.HasExited) { process.Kill(); return (-1, "timeout"); }
-        return (process.ExitCode, stdout + stderr);
+        var stdout = process.StandardOutput.ReadToEndAsync();
+        var stderr = process.StandardError.ReadToEndAsync();
+        if (!process.WaitForExit(15000)) { process.Kill(true); return (-1, "timeout"); }
+        return (process.ExitCode, stdout.GetAwaiter().GetResult() + stderr.GetAwaiter().GetResult());
     }
 }

@@ -176,10 +176,27 @@ install_remote() {
     CURRENT_STAGE='PNT установлен на удалённом сервере'
     remote_ssh "set -e; export DEBIAN_FRONTEND=noninteractive; apt-get update; apt-get install -y git ca-certificates; touch /etc/default/pnt; sed -i '/^PNT_ADVERTISE_IP=/d' /etc/default/pnt; printf 'PNT_ADVERTISE_IP=%s\\n' '$remote_ip' >> /etc/default/pnt; if [ -d /root/pnt/.git ]; then git -C /root/pnt remote set-url origin $REPOSITORY; git -C /root/pnt pull --ff-only origin master; else git clone $REPOSITORY /root/pnt; fi; if [ -x /usr/local/bin/pnt ]; then /root/pnt/pnt.sh update; else /root/pnt/pnt.sh install; fi"
     printf '✓ %s\n' "$CURRENT_STAGE" >> "$PROGRESS"
-    CURRENT_STAGE='Приглашение в кластер создано'
-    invite=$("$BIN" cluster add "$remote_ip")
+    CURRENT_STAGE='Заявка нового узла отправлена'
+    entry_ip=$("$BIN" cluster status | sed -n 's/^IP: //p')
+    remote_id=$(remote_ssh 'pnt identity')
+    printf '%s\n' "$remote_id" | grep -Eq '^[0-9a-f]{16}$' || die 'The remote node returned an invalid identity.'
+    remote_ssh "pnt connect cluster '$entry_ip'"
     printf '✓ %s\n' "$CURRENT_STAGE" >> "$PROGRESS"
-    step 'Удалённый сервер добавлен в кластер' remote_ssh "pnt accept cluster '$invite'"
+    CURRENT_STAGE='Подключение нового узла подтверждено'
+    attempts=0
+    until "$BIN" cluster requests | grep -q "^$remote_id "; do
+        attempts=$((attempts + 1))
+        [ "$attempts" -lt 30 ] || die 'The new node did not send its enrollment request.'
+        sleep 1
+    done
+    "$BIN" cluster accept "$remote_id"
+    attempts=0
+    until remote_ssh 'pnt cluster status >/dev/null 2>&1'; do
+        attempts=$((attempts + 1))
+        [ "$attempts" -lt 30 ] || die 'The new node did not receive approval.'
+        sleep 1
+    done
+    printf '✓ %s\n' "$CURRENT_STAGE" >> "$PROGRESS"
 }
 
 finish_worker() {

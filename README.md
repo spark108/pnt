@@ -1,6 +1,6 @@
 # PNT
 
-PNT is a .NET 10 cluster service for Debian. It uses TCP 442 for encrypted node communication, SQLite for local cluster state, and TCP streams for port forwarding. Every node has a persistent self-signed TLS certificate and a 16-character node ID derived from its public key. Connections pin the stored certificate fingerprint. The shared cluster key derives one-time invitation secrets; the key hash is distributed to trusted members over TLS so any member can invite another node.
+PNT is a .NET 10 cluster service for Debian and Windows. It uses TCP 442 for encrypted node communication, SQLite for local cluster state, and TCP streams for port forwarding. Every node has a persistent self-signed TLS certificate and a 16-character node ID derived from its public key. Connections pin the stored certificate fingerprint. New nodes request membership and an existing member explicitly approves their identity. The shared cluster key hash is distributed to approved members over TLS.
 
 ## Install on Debian
 
@@ -41,7 +41,55 @@ Before stopping the service for an update, the node announces its `update` statu
 
 After a manual update on a cluster member, it announces the Git commit to peers over TCP 442. Each connected member runs its own update in a separate systemd unit and relays the notice through normal cluster synchronization. A node that is offline updates after reconnecting. All existing nodes must first receive a version with this feature once by running `./pnt.sh update` locally.
 
-`install -r root@ip` opens an SSH connection and asks for the remote root password or SSH key passphrase when needed. It installs from public GitHub on the remote Debian server, then creates and accepts a one-time cluster invitation. The inviting node must be able to reach the remote node directly on TCP 442.
+`install -r root@ip` selects a Linux executor with SSH access and asks for the remote root password or SSH key passphrase when needed. It installs from public GitHub on the remote Debian server, asks the new service to initiate enrollment back to the executor, and approves the matching identity received over that connection. The new server needs outbound access to the executor on TCP 442. An incoming TCP 442 port on the new server is not required.
+
+## Windows service
+
+From an Administrator terminal in the source checkout:
+
+```bat
+pnt.bat install
+pnt.bat update
+pnt.bat start
+pnt.bat stop
+pnt.bat restart
+pnt.bat status
+```
+
+`npt.bat` is an alias for `pnt.bat`. Installation and update run in a hidden worker process and display completed stages. The installer prepares Git and the .NET 10 SDK when missing, publishes a self-contained executable, and registers the automatic Windows service `PNT` under LocalSystem. It adds a `pnt.cmd` launcher to the machine PATH; open a new terminal to pick up PATH changes. The service data and node identity are in `%ProgramData%\PNT\data`, configuration in `%ProgramData%\PNT\config`, and logs in `%ProgramData%\PNT\data\service.log`. Run CLI management commands as Administrator so they can access the protected data directory.
+
+Windows nodes participate in the same cluster, routing, reverse NAT channels, HTTPS panel, TCP forwarding, and update announcements. `pnt sh <windows-node> <command>` executes `cmd.exe /d /s /c`; Unix nodes execute `/bin/sh -c`. Remote installation of `root@IPv4` remains a Debian operation performed by a reachable Linux member; a Windows requester can initiate it through that member. Install Windows targets locally with `pnt.bat`.
+
+## Join from a new node, including behind NAT
+
+On a server that already has a cluster:
+
+```sh
+pnt create cluster '<key>'
+```
+
+On the new server, with its PNT service running:
+
+```sh
+pnt identity
+pnt identity --fingerprint
+pnt connect cluster <reachable-existing-node-IPv4>
+pnt connect status
+```
+
+On the existing server:
+
+```sh
+pnt cluster requests
+pnt cluster accept <new-node-id>
+# Or: pnt cluster reject <new-node-id>
+```
+
+Compare the requesting identity and certificate before approval. The bootstrap server certificate uses trust on first use: the new node pins the certificate it initially receives and exposes it in `pnt connect status`; compare it with the trusted server identity/certificate through a trusted channel. Inactive requests expire from the pending list after ten minutes. There is no automatic membership approval.
+
+The new node opens the connection, receives approval on that connection, and upgrades it into a persistent bidirectional encrypted channel. Existing nodes can then initiate logical requests toward the NAT node over that already open channel. The NAT node does not need an inbound port mapping. On disconnect/restart it reconnects outbound to known peers, keeping the bootstrap address as a reconnect seed. At least one known member must be reachable outbound; there is no UDP hole punching or public rendezvous server.
+
+Confirmed direct channels have priority over relay paths even when a relay path has lower measured latency. Among relayed alternatives, paths using fewer NAT transit nodes are preferred; latency and stability break ties. Existing members can keep their identities and establish the new outbound channels after upgrading. The older invitation commands remain available for compatibility.
 
 ```sh
 sudo pnt create cluster '37004389'
@@ -83,6 +131,10 @@ sudo pnt web disable    # Closes the panel on every connected node and clears th
 Open `https://<node-ip>:8016/` and sign in with username `admin` and the chosen password. TCP 442 remains reserved for encrypted communication between nodes. The web interface uses a separate self-signed HTTPS certificate for each node, so the browser will ask you to trust it. The password is stored as a salted PBKDF2 hash; only the hash and salt are synchronized between cluster members. A disconnected node applies enable or disable when it reconnects and receives the latest configuration. All nodes must run this version to host the panel.
 
 The network map shows solid lines for fresh direct connections and dashed lines for routes through intermediate nodes. Labels show the latest measured ping for a known route or the sum of direct-link pings for an inferred route. Choose servers A and B, then add transit servers in order to highlight a route. The forwarding page shows ingress, exit node, and final destination for every active TCP rule. Ping data older than 30 seconds is ignored, so a route may temporarily disappear during an update or disconnection.
+
+The **Пробросы портов** tab can create and delete TCP rules. Select ingress node, interface/IPv4 address and listening port, then exit node, outgoing interface/IPv4 address, destination IPv4 and destination port. Interface lists are fetched from the selected nodes over their PNT routes. A rule is saved locally and applied as cluster synchronization reaches its ingress and exit nodes. Both nodes need a version supporting interface selection.
+
+Ingress is bound to the chosen local address. Exit connections use the chosen source address. On Debian, the selected device is additionally enforced with Linux [SO_BINDTODEVICE](https://man7.org/linux/man-pages/man7/socket.7.html); on Windows, the source address is bound and the system routing table selects the path. For a service on the exit node itself, use destination `127.0.0.1` and automatic outgoing interface selection. Relays carry the TCP stream through PNT; they do not install NAT forwarding rules. The destination sees the exit node as the source.
 
 ## Membership and status
 

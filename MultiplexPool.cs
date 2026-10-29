@@ -9,6 +9,8 @@ static class MultiplexPool
     static readonly ConcurrentDictionary<string, SemaphoreSlim> gates = new();
     static readonly ConcurrentDictionary<string, Func<Stream, string, string, Task>> handlers = new();
     static readonly ConcurrentDictionary<MultiplexSession, string> active = new();
+    static readonly ConcurrentDictionary<string,string> addresses=new();
+    internal static void SetAddress(string self,string fingerprint,string address)=>addresses[Key(self,fingerprint)]=address;
     internal static void Register(string self, Func<Stream, string, string, Task> handler) => handlers[self] = handler;
     internal static bool IsService(string self) => handlers.ContainsKey(self);
     static string Key(string self, string fingerprint) => self + ":" + fingerprint;
@@ -22,6 +24,7 @@ static class MultiplexPool
         {
             if (!sessions.TryGetValue(key, out var session) || !session.Alive)
             {
+                if(addresses.TryGetValue(key,out var configured))ip=configured;
                 var raw = await Peer.ConnectRaw(ip, fingerprint, cert, token);
                 try
                 {
@@ -52,6 +55,13 @@ static class MultiplexPool
         if (bidirectional) sessions.AddOrUpdate(Key(self, raw.RemoteFingerprint), session, (_, old) => old.Alive ? old : session);
         session.Start();
         await session.Completion;
+    }
+
+    internal static async Task Adopt(Peer raw,string self)
+    {
+        var session=Create(raw,self,true);
+        sessions[Key(self,raw.RemoteFingerprint)]=session;
+        session.Start();await session.Completion;
     }
 
     static MultiplexSession Create(Peer raw, string self, bool client)

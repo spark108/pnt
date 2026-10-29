@@ -11,8 +11,10 @@ using Microsoft.Data.Sqlite;
 namespace Pnt;
 
 record Node(string Id, string Name, string Ip, string Cert, long Version, bool Removed = false,
-    bool Updating = false, long UpdatingSince = 0);
-record Rule(string Id, string In, int InPort, string? Via, string To, int ToPort, long Version, bool Removed = false);
+    bool Updating = false, long UpdatingSince = 0, bool BehindNat = false, string Platform = "linux");
+record JoinRequest(string Id, string Name, string Ip, string ObservedIp, string Cert, string Platform, long Created, string Status = "pending", bool BehindNat = false);
+record Rule(string Id, string In, int InPort, string? Via, string To, int ToPort, long Version, bool Removed = false,
+    string InAddress = "0.0.0.0", string? InInterface = null, string? OutAddress = null, string? OutInterface = null);
 record Invite(string Id, string Secret, string Ip, long Expires, bool Used = false);
 record Token(string Cluster, string Host, string Cert, string Id, string Secret);
 record UpdateNotice(string Id, string Commit, long Version);
@@ -24,14 +26,17 @@ record Message(string Type, string? Id = null, string? Name = null, string? Ip =
     UpdateNotice? Update = null, PingReport[]? Pings = null, WebConfig? Web = null,
     string? Command = null, string? Output = null, bool Stderr = false, int ExitCode = 0,
     string? Host = null, double? PingMs = null, bool Interactive = false,
-    string? RequestId = null, long Deadline = 0, string[][]? Routes = null, PingReport[]? Links = null);
+    string? RequestId = null, long Deadline = 0, string[][]? Routes = null, PingReport[]? Links = null,
+    NodeInterface[]? Interfaces = null, string? OutAddress = null, string? OutInterface = null, string? Platform = null, bool BehindNat = false);
 
 static class App
 {
     public static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
-    public static readonly string Dir = Environment.GetEnvironmentVariable("PNT_DATA_DIR") ?? "/var/lib/pnt";
+    public static readonly string Dir = Environment.GetEnvironmentVariable("PNT_DATA_DIR") ?? (OperatingSystem.IsWindows() ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),"PNT","data") : "/var/lib/pnt");
+    public static string ConfigDir => OperatingSystem.IsWindows() ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),"PNT","config") : "/etc/pnt";
+    public static string Platform => OperatingSystem.IsWindows() ? "windows" : "linux";
     public static long Now => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-    static string OwnIp
+    internal static string OwnIp
     {
         get
         {
@@ -62,13 +67,27 @@ static class App
                 case ["install"]: return await Management.Local("install");
                 case ["update"]: return await Management.Local("update");
                 case ["install", "-r", var remoteHost]: return await Management.Remote(db, cert, remoteHost);
-                case ["serve"]: await new Service(db, cert).Run(); break;
+                case ["serve"]:
+                    if (OperatingSystem.IsWindows() && !Environment.UserInteractive) WindowsServiceHost.Run(db,cert);
+                    else await new Service(db, cert).Run(); break;
+                case ["identity"]: Console.WriteLine(me); break;
+                case ["identity", "--fingerprint"]: Console.WriteLine(Certificate.Fingerprint(cert));break;
+                case ["connect", "status"]: Console.WriteLine($"Узел: {me}\nСервер: {db.Get("bootstrap_host")}\nСертификат сервера: {db.Get("bootstrap_pin:"+db.Get("bootstrap_host"))}\nКластер: {db.Get("cluster") ?? "ожидает подтверждения"}");break;
+                case ["connect", "cluster", var host]:
+                    if(db.Get("cluster") is not null) throw new Exception("Узел уже состоит в кластере.");
+                    if(!IPAddress.TryParse(host,out var bootstrapIp) || bootstrapIp.AddressFamily!=AddressFamily.InterNetwork)throw new Exception("Укажите IPv4 действующего узла.");
+                    db.Set("bootstrap_host",bootstrapIp.ToString());db.Set("bootstrap_name",Environment.MachineName);
+                    db.Set("bootstrap_ip",OwnIp);Console.WriteLine("Заявка будет отправлена службой PNT. На действующем узле: pnt cluster requests, затем pnt cluster accept <id>. ID этого узла: "+me);break;
+                case ["cluster", "requests"]:
+                    Active(db);foreach(var request in Enrollment.Requests(db).Where(r=>r.Status=="pending"))Console.WriteLine($"{request.Id} {request.Name} {request.ObservedIp} {request.Platform} сертификат {request.Cert}");break;
+                case ["cluster", "accept", var requestId]: Enrollment.Approve(db,requestId);Console.WriteLine("Заявка подтверждена.");break;
+                case ["cluster", "reject", var requestId]: Enrollment.Reject(db,requestId);Console.WriteLine("Заявка отклонена.");break;
                 case ["create", "cluster", var key]:
                     if (db.Get("cluster") != null) throw new Exception("Кластер уже создан или принят.");
                     db.Set("cluster", Convert.ToHexString(RandomNumberGenerator.GetBytes(16)));
                     db.Set("key_hash", Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(key))));
                     db.Set("self", me);
-                    db.Put(new Node(me, Environment.MachineName, OwnIp, Certificate.Fingerprint(cert), Now));
+                    db.Put(new Node(me, Environment.MachineName, OwnIp, Certificate.Fingerprint(cert), Now, Platform:Platform));
                     Console.WriteLine($"Кластер создан. ID узла: {me}"); break;
                 case ["cluster", "add", var ip]:
                     Active(db);
@@ -184,7 +203,7 @@ static class App
                 : ping is not null ? $"{ping.Ms:0.0} ms" + (ping.Direct ? "" :
                     ping.Route is { Length: > 2 } route ? " через " + string.Join(" → ", route.Skip(1).SkipLast(1).Select(x => db.Nodes().FirstOrDefault(n => n.Id == x)?.Name ?? x)) : " через другой узел")
                 : "нет связи";
-            Console.WriteLine($"{node.Id}  {node.Name,-20} {node.Ip,-16} {status}");
+            Console.WriteLine($"{node.Id}  {node.Name,-20} {node.Ip,-16} {status}{(node.BehindNat ? " [NAT]" : "")}");
         }
     }
 
@@ -290,13 +309,13 @@ static class App
         try { token = JsonSerializer.Deserialize<Token>(Convert.FromBase64String(encoded), Json)!; }
         catch { throw new Exception("Неверный ключ приглашения."); }
         using var peer = await Peer.ConnectRaw(token.Host, token.Cert, cert);
-        await Peer.Send(peer.Stream, new Message("join", Certificate.Id(cert), Environment.MachineName, OwnIp, Certificate.Fingerprint(cert), token.Secret, token.Id));
+        await Peer.Send(peer.Stream, new Message("join", Certificate.Id(cert), Environment.MachineName, OwnIp, Certificate.Fingerprint(cert), token.Secret, token.Id,Platform:Platform));
         var reply = await Peer.Read(peer.Stream) ?? throw new Exception("Нет ответа на приглашение.");
         if (reply.Type != "welcome") throw new Exception(reply.Error ?? "Приглашение отклонено.");
         if (reply.KeyHash == null || reply.KeyHash.Length != 64) throw new Exception("Ответ не содержит ключ кластера.");
         db.Set("cluster", token.Cluster); db.Set("self", Certificate.Id(cert)); db.Set("key_hash", reply.KeyHash);
         foreach (var n in reply.Nodes ?? []) db.Put(n);
-        db.Put(new Node(Certificate.Id(cert), Environment.MachineName, OwnIp, Certificate.Fingerprint(cert), Now));
+        db.Put(new Node(Certificate.Id(cert), Environment.MachineName, OwnIp, Certificate.Fingerprint(cert), Now,Platform:Platform));
         foreach (var r in reply.Rules ?? []) db.Put(r);
         if (reply.Update is not null) db.PutUpdate(reply.Update);
         if (reply.Web is not null) db.PutWeb(reply.Web);
@@ -312,6 +331,9 @@ static class App
         pnt ping <IPv4|domain>
         pnt install | update
         pnt install -r root@IPv4
+        pnt connect cluster <IPv4> | connect status
+        pnt cluster requests | accept <id> | reject <id>
+        pnt identity
         pnt cluster invite revoke <id>
         pnt accept cluster <invite_key>
         pnt name <name>

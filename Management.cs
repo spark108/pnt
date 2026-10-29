@@ -9,6 +9,7 @@ static class Management
 {
     public static async Task<int> Local(string action)
     {
+        if(OperatingSystem.IsWindows())return await Windows(action);
         RequireLinux();
         var source = File.Exists("/etc/pnt/source-dir")
             ? File.ReadAllText("/etc/pnt/source-dir").Trim() : Directory.GetCurrentDirectory();
@@ -24,7 +25,6 @@ static class Management
 
     public static async Task<int> Remote(Store db, X509Certificate2 cert, string host)
     {
-        RequireLinux();
         if (!host.StartsWith("root@", StringComparison.Ordinal) || !IPAddress.TryParse(host[5..], out var address) ||
             address.AddressFamily != AddressFamily.InterNetwork) throw new Exception("Используйте root@IPv4.");
         if (Console.IsInputRedirected) throw new Exception("Для SSH авторизации нужен интерактивный терминал.");
@@ -33,7 +33,7 @@ static class Management
         var ip = address.ToString();
         Console.WriteLine($"Проверка доступности SSH {ip}:22 с узлов кластера...");
         var routing = new RouteTransport(db, cert);
-        var results = await Task.WhenAll(db.Nodes().Where(n => !n.Removed)
+        var results = await Task.WhenAll(db.Nodes().Where(n => !n.Removed && n.Platform!="windows")
             .Select(n => ExternalPing.Query(db, cert, self, n, ip, true, routing)));
         foreach (var result in results)
             Console.WriteLine($"{result.Node.Name} ({result.Node.Id}): " +
@@ -45,6 +45,17 @@ static class Management
         // Only the validated IPv4 literal is inserted into the shell command.
         var command = "source_dir=$(cat /etc/pnt/source-dir) && exec /bin/sh \"$source_dir/pnt.sh\" install -r root@" + ip;
         return await RemoteCommands.Run(db, cert, best.Node.Id, command, true);
+    }
+
+    static async Task<int> Windows(string action)
+    {
+        var sourceFile=Path.Combine(App.ConfigDir,"source-dir");
+        var source=File.Exists(sourceFile)?File.ReadAllText(sourceFile).Trim():Directory.GetCurrentDirectory();
+        var script=Path.Combine(source,"deploy","pnt.ps1");
+        if(!File.Exists(script))throw new Exception("Не найден deploy/pnt.ps1. Запустите команду из каталога исходников.");
+        using var process=new Process{StartInfo=new ProcessStartInfo("powershell.exe"){UseShellExecute=false}};
+        foreach(var arg in new[]{"-NoProfile","-ExecutionPolicy","Bypass","-File",script,"-Action",action})process.StartInfo.ArgumentList.Add(arg);
+        process.Start();await process.WaitForExitAsync();return process.ExitCode;
     }
 
     static async Task<int> LocalRemote(string host)

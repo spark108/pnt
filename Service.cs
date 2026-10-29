@@ -14,16 +14,19 @@ sealed class Service(Store db, X509Certificate2 cert)
     readonly Dictionary<string, Task> checks = new();
     readonly Dictionary<string, (Task Work, long Due)> routeScans = new();
     Task topologyWork = Task.CompletedTask;
-    readonly WebPanel web = new(db);
+    Task bootstrapWork = Task.CompletedTask;
+    readonly WebPanel web = new(db, cert);
     readonly RouteTransport routing = new(db, cert);
 
     public async Task Run()
     {
         RegisterMultiplex();
+        if(db.Get("bootstrap_peer_cert") is string fp && db.Get("bootstrap_host") is string host)MultiplexPool.SetAddress(id,fp,host);
+        if(db.Self() is Node own && own.Platform!=App.Platform)db.Put(own with{Platform=App.Platform,Version=Math.Max(App.Now,own.Version+1)});
         var control = new TcpListener(IPAddress.Any, 442); control.Start();
         Firewall.Open(442);
         Console.WriteLine("pnt: service listening on TCP 442");
-        using var term = PosixSignalRegistration.Create(PosixSignal.SIGTERM, x => { x.Cancel = true; stop.Cancel(); });
+        using var term = OperatingSystem.IsLinux() ? PosixSignalRegistration.Create(PosixSignal.SIGTERM, x => { x.Cancel = true; stop.Cancel(); }) : null;
         Console.CancelKeyPress += (_, x) => { x.Cancel = true; stop.Cancel(); };
         _ = Task.Run(Maintain);
         try
@@ -44,6 +47,7 @@ sealed class Service(Store db, X509Certificate2 cert)
             Firewall.Close(442);
         }
     }
+    public void Stop()=>stop.Cancel();
 
     async Task Handle(TcpClient socket)
     {
@@ -51,6 +55,7 @@ sealed class Service(Store db, X509Certificate2 cert)
         using var peer = await Peer.Accept(socket, cert);
         var request = await Peer.Read(peer.Stream);
         if (request == null) return;
+        if(request.Type=="enroll"){await Enrollment.Receive(db,cert,peer,request,stop.Token);return;}
         if (request.Type == "join") { await Join(peer, request); return; }
         var known = db.Nodes().FirstOrDefault(x => x.Id == request.Id && x.Cert == peer.RemoteFingerprint);
         if (known?.Removed == true && request.Type == "sync")
@@ -62,7 +67,12 @@ sealed class Service(Store db, X509Certificate2 cert)
         {
             await Peer.Send(peer.Stream, new Message("error", Error: "Узел не состоит в кластере или исключён.")); return;
         }
-        if (request.Type == "mux") { await MultiplexPool.Accept(peer, id, request.Name == "service"); return; }
+        if (request.Type == "mux")
+        {
+            if(!known.BehindNat && Enrollment.Private(known.Ip) && peer.RemoteAddress is IPAddress remoteAddress && remoteAddress.MapToIPv4().ToString()!=known.Ip)
+                db.Put(known with{BehindNat=true,Version=Math.Max(App.Now,known.Version+1)});
+            await MultiplexPool.Accept(peer, id, request.Name == "service"); return;
+        }
         await Dispatch(peer.Stream, request);
     }
 
@@ -125,6 +135,10 @@ sealed class Service(Store db, X509Certificate2 cert)
                 }
                 else await RelayRequest(stream, request);
                 break;
+            case "interfaces":
+                if (request.Target == id)
+                    await Peer.Send(stream,new Message("interfaces",id,Interfaces:Forwarding.Interfaces(),RequestId:request.RequestId));
+                break;
             case "tunnel": await Tunnel(stream, request); break;
             default: await Peer.Send(stream, new Message("error", Error: "Неизвестный запрос.")); break;
         }
@@ -158,7 +172,7 @@ sealed class Service(Store db, X509Certificate2 cert)
         var task = await Peer.Read(incoming).WaitAsync(TimeSpan.FromSeconds(20));
         if (task is null) return;
         if (task.RequestId != request.RequestId || task.Id != path[0] || task.Deadline <= App.Now ||
-            task.Type is not ("sync" or "probe" or "exec" or "ping-external" or "tcp-check" or "tunnel"))
+            task.Type is not ("sync" or "probe" or "exec" or "ping-external" or "tcp-check" or "interfaces" or "tunnel"))
         {
             await Peer.Send(incoming, new Message("error", Error: "Запрос просрочен или не соответствует маршруту.", RequestId: task.RequestId)); return;
         }
@@ -186,7 +200,7 @@ sealed class Service(Store db, X509Certificate2 cert)
             await Peer.Send(peer.Stream, new Message("error", Error: "Имя недопустимо или ID узла уже использован.")); return;
         }
         if (!db.Consume(invite)) { await Peer.Send(peer.Stream, new Message("error", Error: "Приглашение уже использовано.")); return; }
-        db.Put(new Node(m.Id, m.Name, m.Ip, m.Cert, App.Now));
+        db.Put(new Node(m.Id, m.Name, m.Ip, m.Cert, App.Now,Platform:m.Platform=="windows"?"windows":"linux"));
         await Peer.Send(peer.Stream, new Message("welcome", id, Nodes: db.Nodes().ToArray(), Rules: db.Rules().ToArray(), KeyHash: db.Get("key_hash"), Update: db.Update(), Web: db.Web()));
     }
 
@@ -217,6 +231,8 @@ sealed class Service(Store db, X509Certificate2 cert)
             {
                 await web.Refresh();
                 await RefreshListeners();
+                if(db.Get("cluster") is null && db.Get("bootstrap_host") is not null && bootstrapWork.IsCompleted)
+                    bootstrapWork=Bootstrap();
                 if (db.Get("cluster") != null && (db.Self()?.Removed != true || db.Get("left") == "1"))
                 {
                     if (topologyWork.IsCompleted) topologyWork = routing.RefreshTopology(stop.Token);
@@ -234,6 +250,12 @@ sealed class Service(Store db, X509Certificate2 cert)
             catch (Exception e) { Console.Error.WriteLine("pnt: maintenance: " + e.Message); }
             await Task.Delay(5000, stop.Token);
         }
+    }
+    async Task Bootstrap()
+    {
+        try{await Enrollment.Connect(db,cert,stop.Token);}
+        catch(OperationCanceledException){}
+        catch(Exception e){Console.Error.WriteLine("pnt: bootstrap: "+e.Message);}
     }
 
     async Task ScanRoutes(string target)
@@ -266,12 +288,18 @@ sealed class Service(Store db, X509Certificate2 cert)
         if (db.Get("update_attempt_id") == update.Id && long.TryParse(db.Get("update_attempt_time"), out var last) && App.Now - last < 300_000) return;
         db.Set("update_attempt_id", update.Id);
         db.Set("update_attempt_time", App.Now.ToString());
-        const string sourceFile = "/etc/pnt/source-dir";
+        var sourceFile = Path.Combine(App.ConfigDir,"source-dir");
         if (!File.Exists(sourceFile)) { Console.Error.WriteLine("pnt: путь исходников для автообновления не настроен."); return; }
-        var script = Path.Combine(File.ReadAllText(sourceFile).Trim(), "pnt.sh");
+        var script = Path.Combine(File.ReadAllText(sourceFile).Trim(), OperatingSystem.IsWindows()?"deploy/pnt.ps1":"pnt.sh");
         if (!File.Exists(script)) { Console.Error.WriteLine("pnt: скрипт автообновления не найден: " + script); return; }
         try
         {
+            if(OperatingSystem.IsWindows())
+            {
+                using var child=new Process {StartInfo=new ProcessStartInfo("powershell.exe"){UseShellExecute=false,CreateNoWindow=true}};
+                foreach(var argument in new[]{"-NoProfile","-ExecutionPolicy","Bypass","-File",script,"-Action","update","-EventId",update.Id})child.StartInfo.ArgumentList.Add(argument);
+                child.Start();return;
+            }
             using var process = new Process { StartInfo = new ProcessStartInfo("systemd-run") { UseShellExecute = false, RedirectStandardError = true, RedirectStandardOutput = true } };
             var invoker = File.Exists("/etc/pnt/invoker") ? File.ReadAllText("/etc/pnt/invoker").Trim() : "root";
             foreach (var arg in new[] { "--unit=pnt-update-" + update.Id[..12], "--collect", "--property=Type=exec", "--setenv=PNT_INVOKER=" + invoker, "/bin/sh", script, "_worker", "update", update.Id, update.Id }) process.StartInfo.ArgumentList.Add(arg);
@@ -292,14 +320,19 @@ sealed class Service(Store db, X509Certificate2 cert)
         foreach (var key in listeners.Keys.Except(desired.Keys).ToArray())
         {
             var port = ((IPEndPoint)listeners[key].LocalEndpoint).Port;
-            listeners[key].Stop(); listeners.Remove(key); Firewall.Close(port);
+            listeners[key].Stop(); listeners.Remove(key);
+            if (!listeners.Values.Any(l => ((IPEndPoint)l.LocalEndpoint).Port == port)) Firewall.Close(port);
         }
         foreach (var (key, rule) in desired)
         {
             if (listeners.ContainsKey(key)) continue;
             try
             {
-                var listener = new TcpListener(IPAddress.Any, rule.InPort); listener.Start(); listeners[key] = listener;
+                Forwarding.ValidateSelection(Forwarding.Interfaces(),rule.InInterface,rule.InAddress,true);
+                var listener = new TcpListener(IPAddress.Parse(rule.InAddress), rule.InPort);
+                try { Forwarding.BindDevice(listener.Server,rule.InInterface); listener.Start(); }
+                catch {listener.Stop();throw;}
+                listeners[key] = listener;
                 Firewall.Open(rule.InPort);
                 _ = Task.Run(async () =>
                 {
@@ -324,11 +357,11 @@ sealed class Service(Store db, X509Certificate2 cert)
         var target = db.Resolve(r.To);
         if (r.Via == id || (r.Via == null && target?.Id == id))
         {
-            using var tcp = new TcpClient(); await tcp.ConnectAsync(target == null ? r.To : target.Id == id ? IPAddress.Loopback.ToString() : target.Ip, r.ToPort);
+            using var tcp = await Forwarding.Connect(target == null ? r.To : target.Id == id ? IPAddress.Loopback.ToString() : target.Ip, r.ToPort,r.OutInterface,r.OutAddress);
             await CopyBoth(incoming, tcp.GetStream()); return;
         }
         var routeTarget = r.Via ?? target?.Id ?? throw new Exception("Назначение недоступно.");
-        using var route = await OpenRoute(routeTarget, new Message("tunnel", id, Target: r.To, Port: r.ToPort, Via: r.Via, Hops: [id]));
+        using var route = await OpenRoute(routeTarget, new Message("tunnel", id, Target: r.To, Port: r.ToPort, Via: r.Via, Hops: [id],OutAddress:r.OutAddress,OutInterface:r.OutInterface));
         await CopyBoth(incoming, route.Stream);
     }
 
@@ -340,10 +373,10 @@ sealed class Service(Store db, X509Certificate2 cert)
         {
             var host = target == null ? request.Target! : target.Id == id ? IPAddress.Loopback.ToString() : target.Ip;
             if (target == null && (!IPAddress.TryParse(host, out _) || request.Via != id)) { await Peer.Send(incoming, new Message("error", Error: "Внешний IP запрещён.", RequestId: request.RequestId)); return; }
-            using var tcp = new TcpClient();
-            try { await tcp.ConnectAsync(host, request.Port); }
+            TcpClient tcp;
+            try { tcp = await Forwarding.Connect(host,request.Port,request.OutInterface,request.OutAddress); }
             catch (Exception e) { await Peer.Send(incoming, new Message("error", Error: e.Message, RequestId: request.RequestId)); return; }
-            await Peer.Send(incoming, new Message("ready", RequestId: request.RequestId)); await CopyBoth(incoming, tcp.GetStream()); return;
+            using(tcp) {await Peer.Send(incoming, new Message("ready", RequestId: request.RequestId)); await CopyBoth(incoming, tcp.GetStream());} return;
         }
         var destination = request.Via ?? target?.Id;
         if (destination == null) { await Peer.Send(incoming, new Message("error", Error: "Узел не найден.", RequestId: request.RequestId)); return; }
@@ -438,15 +471,19 @@ sealed class Service(Store db, X509Certificate2 cert)
         {
             await Peer.Send(incoming, new Message("error", Error: "Пустая или слишком длинная команда.", RequestId: request.RequestId)); return;
         }
-        using var process = new Process { StartInfo = new ProcessStartInfo(request.Interactive ? "/usr/bin/script" : "/bin/sh")
+        var windows=OperatingSystem.IsWindows();
+        using var process = new Process { StartInfo = new ProcessStartInfo(windows ? "cmd.exe" : request.Interactive ? "/usr/bin/script" : "/bin/sh")
         {
             UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true,
             RedirectStandardInput = request.Interactive, WorkingDirectory = App.Dir
         } };
-        if (request.Interactive) { process.StartInfo.ArgumentList.Add("-qef"); }
-        process.StartInfo.ArgumentList.Add("-c");
-        process.StartInfo.ArgumentList.Add(request.Command);
-        if (request.Interactive) process.StartInfo.ArgumentList.Add("/dev/null");
+        if(windows)process.StartInfo.Arguments="/d /s /c \"chcp 65001>nul & "+request.Command+"\"";
+        else
+        {
+            if (request.Interactive) process.StartInfo.ArgumentList.Add("-qef");
+            process.StartInfo.ArgumentList.Add("-c");process.StartInfo.ArgumentList.Add(request.Command);
+            if (request.Interactive) process.StartInfo.ArgumentList.Add("/dev/null");
+        }
         try { process.Start(); }
         catch (Exception e) { await Peer.Send(incoming, new Message("error", Error: e.Message, RequestId: request.RequestId)); return; }
         try
@@ -459,7 +496,7 @@ sealed class Service(Store db, X509Certificate2 cert)
                     while (await Peer.Read(incoming) is Message input)
                         if (request.Interactive && input.Type == "exec-input" && input.RequestId == request.RequestId)
                         {
-                            await process.StandardInput.WriteAsync(input.Output);
+                            await process.StandardInput.WriteAsync(windows?input.Output?.Replace("\n","\r\n"):input.Output);
                             await process.StandardInput.FlushAsync();
                         }
                 }

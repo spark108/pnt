@@ -25,7 +25,8 @@ sealed class RouteTransport(Store db, X509Certificate2 cert)
         for (var pass = 0; pass < 2; pass++)
         {
             foreach (var route in db.Routes(target).Where(r => App.Now-r.Updated < RouteCache.FreshFor && r.Path.All(n => db.Resolve(n) is not null))
-                .OrderByDescending(r => r.Primary).ThenBy(r => r.Ms))
+                .OrderByDescending(r => r.Primary).ThenBy(r=>r.Path.Length<=2?0:1)
+                .ThenBy(r=>r.Path.Skip(1).SkipLast(1).Count(n=>db.Resolve(n)?.BehindNat==true)).ThenBy(r => r.Ms))
             {
                 cancellation.ThrowIfCancellationRequested();
                 try
@@ -104,7 +105,7 @@ sealed class RouteTransport(Store db, X509Certificate2 cert)
                 finally { if(entered) slots.Release(); }
             }));
             cancellation.ThrowIfCancellationRequested();
-            db.ChangeRoutes(target, old => RouteCache.Apply(old,target,measured.Where(m => double.IsFinite(m.Ms))));
+            db.ChangeRoutes(target, old => RouteCache.Apply(old,target,measured.Where(m => double.IsFinite(m.Ms)),n=>db.Resolve(n)?.BehindNat==true));
             scanTimes[target] = App.Now;
         }
         finally { gate.Release(); }
@@ -137,7 +138,7 @@ sealed class RouteTransport(Store db, X509Certificate2 cert)
         using var budget=new CancellationTokenSource(TimeSpan.FromMilliseconds(Math.Max(1,request.Deadline-App.Now)));
         using var slots=new SemaphoreSlim(8);
         var replies=await Task.WhenAll(RoutePlanner.Candidates(db,self,request.Target,path)
-            .OrderBy(n=>n.Id==request.Target?0:1).ThenBy(_=>Random.Shared.Next()).Select(async next =>
+            .OrderBy(n=>n.Id==request.Target?0:1).ThenBy(n=>n.BehindNat?1:0).ThenBy(_=>Random.Shared.Next()).Select(async next =>
         {
             var entered=false;
             try

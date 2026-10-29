@@ -10,11 +10,13 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace Pnt;
 
-sealed class WebPanel(Store db)
+sealed class WebPanel(Store db, X509Certificate2 cert)
 {
     public const int Port = 8016;
     readonly SemaphoreSlim gate = new(1, 1);
     readonly Dictionary<string, (int Failures, long Until)> attempts = new();
+    readonly string csrfToken = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
+    readonly SemaphoreSlim forwardChanges = new(1,1);
     WebApplication? app;
     X509Certificate2? webCertificate;
 
@@ -41,7 +43,7 @@ sealed class WebPanel(Store db)
     {
         var builder = WebApplication.CreateBuilder(new WebApplicationOptions { Args = [] });
         var webCert = LoadWebCertificate();
-        builder.WebHost.ConfigureKestrel(options => options.ListenAnyIP(Port, endpoint => endpoint.UseHttps(webCert)));
+        builder.WebHost.ConfigureKestrel(options => { options.Limits.MaxRequestBodySize=16*1024; options.ListenAnyIP(Port, endpoint => endpoint.UseHttps(webCert)); });
         var server = builder.Build();
         server.Use(async (context, next) =>
         {
@@ -55,6 +57,15 @@ sealed class WebPanel(Store db)
                 context.Response.StatusCode = 401;
                 return;
             }
+            if (!HttpMethods.IsGet(context.Request.Method) && !HttpMethods.IsHead(context.Request.Method))
+            {
+                var origin=context.Request.Headers.Origin.ToString();
+                if (context.Request.Headers["X-PNT-CSRF"] != csrfToken ||
+                    origin.Length>0 && !string.Equals(origin,$"{context.Request.Scheme}://{context.Request.Host}",StringComparison.OrdinalIgnoreCase))
+                {
+                    context.Response.StatusCode=403;return;
+                }
+            }
             await next();
         });
         var resource = Assembly.GetExecutingAssembly().GetManifestResourceNames()
@@ -66,12 +77,39 @@ sealed class WebPanel(Store db)
         server.MapGet("/api/state", () => Results.Json(new
         {
             self = db.Get("self"),
-            nodes = db.Nodes().Where(x => !x.Removed).Select(x => new { x.Id, x.Name, x.Ip, x.Updating, x.UpdatingSince }),
+            csrfToken,
+            nodes = db.Nodes().Where(x => !x.Removed).Select(x => new { x.Id, x.Name, x.Ip, x.Updating, x.UpdatingSince, x.BehindNat, x.Platform }),
             pings = db.Pings(),
             links = db.Links().Where(p => p.Updated > App.Now - 30_000),
-            rules = db.Rules().Where(x => !x.Removed).Select(x => new { x.Id, x.In, x.InPort, x.Via, x.To, x.ToPort }),
+            rules = db.Rules().Where(x => !x.Removed),
             time = App.Now
         }));
+        server.MapGet("/api/nodes/{node}/interfaces",async (string node,HttpContext context) =>
+        {
+            try {return Results.Json(await Forwarding.GetInterfaces(db,cert,node,context.RequestAborted));}
+            catch(ArgumentException e){return Results.BadRequest(new {error=e.Message});}
+            catch(Exception e){return Results.Json(new {error=e.GetBaseException().Message},statusCode:503);}
+        });
+        server.MapPost("/api/forwards",async (CreateForward input,HttpContext context) =>
+        {
+            await forwardChanges.WaitAsync(context.RequestAborted);
+            try {return Results.Json(await Forwarding.Create(db,cert,input,context.RequestAborted),statusCode:201);}
+            catch(ArgumentException e){return Results.BadRequest(new {error=e.Message});}
+            catch(Exception e){return Results.Json(new {error=e.GetBaseException().Message},statusCode:503);}
+            finally{forwardChanges.Release();}
+        });
+        server.MapDelete("/api/forwards/{ruleId}",async (string ruleId,HttpContext context) =>
+        {
+            await forwardChanges.WaitAsync(context.RequestAborted);
+            try
+            {
+                var rule=db.Rules().FirstOrDefault(r=>r.Id==ruleId && !r.Removed);
+                if(rule is null)return Results.NotFound(new {error="Проброс не найден."});
+                db.Put(rule with {Removed=true,Version=Math.Max(App.Now,rule.Version+1)});
+                return Results.Ok(new {removed=ruleId});
+            }
+            finally{forwardChanges.Release();}
+        });
         try
         {
             await server.StartAsync();

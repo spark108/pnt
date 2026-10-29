@@ -56,6 +56,7 @@ static class RoutingChecks
         var folder = Path.Combine(Path.GetTempPath(),"pnt-routing-check-"+Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(folder);
         Environment.SetEnvironmentVariable("PNT_DATA_DIR",folder);
+        Environment.SetEnvironmentVariable("PNT_MANAGE_FIREWALL","0");
         using var a = Certificate.Load(Path.Combine(folder,"a.pfx"));
         using var b = Certificate.Load(Path.Combine(folder,"b.pfx"));
         using var c = Certificate.Load(Path.Combine(folder,"c.pfx"));
@@ -82,6 +83,7 @@ static class RoutingChecks
         Assert(initial.Ms==saved.Where(r=>r.Updated>0).Min(r=>r.Ms),"Did not prefer measured fast route");
         using(var disk=new Store(Path.Combine(folder,"0.db"))) Assert(disk.Routes(ids[2]).Count>=2,"Routes not persisted");
         Assert(dc.Self()!.Name=="node-2","Discovery executed a task");
+        Assert((await Forwarding.GetInterfaces(da,a,ids[2])).Length>0,"Interface inventory through relays failed");
         using(var peer=await new RouteTransport(da,a).Connect(ids[2]))
         {
             Assert(peer.RouteReady!.Hops!.SequenceEqual(initial.Path),"Wrong fixed path");

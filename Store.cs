@@ -17,6 +17,7 @@ sealed class Store : IDisposable
             "CREATE TABLE IF NOT EXISTS nodes(id TEXT PRIMARY KEY,json TEXT NOT NULL,version INTEGER NOT NULL)",
             "CREATE TABLE IF NOT EXISTS rules(id TEXT PRIMARY KEY,json TEXT NOT NULL,version INTEGER NOT NULL)",
             "CREATE TABLE IF NOT EXISTS invites(id TEXT PRIMARY KEY,json TEXT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS join_requests(id TEXT PRIMARY KEY,json TEXT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS pings(id TEXT PRIMARY KEY,ms REAL NOT NULL,updated INTEGER NOT NULL)",
             "CREATE TABLE IF NOT EXISTS peer_pings(source TEXT NOT NULL,target TEXT NOT NULL,ms REAL NOT NULL,updated INTEGER NOT NULL,PRIMARY KEY(source,target))"
         }) { using var cmd = c.CreateCommand(); cmd.CommandText = sql; cmd.ExecuteNonQuery(); }
@@ -143,6 +144,12 @@ sealed class Store : IDisposable
     public List<Node> Nodes() => All<Node>("nodes");
     public List<Rule> Rules() => All<Rule>("rules");
     public List<Invite> Invites() => All<Invite>("invites");
+    public List<JoinRequest> JoinRequests() => All<JoinRequest>("join_requests");
+    public void PutJoin(JoinRequest request)
+    {
+        using var c=Open();using var q=c.CreateCommand();q.CommandText="INSERT INTO join_requests VALUES($id,$json) ON CONFLICT(id) DO UPDATE SET json=excluded.json";
+        q.Parameters.AddWithValue("$id",request.Id);q.Parameters.AddWithValue("$json",JsonSerializer.Serialize(request,App.Json));q.ExecuteNonQuery();
+    }
     public Node? Self() => Nodes().FirstOrDefault(x => x.Id == Get("self"));
     public Node? Resolve(string id) => Nodes().FirstOrDefault(x => !x.Removed && (x.Id == id || x.Name.Equals(id, StringComparison.OrdinalIgnoreCase) || x.Ip == id));
     public void Invite(Invite value)
