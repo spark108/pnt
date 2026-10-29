@@ -97,6 +97,29 @@ journalctl -u pnt -f
 
 Nodes exchange their membership, forwarding records, and ping measurements every five seconds. `pnt cluster nodes [node-id]` and `pnt nodes [node-id]` show measurements made by the specified node; values older than 30 seconds appear as `нет связи`. When a direct connection fails, the node tries reachable cluster peers as relays, preferring the route with the lowest known direct-link latency. The measured response time is shown as `28.3 ms через gateway` (or multiple relay names). Records with newer timestamps replace older ones. `cluster remove` creates a removal record; peers reject that certificate after receiving it. `cluster leave` publishes the local node's own removal. A disconnected peer can retain stale membership until it reconnects or receives an update through another peer. Ping is the application-level response time, including relay hops when used.
 
+## Background routes and persistent connections
+
+```sh
+sudo pnt routes                 # Main and backup paths from this server
+sudo pnt routes <node-id>       # Paths to a particular member
+```
+
+The daemon checks direct neighbors roughly every five seconds and independently searches for alternatives to every node every 20–30 seconds with randomized scheduling. Searches continue while the main path is healthy. Each SQLite database stores up to four verified routes per destination, including latency, last verification, success/failure counters, and the main route. Routes expire after 60 seconds without verification. A stable alternative becomes the main path after three successful search rounds if it is at least 20% faster; failure of the current path allows immediate use of a backup.
+
+Discovery floods a unique search ID and the visited path through available neighbors. Nodes exclude visited members, bound the search by a deadline and hop count, and accept at most two improving arrivals per search to limit duplicates. The destination returns the path on the same channels. The requester verifies candidates with control messages before storing them. A search is bounded to ten seconds, returns a limited set of alternatives, and does not enumerate every possible path in a large mesh. Later background rounds continue exploring alternatives.
+
+Commands, synchronization, external ping/SSH checks, and forwarding use a fresh cached route. If all cached routes fail, the requester waits for a bounded discovery round. Relays follow the selected path exactly. A task is dispatched only after its route is confirmed, and its ID and start deadline are checked at the destination. Discovery never executes application tasks. A command whose dispatch result is uncertain is not automatically repeated. Cluster-wide ping and SSH checks still run in parallel on distinct executors and correlate their replies.
+
+Direct neighbors keep pinned TLS 1.3 sessions open on TCP 442. Independent logical streams carry requests and tunnels over those sessions; closing a stream does not close the session. Per-stream flow control limits queued data, so a stalled forwarding stream does not block control traffic. Keepalive frames run every 15 seconds, with a 45-second receive timeout. Broken sessions reconnect on the next check or request. CLI tasks enter through the local daemon, allowing successive commands to reuse its existing peer sessions. Encryption is between neighboring nodes; cluster relays remain trusted with task contents.
+
+Update every participating node before using these routes. New daemons continue accepting the original TLS synchronization protocol while old members are updating. The initial invitation remains a direct certificate-pinned connection.
+
+Routing regression checks (use elevated privileges on systems requiring them to bind TCP 442):
+
+```sh
+dotnet run --project tests/RoutingChecks/RoutingChecks.csproj -c Release
+```
+
 ## Remote commands
 
 ```sh

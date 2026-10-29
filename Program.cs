@@ -23,7 +23,8 @@ record Message(string Type, string? Id = null, string? Name = null, string? Ip =
     string[]? Hops = null, Node[]? Nodes = null, Rule[]? Rules = null, string? Error = null, string? KeyHash = null,
     UpdateNotice? Update = null, PingReport[]? Pings = null, WebConfig? Web = null,
     string? Command = null, string? Output = null, bool Stderr = false, int ExitCode = 0,
-    string? Host = null, double? PingMs = null, bool Interactive = false);
+    string? Host = null, double? PingMs = null, bool Interactive = false,
+    string? RequestId = null, long Deadline = 0, string[][]? Routes = null, PingReport[]? Links = null);
 
 static class App
 {
@@ -93,6 +94,8 @@ static class App
                 case ["cluster", "nodes", var fromNode]: PrintNodes(db, fromNode); break;
                 case ["nodes"]: PrintNodes(db, null); break;
                 case ["nodes", var fromNode]: PrintNodes(db, fromNode); break;
+                case ["routes"]: PrintRoutes(db, null); break;
+                case ["routes", var destination]: PrintRoutes(db, destination); break;
                 case ["sh", var target, "--interactive", .. var command] when command.Length > 0:
                     if (Console.IsInputRedirected) throw new Exception("Нужен интерактивный терминал.");
                     return await RemoteCommands.Run(db, cert, target, string.Join(' ', command), true);
@@ -185,6 +188,22 @@ static class App
         }
     }
 
+    static void PrintRoutes(Store db, string? destination)
+    {
+        Active(db);
+        var nodes = destination is null ? db.Nodes().Where(n => !n.Removed && n.Id != db.Get("self"))
+            : new[] { db.Resolve(destination) ?? throw new Exception("Узел не найден.") };
+        foreach (var node in nodes)
+        {
+            Console.WriteLine($"{node.Name} ({node.Id}):");
+            var routes = db.Routes(node.Id).OrderByDescending(r => r.Primary).ThenBy(r => r.Ms).ToArray();
+            if (routes.Length == 0) Console.WriteLine("  поиск маршрута...");
+            foreach (var route in routes)
+                Console.WriteLine($"  {(App.Now-route.Updated >= RouteCache.FreshFor ? "устарел" : route.Primary ? "основной" : "резервный")} {route.Ms:0.0} ms  " +
+                    string.Join(" → ", route.Path.Select(id => db.Resolve(id)?.Name ?? id)));
+        }
+    }
+
     static async Task SetMaintenance(Store db, X509Certificate2 cert, bool updating)
     {
         Active(db);
@@ -218,13 +237,14 @@ static class App
         var message = new Message("sync", self.Id, Nodes: db.Nodes().ToArray(),
             Rules: db.Rules().ToArray(), Update: db.Update(), Pings: db.Pings().ToArray(), Web: db.Web());
         var peers = db.Nodes().Where(x => !x.Removed && x.Id != self.Id).ToArray();
+        var routing = new RouteTransport(db, cert);
         var results = await Task.WhenAll(peers.Select(async node =>
         {
             try
             {
-                using var peer = await Peer.Connect(node.Ip, node.Cert, cert);
-                await Peer.Send(peer.Stream, message).WaitAsync(TimeSpan.FromSeconds(5));
-                return (await Peer.Read(peer.Stream).WaitAsync(TimeSpan.FromSeconds(5)))?.Type == "sync";
+                using var peer = await routing.Connect(node.Id);
+                var task = await RouteTransport.SendTask(peer, message);
+                return (await RouteTransport.ReadResult(peer, task.RequestId, TimeSpan.FromSeconds(8))).Type == "sync";
             }
             catch { return false; }
         }));
@@ -269,7 +289,7 @@ static class App
         Token token;
         try { token = JsonSerializer.Deserialize<Token>(Convert.FromBase64String(encoded), Json)!; }
         catch { throw new Exception("Неверный ключ приглашения."); }
-        using var peer = await Peer.Connect(token.Host, token.Cert, cert);
+        using var peer = await Peer.ConnectRaw(token.Host, token.Cert, cert);
         await Peer.Send(peer.Stream, new Message("join", Certificate.Id(cert), Environment.MachineName, OwnIp, Certificate.Fingerprint(cert), token.Secret, token.Id));
         var reply = await Peer.Read(peer.Stream) ?? throw new Exception("Нет ответа на приглашение.");
         if (reply.Type != "welcome") throw new Exception(reply.Error ?? "Приглашение отклонено.");
@@ -287,6 +307,7 @@ static class App
         pnt create cluster <key>
         pnt cluster add <ip> | remove <node|ip> | leave | nodes [node-id] | status | invites
         pnt nodes [node-id]
+        pnt routes [node-id]
         pnt sh <node-id> <command...>
         pnt ping <IPv4|domain>
         pnt install | update

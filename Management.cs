@@ -32,8 +32,9 @@ static class Management
         if (self is null || self.Removed || db.Get("left") == "1") throw new Exception("Сначала создайте кластер или присоединитесь к нему.");
         var ip = address.ToString();
         Console.WriteLine($"Проверка доступности SSH {ip}:22 с узлов кластера...");
+        var routing = new RouteTransport(db, cert);
         var results = await Task.WhenAll(db.Nodes().Where(n => !n.Removed)
-            .Select(n => ExternalPing.Query(db, cert, self, n, ip, true)));
+            .Select(n => ExternalPing.Query(db, cert, self, n, ip, true, routing)));
         foreach (var result in results)
             Console.WriteLine($"{result.Node.Name} ({result.Node.Id}): " +
                 (result.Measurement.Ms is double ms ? $"SSH доступен, {ms:0.0} ms" : result.Measurement.Error));

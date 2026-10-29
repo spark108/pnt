@@ -18,7 +18,8 @@ static class ExternalPing
         var self = db.Self()!;
         var nodes = db.Nodes().Where(x => !x.Removed).OrderBy(x => x.Name).ToArray();
         Console.WriteLine($"Пинг {host} с {nodes.Length} узлов кластера...");
-        var results = await Task.WhenAll(nodes.Select(node => Query(db, cert, self, node, host)));
+        var routing = new RouteTransport(db, cert);
+        var results = await Task.WhenAll(nodes.Select(node => Query(db, cert, self, node, host, routing: routing)));
         foreach (var result in results)
         {
             var route = FormatRelay(db, result.Route);
@@ -47,41 +48,22 @@ static class ExternalPing
             .Select(id => db.Nodes().FirstOrDefault(x => x.Id == id)?.Name ?? id));
     }
 
-    internal static async Task<NodeExternalPing> Query(Store db, X509Certificate2 cert, Node self, Node node, string host, bool tcp = false)
+    internal static async Task<NodeExternalPing> Query(Store db, X509Certificate2 cert, Node self, Node node, string host, bool tcp = false, RouteTransport? routing = null)
     {
         if (node.Id == self.Id)
             return new NodeExternalPing(node, [self.Id], tcp ? await Management.CheckSsh(host) : await Measure(host));
-        var lastError = "нет маршрута к узлу";
-        foreach (var relay in RoutePlanner.Candidates(db, self.Id, node.Id, []))
+        try
         {
-            try
-            {
-                using var peer = await Peer.Connect(relay.Ip, relay.Cert, cert);
-                await Peer.Send(peer.Stream, new Message(tcp ? "tcp-check" : "ping-external", self.Id, Target: node.Id,
-                    Hops: [self.Id], Host: host)).WaitAsync(TimeSpan.FromSeconds(10));
-                var ready = await Peer.Read(peer.Stream).WaitAsync(TimeSpan.FromSeconds(45));
-                if (ready?.Type != "ready")
-                {
-                    lastError = ready?.Error ?? "узел не ответил";
-                    continue;
-                }
-                var answer = await Peer.Read(peer.Stream).WaitAsync(TimeSpan.FromSeconds(15));
-                if (answer?.Type != "ping-result")
-                {
-                    lastError = answer?.Error ?? "нет результата пинга";
-                    continue;
-                }
-                if (answer.PingMs is double value && (!double.IsFinite(value) || value < 0))
-                {
-                    lastError = "недопустимый результат пинга";
-                    continue;
-                }
-                return new NodeExternalPing(node, ready.Hops,
-                    new ExternalPingMeasurement(answer.Ip, answer.PingMs, answer.Error));
-            }
-            catch (Exception e) { lastError = e.GetBaseException().Message; }
+            routing ??= new RouteTransport(db, cert);
+            using var peer = await routing.Connect(node.Id);
+            var task = await RouteTransport.SendTask(peer, new Message(tcp ? "tcp-check" : "ping-external", self.Id,
+                Target: node.Id, Host: host));
+            var answer = await RouteTransport.ReadResult(peer, task.RequestId, TimeSpan.FromSeconds(15));
+            if (answer.Type != "ping-result") throw new IOException(answer.Error ?? "Нет результата.");
+            if (answer.PingMs is double value && (!double.IsFinite(value) || value < 0)) throw new IOException("Недопустимый пинг.");
+            return new NodeExternalPing(node, peer.RouteReady!.Hops, new(answer.Ip, answer.PingMs, answer.Error));
         }
-        return new NodeExternalPing(node, null, new ExternalPingMeasurement(null, null, lastError));
+        catch (Exception e) { return new NodeExternalPing(node, null, new(null, null, e.GetBaseException().Message)); }
     }
 
     public static async Task<ExternalPingMeasurement> Measure(string host)

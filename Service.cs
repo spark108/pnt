@@ -12,10 +12,14 @@ sealed class Service(Store db, X509Certificate2 cert)
     readonly Dictionary<string, TcpListener> listeners = new();
     readonly CancellationTokenSource stop = new();
     readonly Dictionary<string, Task> checks = new();
+    readonly Dictionary<string, (Task Work, long Due)> routeScans = new();
+    Task topologyWork = Task.CompletedTask;
     readonly WebPanel web = new(db);
+    readonly RouteTransport routing = new(db, cert);
 
     public async Task Run()
     {
+        RegisterMultiplex();
         var control = new TcpListener(IPAddress.Any, 442); control.Start();
         Firewall.Open(442);
         Console.WriteLine("pnt: service listening on TCP 442");
@@ -33,6 +37,7 @@ sealed class Service(Store db, X509Certificate2 cert)
         catch (OperationCanceledException) { }
         finally
         {
+            MultiplexPool.CloseLocal(id);
             await web.Stop();
             control.Stop();
             foreach (var l in listeners.Values) { Firewall.Close(((IPEndPoint)l.LocalEndpoint).Port); l.Stop(); }
@@ -42,6 +47,7 @@ sealed class Service(Store db, X509Certificate2 cert)
 
     async Task Handle(TcpClient socket)
     {
+        RegisterMultiplex();
         using var peer = await Peer.Accept(socket, cert);
         var request = await Peer.Read(peer.Stream);
         if (request == null) return;
@@ -56,46 +62,115 @@ sealed class Service(Store db, X509Certificate2 cert)
         {
             await Peer.Send(peer.Stream, new Message("error", Error: "Узел не состоит в кластере или исключён.")); return;
         }
+        if (request.Type == "mux") { await MultiplexPool.Accept(peer, id, request.Name == "service"); return; }
+        await Dispatch(peer.Stream, request);
+    }
+
+    void RegisterMultiplex() => MultiplexPool.Register(id, async (stream, fingerprint, remote) =>
+    {
+        var request = await Peer.Read(stream).WaitAsync(TimeSpan.FromSeconds(20));
+        if (request is null) return;
+        var member = db.Resolve(remote);
+        if (member is null || member.Cert != fingerprint || request.Id != remote || db.Get("left") == "1" || db.Self()?.Removed == true)
+        {
+            await Peer.Send(stream, new Message("error", Error: "Узел не состоит в активном кластере.", RequestId: request.RequestId)); return;
+        }
+        await Dispatch(stream, request);
+    });
+
+    async Task Dispatch(Stream stream, Message request, bool routed = false)
+    {
         switch (request.Type)
         {
+            case "route-info":
+                await Peer.Send(stream, new Message("route-info", id, Pings: db.Pings().ToArray(), Links: db.Links().ToArray())); break;
+            case "route-search":
+                if (request.Hops is {Length: > 0} trail && trail[^1] == request.Id || request.Id == id && request.Hops is {Length: 0})
+                    await Peer.Send(stream, new Message("route-found", id, RequestId: request.RequestId, Routes: await routing.Search(request)));
+                break;
+            case "route-open":
+                await OpenFixedRoute(stream, request); break;
             case "sync":
                 Merge(request);
-                await Peer.Send(peer.Stream, Sync());
+                await Peer.Send(stream, Sync() with { RequestId = request.RequestId });
                 break;
             case "probe":
-                if (request.Target == id) await Peer.Send(peer.Stream, new Message("ok", Hops: (request.Hops ?? []).Append(id).ToArray()));
-                else await RelayProbe(peer.Stream, request);
+                if (request.Target == id) await Peer.Send(stream, new Message("ok", Hops: (request.Hops ?? []).Append(id).ToArray(), RequestId: request.RequestId));
+                else await RelayProbe(stream, request);
                 break;
             case "exec":
-                if (request.Target == id) await Execute(peer.Stream, request);
-                else await RelayRequest(peer.Stream, request);
+                if (request.Target == id) await Execute(stream, request, !routed);
+                else await RelayRequest(stream, request);
                 break;
             case "exec-route":
                 if (request.Target == id)
                 {
-                    await Peer.Send(peer.Stream, new Message("ready", Hops: (request.Hops ?? []).Append(id).ToArray()));
-                    var command = await Peer.Read(peer.Stream).WaitAsync(TimeSpan.FromSeconds(30));
+                    await Peer.Send(stream, new Message("ready", Hops: (request.Hops ?? []).Append(id).ToArray()));
+                    var command = await Peer.Read(stream).WaitAsync(TimeSpan.FromSeconds(30));
                     if (command?.Type == "exec" && command.Target == id)
-                        await Execute(peer.Stream, command with { Hops = request.Hops }, false);
+                        await Execute(stream, command with { Hops = request.Hops }, false);
                 }
-                else await RelayRequest(peer.Stream, request);
+                else await RelayRequest(stream, request);
                 break;
             case "ping-external":
-                if (request.Target == id) await ExecuteExternalPing(peer.Stream, request);
-                else await RelayRequest(peer.Stream, request);
+                if (request.Target == id) await ExecuteExternalPing(stream, request, !routed);
+                else await RelayRequest(stream, request);
                 break;
             case "tcp-check":
                 if (request.Target == id)
                 {
-                    await Peer.Send(peer.Stream, new Message("ready", Hops: (request.Hops ?? []).Append(id).ToArray()));
+                    if (!routed) await Peer.Send(stream, new Message("ready", Hops: (request.Hops ?? []).Append(id).ToArray()));
                     var check = await Management.CheckSsh(request.Host ?? "");
-                    await Peer.Send(peer.Stream, new Message("ping-result", Ip: check.Ip, PingMs: check.Ms, Error: check.Error));
+                    await Peer.Send(stream, new Message("ping-result", Ip: check.Ip, PingMs: check.Ms, Error: check.Error, RequestId: request.RequestId));
                 }
-                else await RelayRequest(peer.Stream, request);
+                else await RelayRequest(stream, request);
                 break;
-            case "tunnel": await Tunnel(peer.Stream, request); break;
-            default: await Peer.Send(peer.Stream, new Message("error", Error: "Неизвестный запрос.")); break;
+            case "tunnel": await Tunnel(stream, request); break;
+            default: await Peer.Send(stream, new Message("error", Error: "Неизвестный запрос.")); break;
         }
+    }
+
+    async Task OpenFixedRoute(Stream incoming, Message request)
+    {
+        var path = request.Hops;
+        var index = path is null ? -1 : Array.IndexOf(path, id);
+        if (path is null || path.Length is < 1 or > 10 || path.Distinct().Count() != path.Length ||
+            index < 0 || path[^1] != request.Target || request.RequestId is not { Length: 32 } ||
+            request.Deadline <= App.Now || request.Deadline > App.Now + 60_000 ||
+            (index == 0 ? request.Id != id : path[index - 1] != request.Id) ||
+            path.Any(n => db.Resolve(n) is null))
+        {
+            await Peer.Send(incoming, new Message("error", Error: "Недопустимый или устаревший маршрут.", RequestId: request.RequestId)); return;
+        }
+        if (index < path.Length - 1)
+        {
+            var next = db.Resolve(path[index + 1])!;
+            using var limit = new CancellationTokenSource(TimeSpan.FromMilliseconds(Math.Max(1, request.Deadline - App.Now)));
+            using var peer = await Peer.Connect(next.Ip, next.Cert, cert, limit.Token);
+            await Peer.Send(peer.Stream, request with { Id = id }).WaitAsync(limit.Token);
+            var reply = await Peer.Read(peer.Stream).WaitAsync(limit.Token);
+            if (reply is null) return;
+            await Peer.Send(incoming, reply).WaitAsync(limit.Token);
+            if (reply.Type == "ready") await CopyBoth(incoming, peer.Stream);
+            return;
+        }
+        await Peer.Send(incoming, new Message("ready", Hops: path, RequestId: request.RequestId));
+        var task = await Peer.Read(incoming).WaitAsync(TimeSpan.FromSeconds(20));
+        if (task is null) return;
+        if (task.RequestId != request.RequestId || task.Id != path[0] || task.Deadline <= App.Now ||
+            task.Type is not ("sync" or "probe" or "exec" or "ping-external" or "tcp-check" or "tunnel"))
+        {
+            await Peer.Send(incoming, new Message("error", Error: "Запрос просрочен или не соответствует маршруту.", RequestId: task.RequestId)); return;
+        }
+        if (task.Type != "sync" && task.Type != "tunnel" && task.Target != id)
+        {
+            await Peer.Send(incoming, new Message("error", Error: "Назначение задачи не совпадает с маршрутом.", RequestId: task.RequestId)); return;
+        }
+        if (task.Type == "tunnel" && (task.Via ?? task.Target) != id)
+        {
+            await Peer.Send(incoming, new Message("error", Error: "Неверный узел выхода.", RequestId: task.RequestId)); return;
+        }
+        await Dispatch(incoming, task with { Hops = path.SkipLast(1).ToArray() }, true);
     }
 
     async Task Join(Peer peer, Message m)
@@ -115,7 +190,7 @@ sealed class Service(Store db, X509Certificate2 cert)
         await Peer.Send(peer.Stream, new Message("welcome", id, Nodes: db.Nodes().ToArray(), Rules: db.Rules().ToArray(), KeyHash: db.Get("key_hash"), Update: db.Update(), Web: db.Web()));
     }
 
-    Message Sync() => new("sync", id, Nodes: db.Nodes().ToArray(), Rules: db.Rules().ToArray(), Update: db.Update(), Pings: db.Pings().ToArray(), Web: db.Web());
+    Message Sync() => new("sync", id, Nodes: db.Nodes().ToArray(), Rules: db.Rules().ToArray(), Update: db.Update(), Pings: db.Pings().ToArray(), Web: db.Web(), Links: db.Links().ToArray());
 
     void Merge(Message m)
     {
@@ -129,6 +204,7 @@ sealed class Service(Store db, X509Certificate2 cert)
         }
         foreach (var r in m.Rules ?? []) db.Put(r);
         foreach (var ping in m.Pings ?? []) db.PutPing(ping);
+        foreach (var link in m.Links ?? []) db.PutLink(link);
         if (m.Update is not null) db.PutUpdate(m.Update);
         if (m.Web is not null) db.PutWeb(m.Web);
     }
@@ -143,8 +219,11 @@ sealed class Service(Store db, X509Certificate2 cert)
                 await RefreshListeners();
                 if (db.Get("cluster") != null && (db.Self()?.Removed != true || db.Get("left") == "1"))
                 {
+                    if (topologyWork.IsCompleted) topologyWork = routing.RefreshTopology(stop.Token);
                     foreach (var n in db.Nodes().Where(x => !x.Removed && x.Id != id))
                     {
+                        if (!routeScans.TryGetValue(n.Id, out var scan) || scan.Work.IsCompleted && scan.Due <= App.Now)
+                            routeScans[n.Id] = (ScanRoutes(n.Id), App.Now + Random.Shared.Next(20_000,30_001));
                         if (!checks.TryGetValue(n.Id, out var previous) || previous.IsCompleted)
                             checks[n.Id] = CheckNode(n);
                     }
@@ -157,24 +236,27 @@ sealed class Service(Store db, X509Certificate2 cert)
         }
     }
 
+    async Task ScanRoutes(string target)
+    {
+        try { await routing.Refresh(target, stop.Token); }
+        catch (OperationCanceledException) { }
+        catch (Exception e) { Console.Error.WriteLine("pnt: route search: " + e.Message); }
+    }
+
     async Task CheckNode(Node node)
     {
         try
         {
+            using var peer = await routing.Connect(node.Id, cancellation: stop.Token);
             var watch = Stopwatch.StartNew();
-            using var peer = await Peer.Connect(node.Ip, node.Cert, cert);
-            await Peer.Send(peer.Stream, Sync()).WaitAsync(TimeSpan.FromSeconds(8));
-            var reply = await Peer.Read(peer.Stream).WaitAsync(TimeSpan.FromSeconds(8));
-            if (reply?.Type != "sync") throw new IOException("Нет ответа синхронизации.");
+            var request = await RouteTransport.SendTask(peer, Sync());
+            var reply = await RouteTransport.ReadResult(peer, request.RequestId, TimeSpan.FromSeconds(8), stop.Token);
+            if (reply.Type != "sync") return;
             Merge(reply);
-            db.SetPing(node.Id, watch.Elapsed.TotalMilliseconds, true, [id, node.Id]);
+            var path = peer.RouteReady!.Hops!;
+            db.SetPing(node.Id, (peer.RouteReady.PingMs ?? 0) + watch.Elapsed.TotalMilliseconds, path.Length == 2, path);
         }
-        catch
-        {
-            if (stop.IsCancellationRequested) return;
-            try { await Probe(node.Id, [], true); }
-            catch { }
-        }
+        catch { }
     }
 
     void LaunchPendingUpdate()
@@ -252,44 +334,38 @@ sealed class Service(Store db, X509Certificate2 cert)
 
     async Task Tunnel(Stream incoming, Message request)
     {
-        if (request.Hops?.Contains(id) == true || (request.Hops?.Length ?? 0) > 8) { await Peer.Send(incoming, new Message("error", Error: "Петля маршрута.")); return; }
+        if (request.Hops?.Contains(id) == true || (request.Hops?.Length ?? 0) > 8) { await Peer.Send(incoming, new Message("error", Error: "Петля маршрута.", RequestId: request.RequestId)); return; }
         var target = db.Resolve(request.Target ?? "");
         if (request.Via == id || (request.Via == null && target?.Id == id))
         {
             var host = target == null ? request.Target! : target.Id == id ? IPAddress.Loopback.ToString() : target.Ip;
-            if (target == null && (!IPAddress.TryParse(host, out _) || request.Via != id)) { await Peer.Send(incoming, new Message("error", Error: "Внешний IP запрещён.")); return; }
+            if (target == null && (!IPAddress.TryParse(host, out _) || request.Via != id)) { await Peer.Send(incoming, new Message("error", Error: "Внешний IP запрещён.", RequestId: request.RequestId)); return; }
             using var tcp = new TcpClient();
             try { await tcp.ConnectAsync(host, request.Port); }
-            catch (Exception e) { await Peer.Send(incoming, new Message("error", Error: e.Message)); return; }
-            await Peer.Send(incoming, new Message("ready")); await CopyBoth(incoming, tcp.GetStream()); return;
+            catch (Exception e) { await Peer.Send(incoming, new Message("error", Error: e.Message, RequestId: request.RequestId)); return; }
+            await Peer.Send(incoming, new Message("ready", RequestId: request.RequestId)); await CopyBoth(incoming, tcp.GetStream()); return;
         }
         var destination = request.Via ?? target?.Id;
-        if (destination == null) { await Peer.Send(incoming, new Message("error", Error: "Узел не найден.")); return; }
+        if (destination == null) { await Peer.Send(incoming, new Message("error", Error: "Узел не найден.", RequestId: request.RequestId)); return; }
         try
         {
             using var route = await OpenRoute(destination, request with { Id = id, Hops = (request.Hops ?? []).Append(id).ToArray() });
-            await Peer.Send(incoming, new Message("ready")); await CopyBoth(incoming, route.Stream);
+            await Peer.Send(incoming, new Message("ready", RequestId: request.RequestId)); await CopyBoth(incoming, route.Stream);
         }
-        catch (Exception e) { await Peer.Send(incoming, new Message("error", Error: e.Message)); }
+        catch (Exception e) { await Peer.Send(incoming, new Message("error", Error: e.Message, RequestId: request.RequestId)); }
     }
 
     async Task<Peer> OpenRoute(string destination, Message request)
     {
-        var nodes = RoutePlanner.Candidates(db, id, destination, request.Hops ?? []).ToArray();
-        foreach (var n in nodes)
+        var peer = await routing.Connect(destination);
+        try
         {
-            Peer? p = null;
-            try
-            {
-                p = await Peer.Connect(n.Ip, n.Cert, cert);
-                await Peer.Send(p.Stream, request);
-                var answer = await Peer.Read(p.Stream).WaitAsync(TimeSpan.FromSeconds(30));
-                if (answer?.Type == "ready") { p.RouteReady = answer; return p; }
-            }
-            catch { }
-            p?.Dispose();
+            var task = await RouteTransport.SendTask(peer, request with { Id = id });
+            var answer = await RouteTransport.ReadResult(peer, task.RequestId, TimeSpan.FromSeconds(15));
+            if (answer.Type != "ready") throw new IOException(answer.Error ?? "Назначение недоступно.");
+            return peer;
         }
-        throw new Exception("Маршрут к узлу не найден.");
+        catch { peer.Dispose(); throw; }
     }
 
     async Task RelayProbe(Stream incoming, Message request)
@@ -299,7 +375,7 @@ sealed class Service(Store db, X509Certificate2 cert)
             var route = await Probe(request.Target!, request.Hops ?? []);
             await Peer.Send(incoming, new Message("ok", Hops: route));
         }
-        catch { await Peer.Send(incoming, new Message("error", Error: "Узел недоступен.")); }
+        catch { await Peer.Send(incoming, new Message("error", Error: "Узел недоступен.", RequestId: request.RequestId)); }
     }
 
     async Task<string[]> Probe(string target, string[] hops, bool skipDirect = false)
@@ -331,7 +407,7 @@ sealed class Service(Store db, X509Certificate2 cert)
         if (request.Hops?.Contains(id) == true || (request.Hops?.Length ?? 0) > 8 ||
             request.Target is null || db.Resolve(request.Target) is null)
         {
-            await Peer.Send(incoming, new Message("error", Error: "Маршрут к узлу не найден.")); return;
+            await Peer.Send(incoming, new Message("error", Error: "Маршрут к узлу не найден.", RequestId: request.RequestId)); return;
         }
         try
         {
@@ -342,25 +418,25 @@ sealed class Service(Store db, X509Certificate2 cert)
             await Peer.Send(incoming, new Message("ready", Hops: route.RouteReady?.Hops));
             await CopyBoth(incoming, route.Stream);
         }
-        catch (Exception e) { await Peer.Send(incoming, new Message("error", Error: e.Message)); }
+        catch (Exception e) { await Peer.Send(incoming, new Message("error", Error: e.Message, RequestId: request.RequestId)); }
     }
 
-    async Task ExecuteExternalPing(Stream incoming, Message request)
+    async Task ExecuteExternalPing(Stream incoming, Message request, bool sendReady = true)
     {
         if (request.Host is null)
         {
-            await Peer.Send(incoming, new Message("error", Error: "Не указана цель пинга.")); return;
+            await Peer.Send(incoming, new Message("error", Error: "Не указана цель пинга.", RequestId: request.RequestId)); return;
         }
-        await Peer.Send(incoming, new Message("ready", Hops: (request.Hops ?? []).Append(id).ToArray()));
+        if (sendReady) await Peer.Send(incoming, new Message("ready", Hops: (request.Hops ?? []).Append(id).ToArray()));
         var result = await ExternalPing.Measure(request.Host);
-        await Peer.Send(incoming, new Message("ping-result", Ip: result.Ip, PingMs: result.Ms, Error: result.Error));
+        await Peer.Send(incoming, new Message("ping-result", Ip: result.Ip, PingMs: result.Ms, Error: result.Error, RequestId: request.RequestId));
     }
 
     async Task Execute(Stream incoming, Message request, bool sendReady = true)
     {
         if (request.Command is not { Length: > 0 and <= 16_384 })
         {
-            await Peer.Send(incoming, new Message("error", Error: "Пустая или слишком длинная команда.")); return;
+            await Peer.Send(incoming, new Message("error", Error: "Пустая или слишком длинная команда.", RequestId: request.RequestId)); return;
         }
         using var process = new Process { StartInfo = new ProcessStartInfo(request.Interactive ? "/usr/bin/script" : "/bin/sh")
         {
@@ -372,7 +448,7 @@ sealed class Service(Store db, X509Certificate2 cert)
         process.StartInfo.ArgumentList.Add(request.Command);
         if (request.Interactive) process.StartInfo.ArgumentList.Add("/dev/null");
         try { process.Start(); }
-        catch (Exception e) { await Peer.Send(incoming, new Message("error", Error: e.Message)); return; }
+        catch (Exception e) { await Peer.Send(incoming, new Message("error", Error: e.Message, RequestId: request.RequestId)); return; }
         try
         {
             if (sendReady) await Peer.Send(incoming, new Message("ready", Hops: (request.Hops ?? []).Append(id).ToArray()));
@@ -381,7 +457,7 @@ sealed class Service(Store db, X509Certificate2 cert)
                 try
                 {
                     while (await Peer.Read(incoming) is Message input)
-                        if (request.Interactive && input.Type == "exec-input")
+                        if (request.Interactive && input.Type == "exec-input" && input.RequestId == request.RequestId)
                         {
                             await process.StandardInput.WriteAsync(input.Output);
                             await process.StandardInput.FlushAsync();
@@ -399,12 +475,12 @@ sealed class Service(Store db, X509Certificate2 cert)
                 while ((count = await reader.ReadAsync(buffer)) > 0)
                 {
                     await writeLock.WaitAsync();
-                    try { await Peer.Send(incoming, new Message("exec-output", Output: new string(buffer, 0, count), Stderr: stderr)); }
+                    try { await Peer.Send(incoming, new Message("exec-output", Output: new string(buffer, 0, count), Stderr: stderr, RequestId: request.RequestId)); }
                     finally { writeLock.Release(); }
                 }
             }
             await Task.WhenAll(Pump(process.StandardOutput, false), Pump(process.StandardError, true), process.WaitForExitAsync());
-            await Peer.Send(incoming, new Message("exec-exit", ExitCode: process.ExitCode));
+            await Peer.Send(incoming, new Message("exec-exit", ExitCode: process.ExitCode, RequestId: request.RequestId));
         }
         catch
         {

@@ -13,6 +13,7 @@ sealed class Store : IDisposable
         foreach (var sql in new[]
         {
             "CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY,v TEXT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS direct_links(source TEXT NOT NULL,target TEXT NOT NULL,json TEXT NOT NULL,updated INTEGER NOT NULL,PRIMARY KEY(source,target))",
             "CREATE TABLE IF NOT EXISTS nodes(id TEXT PRIMARY KEY,json TEXT NOT NULL,version INTEGER NOT NULL)",
             "CREATE TABLE IF NOT EXISTS rules(id TEXT PRIMARY KEY,json TEXT NOT NULL,version INTEGER NOT NULL)",
             "CREATE TABLE IF NOT EXISTS invites(id TEXT PRIMARY KEY,json TEXT NOT NULL)",
@@ -41,6 +42,37 @@ sealed class Store : IDisposable
         return c;
     }
     public void Dispose() { }
+    public List<CachedRoute> Routes(string target) => JsonSerializer.Deserialize<List<CachedRoute>>(Get("routes:" + target) ?? "[]", App.Json) ?? [];
+    public void ChangeRoutes(string target, Func<List<CachedRoute>, List<CachedRoute>> change)
+    {
+        using var c = Open();
+        using var tx = c.BeginTransaction(deferred: false);
+        using var read = c.CreateCommand(); read.Transaction = tx;
+        read.CommandText = "SELECT v FROM meta WHERE k=$k"; read.Parameters.AddWithValue("$k", "routes:" + target);
+        var old = JsonSerializer.Deserialize<List<CachedRoute>>(read.ExecuteScalar() as string ?? "[]", App.Json) ?? [];
+        using var write = c.CreateCommand(); write.Transaction = tx;
+        write.CommandText = "INSERT INTO meta(k,v) VALUES($k,$v) ON CONFLICT(k) DO UPDATE SET v=excluded.v";
+        write.Parameters.AddWithValue("$k", "routes:" + target);
+        write.Parameters.AddWithValue("$v", JsonSerializer.Serialize(change(old), App.Json));
+        write.ExecuteNonQuery(); tx.Commit();
+    }
+    public void PutLink(PingReport link)
+    {
+        if (!link.Direct || !double.IsFinite(link.Ms) || link.Ms < 0 || link.Updated < App.Now - 60_000 || link.Updated > App.Now + 60_000 ||
+            Resolve(link.Source) is null || Resolve(link.Target) is null) return;
+        using var c = Open(); using var q = c.CreateCommand();
+        q.CommandText = "INSERT INTO direct_links VALUES($s,$t,$j,$u) ON CONFLICT(source,target) DO UPDATE SET json=excluded.json,updated=excluded.updated WHERE excluded.updated>direct_links.updated";
+        q.Parameters.AddWithValue("$s", link.Source); q.Parameters.AddWithValue("$t", link.Target);
+        q.Parameters.AddWithValue("$j", JsonSerializer.Serialize(link, App.Json)); q.Parameters.AddWithValue("$u", link.Updated); q.ExecuteNonQuery();
+    }
+    public List<PingReport> Links()
+    {
+        using var c = Open(); using var q = c.CreateCommand();
+        q.CommandText = "SELECT json FROM direct_links WHERE updated>$u"; q.Parameters.AddWithValue("$u", App.Now - 45_000);
+        using var reader = q.ExecuteReader(); var result = new List<PingReport>();
+        while (reader.Read()) result.Add(JsonSerializer.Deserialize<PingReport>(reader.GetString(0), App.Json)!);
+        return result;
+    }
     public string? Get(string key)
     {
         using var c = Open(); using var q = c.CreateCommand();
@@ -142,6 +174,7 @@ sealed class Store : IDisposable
     }
     public void PutPing(PingReport report)
     {
+        if (report.Direct) PutLink(report);
         if (report.Source.Length != 16 || report.Target.Length != 16 || !double.IsFinite(report.Ms) || report.Ms < 0 || report.Updated > App.Now + 60_000 || report.Updated < App.Now - 60_000) return;
         if (report.Route is { Length: > 0 } route &&
             (route.Length > 10 || route[0] != report.Source || route[^1] != report.Target ||

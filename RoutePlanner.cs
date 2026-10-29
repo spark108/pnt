@@ -2,6 +2,28 @@ namespace Pnt;
 
 static class RoutePlanner
 {
+    public static string[][] Paths(Store db, string source, string target)
+    {
+        if (source == target) return [[source]];
+        var nodes = db.Nodes().Where(n => !n.Removed).Select(n => n.Id).ToHashSet();
+        var links = db.Links().Where(p => p.Direct && nodes.Contains(p.Source) && nodes.Contains(p.Target)).ToArray();
+        var paths = new List<string[]> { new[] { source, target } };
+        var queue = new PriorityQueue<string[], double>();
+        queue.Enqueue([source], 0);
+        var expanded = 0;
+        while (queue.TryDequeue(out var path, out var cost) && paths.Count < 17 && expanded++ < 2000)
+        {
+            if (path[^1] == target) { paths.Add(path); continue; }
+            if (path.Length >= 9) continue;
+            foreach (var link in links.Where(p => p.Source == path[^1] && !path.Contains(p.Target)))
+                queue.Enqueue(path.Append(link.Target).ToArray(), cost + link.Ms);
+        }
+        foreach (var report in db.Pings().Where(p => p.Source == source && p.Target == target && p.Route is { Length: > 1 }))
+            if (report.Route!.All(nodes.Contains)) paths.Add(report.Route!);
+        foreach (var relay in Candidates(db, source, target, []).Where(n => n.Id != target)) paths.Add([source, relay.Id, target]);
+        return paths.Where(p => p.Length <= 10 && p.Distinct().Count() == p.Length)
+            .DistinctBy(p => string.Join("/", p)).Take(48).ToArray();
+    }
     public static IEnumerable<Node> Candidates(Store db, string current, string target, IEnumerable<string> visited,
         bool skipTarget = false)
     {

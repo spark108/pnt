@@ -28,21 +28,27 @@ static class Certificate
 
 sealed class Peer : IDisposable
 {
-    readonly TcpClient socket;
-    public SslStream Stream { get; }
+    readonly TcpClient? socket;
+    readonly string? fingerprint;
+    readonly string? remoteId;
+    public Stream Stream { get; }
     public Message? RouteReady { get; set; }
-    public IPAddress RemoteAddress => ((System.Net.IPEndPoint)socket.Client.RemoteEndPoint!).Address;
-    public string RemoteFingerprint => Certificate.Fingerprint(new X509Certificate2(Stream.RemoteCertificate!));
-    public string RemoteId => Certificate.Id(new X509Certificate2(Stream.RemoteCertificate!));
+    public string RemoteFingerprint => fingerprint ?? Certificate.Fingerprint(new X509Certificate2(((SslStream)Stream).RemoteCertificate!));
+    public string RemoteId => remoteId ?? Certificate.Id(new X509Certificate2(((SslStream)Stream).RemoteCertificate!));
     Peer(TcpClient socket, SslStream stream) { this.socket = socket; Stream = stream; }
-    public void Dispose() { Stream.Dispose(); socket.Dispose(); }
+    internal Peer(Stream stream, string fingerprint, string remoteId) { Stream = stream; this.fingerprint = fingerprint; this.remoteId = remoteId; }
+    public void Dispose() { Stream.Dispose(); socket?.Dispose(); }
 
-    public static async Task<Peer> Connect(string ip, string expectedFingerprint, X509Certificate2 cert)
+    public static Task<Peer> Connect(string ip, string expectedFingerprint, X509Certificate2 cert, CancellationToken cancellation = default)
+        => MultiplexPool.Connect(ip, expectedFingerprint, cert, cancellation);
+
+    internal static async Task<Peer> ConnectRaw(string ip, string expectedFingerprint, X509Certificate2 cert, CancellationToken cancellation = default)
     {
         var tcp = new TcpClient();
         try
         {
-            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
+            timeout.CancelAfter(TimeSpan.FromSeconds(5));
             await tcp.ConnectAsync(ip, 442, timeout.Token);
             var tls = new SslStream(tcp.GetStream(), false, (sender, presented, chain, errors) =>
                 presented != null && Certificate.Fingerprint(new X509Certificate2(presented)) == expectedFingerprint);

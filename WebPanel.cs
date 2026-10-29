@@ -68,6 +68,7 @@ sealed class WebPanel(Store db)
             self = db.Get("self"),
             nodes = db.Nodes().Where(x => !x.Removed).Select(x => new { x.Id, x.Name, x.Ip, x.Updating, x.UpdatingSince }),
             pings = db.Pings(),
+            links = db.Links().Where(p => p.Updated > App.Now - 30_000),
             rules = db.Rules().Where(x => !x.Removed).Select(x => new { x.Id, x.In, x.InPort, x.Via, x.To, x.ToPort }),
             time = App.Now
         }));
