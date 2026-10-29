@@ -6,8 +6,9 @@ using System.Security.Cryptography.X509Certificates;
 
 namespace Pnt;
 
-sealed class Service(Store db, X509Certificate2 cert)
+sealed class Service(Store db, X509Certificate2 cert,int controlPort=442)
 {
+    public int ControlPort {get;private set;}=controlPort;
     readonly string id = Certificate.Id(cert);
     readonly Dictionary<string, TcpListener> listeners = new();
     readonly CancellationTokenSource stop = new();
@@ -15,6 +16,7 @@ sealed class Service(Store db, X509Certificate2 cert)
     readonly Dictionary<string, (Task Work, long Due)> routeScans = new();
     Task topologyWork = Task.CompletedTask;
     Task bootstrapWork = Task.CompletedTask;
+    Task vpnWork = Task.CompletedTask;
     readonly WebPanel web = new(db, cert);
     readonly RouteTransport routing = new(db, cert);
 
@@ -23,9 +25,10 @@ sealed class Service(Store db, X509Certificate2 cert)
         RegisterMultiplex();
         if(db.Get("bootstrap_peer_cert") is string fp && db.Get("bootstrap_host") is string host)MultiplexPool.SetAddress(id,fp,host);
         if(db.Self() is Node own && own.Platform!=App.Platform)db.Put(own with{Platform=App.Platform,Version=Math.Max(App.Now,own.Version+1)});
-        var control = new TcpListener(IPAddress.Any, 442); control.Start();
-        Firewall.Open(442);
-        Console.WriteLine("pnt: service listening on TCP 442");
+        var control = new TcpListener(IPAddress.Any, ControlPort); control.Start();
+        ControlPort=((IPEndPoint)control.LocalEndpoint).Port;
+        Firewall.Open(ControlPort);
+        Console.WriteLine("pnt: service listening on TCP "+ControlPort);
         using var term = OperatingSystem.IsLinux() ? PosixSignalRegistration.Create(PosixSignal.SIGTERM, x => { x.Cancel = true; stop.Cancel(); }) : null;
         Console.CancelKeyPress += (_, x) => { x.Cancel = true; stop.Cancel(); };
         _ = Task.Run(Maintain);
@@ -44,7 +47,7 @@ sealed class Service(Store db, X509Certificate2 cert)
             await web.Stop();
             control.Stop();
             foreach (var l in listeners.Values) { Firewall.Close(((IPEndPoint)l.LocalEndpoint).Port); l.Stop(); }
-            Firewall.Close(442);
+            Firewall.Close(ControlPort);
         }
     }
     public void Stop()=>stop.Cancel();
@@ -57,6 +60,7 @@ sealed class Service(Store db, X509Certificate2 cert)
         if (request == null) return;
         if(request.Type=="enroll"){await Enrollment.Receive(db,cert,peer,request,stop.Token);return;}
         if (request.Type == "join") { await Join(peer, request); return; }
+        if(request.Type=="vpn-client") {await VpnControl.ClientRequest(db,cert,peer,request,stop.Token);return;}
         var known = db.Nodes().FirstOrDefault(x => x.Id == request.Id && x.Cert == peer.RemoteFingerprint);
         if (known?.Removed == true && request.Type == "sync")
         {
@@ -92,6 +96,8 @@ sealed class Service(Store db, X509Certificate2 cert)
     {
         switch (request.Type)
         {
+            case "vpn-admin":
+                await VpnControl.Execute(db,cert,stream,request,stop.Token);break;
             case "route-info":
                 await Peer.Send(stream, new Message("route-info", id, Pings: db.Pings().ToArray(), Links: db.Links().ToArray())); break;
             case "route-search":
@@ -172,7 +178,7 @@ sealed class Service(Store db, X509Certificate2 cert)
         var task = await Peer.Read(incoming).WaitAsync(TimeSpan.FromSeconds(20));
         if (task is null) return;
         if (task.RequestId != request.RequestId || task.Id != path[0] || task.Deadline <= App.Now ||
-            task.Type is not ("sync" or "probe" or "exec" or "ping-external" or "tcp-check" or "interfaces" or "tunnel"))
+            task.Type is not ("sync" or "probe" or "exec" or "ping-external" or "tcp-check" or "interfaces" or "tunnel" or "vpn-admin"))
         {
             await Peer.Send(incoming, new Message("error", Error: "Запрос просрочен или не соответствует маршруту.", RequestId: task.RequestId)); return;
         }
@@ -204,7 +210,7 @@ sealed class Service(Store db, X509Certificate2 cert)
         await Peer.Send(peer.Stream, new Message("welcome", id, Nodes: db.Nodes().ToArray(), Rules: db.Rules().ToArray(), KeyHash: db.Get("key_hash"), Update: db.Update(), Web: db.Web()));
     }
 
-    Message Sync() => new("sync", id, Nodes: db.Nodes().ToArray(), Rules: db.Rules().ToArray(), Update: db.Update(), Pings: db.Pings().ToArray(), Web: db.Web(), Links: db.Links().ToArray());
+    Message Sync() => new("sync", id, Nodes: db.Nodes().ToArray(), Rules: db.Rules().ToArray(), Update: db.Update(), Pings: db.Pings().ToArray(), Web: db.Web(), Links: db.Links().ToArray(),VpnServers:db.VpnServers().ToArray(),VpnClients:db.VpnClients().ToArray());
 
     void Merge(Message m)
     {
@@ -217,6 +223,7 @@ sealed class Service(Store db, X509Certificate2 cert)
             db.Put(n);
         }
         foreach (var r in m.Rules ?? []) db.Put(r);
+        VpnControl.Merge(db,m);
         foreach (var ping in m.Pings ?? []) db.PutPing(ping);
         foreach (var link in m.Links ?? []) db.PutLink(link);
         if (m.Update is not null) db.PutUpdate(m.Update);
@@ -231,6 +238,7 @@ sealed class Service(Store db, X509Certificate2 cert)
             {
                 await web.Refresh();
                 await RefreshListeners();
+                if(vpnWork.IsCompleted)vpnWork=ReconcileVpn();
                 if(db.Get("cluster") is null && db.Get("bootstrap_host") is not null && bootstrapWork.IsCompleted)
                     bootstrapWork=Bootstrap();
                 if (db.Get("cluster") != null && (db.Self()?.Removed != true || db.Get("left") == "1"))
@@ -256,6 +264,12 @@ sealed class Service(Store db, X509Certificate2 cert)
         try{await Enrollment.Connect(db,cert,stop.Token);}
         catch(OperationCanceledException){}
         catch(Exception e){Console.Error.WriteLine("pnt: bootstrap: "+e.Message);}
+    }
+    async Task ReconcileVpn()
+    {
+        try{await VpnControl.Reconcile(db,stop.Token);}
+        catch(OperationCanceledException){}
+        catch(Exception e){Console.Error.WriteLine("pnt: VPN reconciliation: "+e.Message);}
     }
 
     async Task ScanRoutes(string target)

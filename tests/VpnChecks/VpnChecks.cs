@@ -1,0 +1,77 @@
+using System.Net;
+using System.Net.Sockets;
+using System.Security.Cryptography.X509Certificates;
+using System.Text;
+using System.Text.Json;
+
+namespace Pnt;
+
+static class VpnChecks
+{
+    static void Assert(bool value,string message){if(!value)throw new Exception(message);}
+    public static async Task Main()
+    {
+        var directory=Path.Combine(Path.GetTempPath(),"pnt-vpn-check-"+Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);Environment.SetEnvironmentVariable("PNT_DATA_DIR",directory);
+        Environment.SetEnvironmentVariable("PNT_MANAGE_FIREWALL","0");
+        using var cert=Certificate.Load(Path.Combine(directory,"node.pfx"));
+        using var db=new Store(Path.Combine(directory,"pnt.db"));var self=Certificate.Id(cert);
+        db.Set("self",self);db.Set("cluster","test-cluster");db.Put(new Node(self,"local","127.0.0.1",Certificate.Fingerprint(cert),App.Now));
+        db.PutVpn(new VpnServer(self,"Test VPN",App.Now));
+        var registered=db.VpnServers().Single();
+        db.PutVpn(registered with{Removed=true,Version=registered.Version+1});
+        db.PutVpn(registered with{Version=registered.Version+2});
+        Assert(!db.VpnServers().Single().Removed,"Explicit server re-registration failed");
+        var output=Path.Combine(directory,"client.pnt");
+        await VpnControl.Command(db,cert,["client","create","Alice","--servers","local","--out",output]);
+        var profile=VpnClientAgent.Validate(await File.ReadAllTextAsync(output));
+        Assert(profile.ClientId==db.VpnClients().Single().Id,"Client identity mismatch");
+        Assert(!db.Nodes().Any(n=>n.Id==profile.ClientId),"Client added to cluster topology");
+        Assert(!File.ReadAllText(Path.Combine(directory,"pnt.db")).Contains(profile.Identity),"Private client identity persisted to registry");
+        try{VpnClientAgent.Validate(JsonSerializer.Serialize(profile with{ClientId=self},App.Json));throw new Exception("Tampered profile accepted");}catch(ArgumentException){}
+        using var identity=X509CertificateLoader.LoadPkcs12(Convert.FromBase64String(profile.Identity),null,X509KeyStorageFlags.Exportable);
+        var service=new Service(db,cert,0);var running=service.Run();
+        async Task<Message> Request(Message request)
+        {
+            using var peer=await Peer.ConnectRaw("127.0.0.1",Certificate.Fingerprint(cert),identity,port:service.ControlPort);
+            await Peer.Send(peer.Stream,request);
+            return await Peer.Read(peer.Stream).WaitAsync(TimeSpan.FromSeconds(10))??throw new Exception("No reply");
+        }
+        try
+        {
+            var catalog=await Request(new Message("vpn-client",profile.ClientId,Name:"catalog"));
+            Assert(catalog.Type=="vpn-result"&&catalog.VpnServers?.Single().Id==self,"Authorized catalog missing");
+            Assert((await Request(new Message("vpn-client",self,Name:"catalog"))).Type=="error","Forged client ID accepted");
+            Assert((await Request(new Message("exec",profile.ClientId,Target:self,Command:"echo forbidden"))).Type=="error","Client obtained member privileges");
+            Assert((await Request(new Message("vpn-client",profile.ClientId,Name:"exec",Target:self))).Type=="error","Client API accepted exec");
+            var client=db.VpnClients().Single();db.PutVpn(client with{Servers=[],Version=client.Version+1});
+            VpnControl.Merge(db,new Message("sync",VpnClients:[client with{Cert=new string('0',64),Version=client.Version+10}]));
+            Assert(db.VpnClients().Single().Cert==client.Cert,"Client certificate changed through replication");
+            Assert((await Request(new Message("vpn-client",profile.ClientId,Name:"catalog"))).VpnServers?.Length==0,"Denied server remains visible");
+            Assert((await Request(new Message("vpn-client",profile.ClientId,Name:"ensure",Target:self))).Type=="error","Denied server issued a VPN profile");
+            db.PutVpn(client with{Removed=true,Version=client.Version+2});
+            Assert((await Request(new Message("vpn-client",profile.ClientId,Name:"catalog"))).Type=="error","Revoked client authenticated");
+            db.PutVpn(client with{Version=client.Version+3});Assert(db.VpnClients().Single().Removed,"Revoked client resurrected");
+            await using var memory=new MemoryStream();
+            var bytes=Enumerable.Range(0,65000).Select(i=>(byte)i).ToArray();
+            await VpnDatagrams.Write(memory,bytes,default);await VpnDatagrams.Write(memory,new byte[]{7,8},default);memory.Position=0;
+            Assert((await VpnDatagrams.Read(memory,default)).SequenceEqual(bytes),"Large UDP packet corrupted");
+            Assert((await VpnDatagrams.Read(memory,default)).SequenceEqual(new byte[]{7,8}),"UDP packet boundaries lost");
+            using var echo=new UdpClient(new IPEndPoint(IPAddress.Loopback,0));
+            var listener=new TcpListener(IPAddress.Loopback,0);listener.Start();
+            try
+            {
+                using var input=new TcpClient();var accepting=listener.AcceptTcpClientAsync();await input.ConnectAsync(IPAddress.Loopback,((IPEndPoint)listener.LocalEndpoint).Port);
+                using var exit=await accepting;using var stop=new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                var exiting=VpnDatagrams.Exit(exit.GetStream(),"127.0.0.1",((IPEndPoint)echo.Client.LocalEndPoint!).Port,()=>true,stop.Token);
+                await VpnDatagrams.Write(input.GetStream(),Encoding.UTF8.GetBytes("through-pnt"),stop.Token);
+                var packet=await echo.ReceiveAsync(stop.Token);await echo.SendAsync(packet.Buffer,packet.RemoteEndPoint,stop.Token);
+                Assert(Encoding.UTF8.GetString(await VpnDatagrams.Read(input.GetStream(),stop.Token))=="through-pnt","UDP tunnel roundtrip failed");
+                stop.Cancel();try{await exiting;}catch(OperationCanceledException){}
+            }
+            finally{listener.Stop();}
+            Console.WriteLine("PASS: signed profiles, client identity, ACL catalog, member isolation, revoke tombstones, UDP framing and real UDP roundtrip.");
+        }
+        finally{service.Stop();await running;}
+    }
+}

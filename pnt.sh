@@ -63,7 +63,7 @@ install_dependencies() {
     esac
     export DEBIAN_FRONTEND=noninteractive
     apt-get update
-    apt-get install -y ca-certificates curl git openssh-client systemd nftables iptables util-linux \
+    apt-get install -y ca-certificates curl git openssh-client systemd nftables iptables util-linux python3 \
         libc6 libgcc-s1 libgssapi-krb5-2 libstdc++6 tzdata zlib1g "$icu_package" "$ssl_package"
     if ! command -v dotnet >/dev/null 2>&1 || ! dotnet --list-sdks 2>/dev/null | grep -q '^10\.'; then
         curl -fsSL "https://packages.microsoft.com/config/debian/$VERSION_ID/packages-microsoft-prod.deb" \

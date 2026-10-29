@@ -3,3 +3,5 @@ obj/
 .test-data/
 .publish-test/
 *.user
+aqtinstall.log
+__pycache__/

@@ -48,14 +48,14 @@ sealed class Peer : IDisposable
     public static Task<Peer> Connect(string ip, string expectedFingerprint, X509Certificate2 cert, CancellationToken cancellation = default)
         => MultiplexPool.Connect(ip, expectedFingerprint, cert, cancellation);
 
-    internal static async Task<Peer> ConnectRaw(string ip, string? expectedFingerprint, X509Certificate2 cert, CancellationToken cancellation = default)
+    internal static async Task<Peer> ConnectRaw(string ip, string? expectedFingerprint, X509Certificate2 cert, CancellationToken cancellation = default, int port = 442)
     {
         var tcp = new TcpClient();
         try
         {
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
             timeout.CancelAfter(TimeSpan.FromSeconds(5));
-            await tcp.ConnectAsync(ip, 442, timeout.Token);
+            await tcp.ConnectAsync(ip, port, timeout.Token);
             var tls = new SslStream(tcp.GetStream(), false, (sender, presented, chain, errors) =>
                 presented != null && (expectedFingerprint is null || Certificate.Fingerprint(new X509Certificate2(presented)) == expectedFingerprint));
             await tls.AuthenticateAsClientAsync(new SslClientAuthenticationOptions

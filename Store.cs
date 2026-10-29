@@ -15,6 +15,8 @@ sealed class Store : IDisposable
             "CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY,v TEXT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS direct_links(source TEXT NOT NULL,target TEXT NOT NULL,json TEXT NOT NULL,updated INTEGER NOT NULL,PRIMARY KEY(source,target))",
             "CREATE TABLE IF NOT EXISTS nodes(id TEXT PRIMARY KEY,json TEXT NOT NULL,version INTEGER NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS vpn_servers(id TEXT PRIMARY KEY,json TEXT NOT NULL,version INTEGER NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS vpn_clients(id TEXT PRIMARY KEY,json TEXT NOT NULL,version INTEGER NOT NULL)",
             "CREATE TABLE IF NOT EXISTS rules(id TEXT PRIMARY KEY,json TEXT NOT NULL,version INTEGER NOT NULL)",
             "CREATE TABLE IF NOT EXISTS invites(id TEXT PRIMARY KEY,json TEXT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS join_requests(id TEXT PRIMARY KEY,json TEXT NOT NULL)",
@@ -142,6 +144,15 @@ sealed class Store : IDisposable
         return result;
     }
     public List<Node> Nodes() => All<Node>("nodes");
+    public List<VpnServer> VpnServers() => All<VpnServer>("vpn_servers");
+    public List<VpnClient> VpnClients() => All<VpnClient>("vpn_clients");
+    public void PutVpn(VpnServer value)
+    {
+        using var c=Open();using var q=c.CreateCommand();
+        q.CommandText="INSERT INTO vpn_servers VALUES($id,$json,$version) ON CONFLICT(id) DO UPDATE SET json=excluded.json,version=excluded.version WHERE excluded.version>vpn_servers.version";
+        q.Parameters.AddWithValue("$id",value.Id);q.Parameters.AddWithValue("$json",JsonSerializer.Serialize(value,App.Json));q.Parameters.AddWithValue("$version",value.Version);q.ExecuteNonQuery();
+    }
+    public void PutVpn(VpnClient value) => Upsert("vpn_clients",value.Id,value.Version,JsonSerializer.Serialize(value,App.Json));
     public List<Rule> Rules() => All<Rule>("rules");
     public List<Invite> Invites() => All<Invite>("invites");
     public List<JoinRequest> JoinRequests() => All<JoinRequest>("join_requests");

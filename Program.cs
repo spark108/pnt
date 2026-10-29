@@ -27,7 +27,8 @@ record Message(string Type, string? Id = null, string? Name = null, string? Ip =
     string? Command = null, string? Output = null, bool Stderr = false, int ExitCode = 0,
     string? Host = null, double? PingMs = null, bool Interactive = false,
     string? RequestId = null, long Deadline = 0, string[][]? Routes = null, PingReport[]? Links = null,
-    NodeInterface[]? Interfaces = null, string? OutAddress = null, string? OutInterface = null, string? Platform = null, bool BehindNat = false);
+    NodeInterface[]? Interfaces = null, string? OutAddress = null, string? OutInterface = null, string? Platform = null, bool BehindNat = false,
+    VpnServer[]? VpnServers = null, VpnClient[]? VpnClients = null, string? VpnPayload = null);
 
 static class App
 {
@@ -56,6 +57,7 @@ static class App
     {
         try
         {
+            if(a is ["_vpn-client", .. var clientArgs])return await VpnClientAgent.Run(clientArgs);
             LocalAccess.Demand();
             if(a is ["_prepare-access"]){LocalAccess.Prepare();return 0;}
             if (a.Length == 0 || a[0] is "help" or "--help") { Help(); return 0; }
@@ -67,6 +69,7 @@ static class App
             var me = Certificate.Id(cert);
             switch (a)
             {
+                case ["vpn", .. var vpnArgs]: await VpnControl.Command(db,cert,vpnArgs);break;
                 case ["install", "-r", var remoteHost]: return await Management.Remote(db, cert, remoteHost);
                 case ["serve"]:
                     if (OperatingSystem.IsWindows() && !Environment.UserInteractive) WindowsServiceHost.Run(db,cert);
@@ -338,6 +341,10 @@ static class App
         pnt cluster invite revoke <id>
         pnt accept cluster <invite_key>
         pnt name <name>
+        pnt vpn add server <node> <display_name> | remove <node> | servers
+        pnt vpn client create <name> --servers <node1,node2> --out <file>
+        pnt vpn client list | show <client> | allow <client> <node> | deny <client> <node> | revoke <client>
+        pnt vpn client handshake <client> [node]
         pnt forward add --listen <node>:<port> [--via <node>] --to <node|ip>:<port> [--proto tcp]
         pnt forward list | show <id> | remove <id>
         pnt web enable | disable

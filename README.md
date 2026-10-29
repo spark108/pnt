@@ -1,5 +1,7 @@
 # PNT
 
+VPN server registration, restricted client profiles and the PNT-only Windows VPN client are documented in [VPN.md](VPN.md).
+
 PNT is a .NET 10 cluster service for Debian and Windows. It uses TCP 442 for encrypted node communication, SQLite for local cluster state, and TCP streams for port forwarding. Every node has a persistent self-signed TLS certificate and a 16-character node ID derived from its public key. Connections pin the stored certificate fingerprint. New nodes request membership and an existing member explicitly approves their identity. The shared cluster key hash is distributed to approved members over TLS.
 
 ## Local access
