@@ -59,14 +59,14 @@ static class App
             LocalAccess.Demand();
             if(a is ["_prepare-access"]){LocalAccess.Prepare();return 0;}
             if (a.Length == 0 || a[0] is "help" or "--help") { Help(); return 0; }
+            if(a is ["install"] or ["update"])return await Management.Local(a[0]);
+            if(OperatingSystem.IsWindows() && a is ["serve"])LocalAccess.Prepare();
             Directory.CreateDirectory(Dir);
             using var db = new Store(Path.Combine(Dir, "pnt.db"));
             var cert = Certificate.Load(Path.Combine(Dir, "node.pfx"));
             var me = Certificate.Id(cert);
             switch (a)
             {
-                case ["install"]: return await Management.Local("install");
-                case ["update"]: return await Management.Local("update");
                 case ["install", "-r", var remoteHost]: return await Management.Remote(db, cert, remoteHost);
                 case ["serve"]:
                     if (OperatingSystem.IsWindows() && !Environment.UserInteractive) WindowsServiceHost.Run(db,cert);

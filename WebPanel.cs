@@ -10,6 +10,8 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace Pnt;
 
+record RenameNode(string? Name);
+
 sealed class WebPanel(Store db, X509Certificate2 cert)
 {
     public const int Port = 8016;
@@ -81,9 +83,26 @@ sealed class WebPanel(Store db, X509Certificate2 cert)
             nodes = db.Nodes().Where(x => !x.Removed).Select(x => new { x.Id, x.Name, x.Ip, x.Updating, x.UpdatingSince, x.BehindNat, x.Platform }),
             pings = db.Pings(),
             links = db.Links().Where(p => p.Updated > App.Now - 30_000),
+            routes = db.Nodes().Where(x => !x.Removed).SelectMany(x => db.Routes(x.Id)),
             rules = db.Rules().Where(x => !x.Removed),
             time = App.Now
         }));
+        server.MapPut("/api/nodes/{id}/name", async (string id,RenameNode input,HttpContext context) =>
+        {
+            var name=input.Name?.Trim();
+            if(string.IsNullOrEmpty(name) || name.Length>64 || name.Any(char.IsControl))
+                return Results.BadRequest(new {error="Имя: от 1 до 64 символов, без управляющих символов."});
+            await forwardChanges.WaitAsync(context.RequestAborted);
+            try
+            {
+                var node=db.Nodes().FirstOrDefault(n=>n.Id==id && !n.Removed);
+                if(node is null)return Results.NotFound(new {error="Узел не найден."});
+                var renamed=node with{Name=name,Version=Math.Max(App.Now,node.Version+1)};
+                db.Put(renamed);
+                return Results.Ok(new {renamed.Id,renamed.Name});
+            }
+            finally{forwardChanges.Release();}
+        });
         server.MapGet("/api/nodes/{node}/interfaces",async (string node,HttpContext context) =>
         {
             try {return Results.Json(await Forwarding.GetInterfaces(db,cert,node,context.RequestAborted));}

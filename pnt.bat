@@ -6,7 +6,7 @@ if "%~2"=="-r" (
 )
 set "PNT_ACTION=%~1"
 if "%PNT_ACTION%"=="" set "PNT_ACTION=status"
-for %%A in (install update start stop restart status) do if /I "%PNT_ACTION%"=="%%A" goto management
+for %%A in (install update repair start stop restart status) do if /I "%PNT_ACTION%"=="%%A" goto management
 if not exist "%ProgramData%\PNT\app\pnt.exe" (
   echo PNT is not installed. Run pnt.bat install from an Administrator terminal.
   exit /b 1

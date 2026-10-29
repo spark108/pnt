@@ -74,11 +74,26 @@ pnt.bat start
 pnt.bat stop
 pnt.bat restart
 pnt.bat status
+pnt.bat repair
 ```
 
 `npt.bat` is an alias for `pnt.bat`. Installation and update run in a hidden worker process and display completed stages. The installer prepares Git and the .NET 10 SDK when missing, publishes a self-contained executable, and registers the automatic Windows service `PNT` under LocalSystem. It adds a `pnt.cmd` launcher to the machine PATH; open a new terminal to pick up PATH changes. The service data and node identity are in `%ProgramData%\PNT\data`, configuration in `%ProgramData%\PNT\config`, and logs in `%ProgramData%\PNT\data\service.log`. Run CLI management commands as Administrator so they can access the protected data directory.
 
 Windows nodes participate in the same cluster, routing, reverse NAT channels, HTTPS panel, TCP forwarding, and update announcements. `pnt sh <windows-node> <command>` executes `cmd.exe /d /s /c`; Unix nodes execute `/bin/sh -c`. Remote installation of `root@IPv4` remains a Debian operation performed by a reachable Linux member; a Windows requester can initiate it through that member. Install Windows targets locally with `pnt.bat`.
+
+If an older Windows update fails with `SQLite Error 14`, open **PowerShell as Administrator**, pull the fixed installer, and repair permissions before updating:
+
+```powershell
+cd 'C:\Program Files\PNT'
+git pull --ff-only
+.\pnt.bat repair
+.\pnt.bat update
+.\pnt.bat status
+```
+
+`repair` creates `PNTAdmin` if necessary and repairs explicit permissions on the data directory and its existing files, including SQLite WAL/SHM. It preserves the database, certificates and cluster identity; it does not open SQLite or restart the old executable. Update also repairs permissions before checking cluster status and tolerates a stopped service or an unavailable status check. Service startup prepares permissions before opening SQLite. Installer error logs are read as UTF-8.
+
+Windows ACL regression check (uses a temporary SQLite database and the current user's own files, requires no elevation): `dotnet run --project tests/WindowsAccessChecks -c Release`.
 
 ## Join from a new node, including behind NAT
 
@@ -153,6 +168,8 @@ Open `https://<node-ip>:8016/` and sign in with username `admin` and the chosen 
 The network map shows solid lines for fresh direct connections and dashed lines for routes through intermediate nodes. Labels show the latest measured ping for a known route or the sum of direct-link pings for an inferred route. Choose servers A and B, then add transit servers in order to highlight a route. The forwarding page shows ingress, exit node, and final destination for every active TCP rule. Ping data older than 30 seconds is ignored, so a route may temporarily disappear during an update or disconnection.
 
 The **Пробросы портов** tab can create and delete TCP rules. Select ingress node, interface/IPv4 address and listening port, then exit node, outgoing interface/IPv4 address, destination IPv4 and destination port. Interface lists are fetched from the selected nodes over their PNT routes. A rule is saved locally and applied as cluster synchronization reaches its ingress and exit nodes. Both nodes need a version supporting interface selection.
+
+Right-click a node on the map (or focus it and press Shift+F10) for **Переименовать** and **Свойства**. Renaming accepts 1–64 characters and synchronizes through cluster membership records. Properties open in a modal showing name, ID, IP, measured ping and cached main/backup routes from the node hosting the panel. Stale measurements are marked; the dialog refreshes with the map.
 
 Ingress is bound to the chosen local address. Exit connections use the chosen source address. On Debian, the selected device is additionally enforced with Linux [SO_BINDTODEVICE](https://man7.org/linux/man-pages/man7/socket.7.html); on Windows, the source address is bound and the system routing table selects the path. For a service on the exit node itself, use destination `127.0.0.1` and automatic outgoing interface selection. Relays carry the TCP stream through PNT; they do not install NAT forwarding rules. The destination sees the exit node as the source.
 

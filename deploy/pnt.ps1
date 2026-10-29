@@ -1,11 +1,13 @@
 ﻿param(
-    [ValidateSet('install','update','start','stop','restart','status')][string]$Action='status',
+    [ValidateSet('install','update','repair','start','stop','restart','status')][string]$Action='status',
     [switch]$Worker,
     [string]$Operation,
     [string]$EventId
 )
 $ErrorActionPreference='Stop'
 [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
+$OutputEncoding=[Console]::OutputEncoding
+$env:DOTNET_CLI_UI_LANGUAGE='en'
 $root=Join-Path $env:ProgramData 'PNT'
 $app=Join-Path $root 'app'
 $config=Join-Path $root 'config'
@@ -14,7 +16,18 @@ $source=Split-Path $PSScriptRoot -Parent
 if(Test-Path $sourceFile){$source=[IO.File]::ReadAllText($sourceFile).Trim()}
 $exe=Join-Path $app 'pnt.exe'
 $repository='https://github.com/spark108/pnt.git'
-function Native([string]$File,[string[]]$Arguments){& $File @Arguments;if($LASTEXITCODE -ne 0){throw "$File failed with exit code $LASTEXITCODE"}}
+function Native([string]$File,[string[]]$Arguments){
+    # Windows PowerShell treats native stderr as ErrorRecord, even for successful Git commands.
+    $previous=$ErrorActionPreference
+    try{$ErrorActionPreference='Continue';& $File @Arguments;$code=$LASTEXITCODE}
+    finally{$ErrorActionPreference=$previous}
+    if($code -ne 0){throw "$File failed with exit code $code"}
+}
+function Cluster-Available {
+    $previous=$ErrorActionPreference
+    try{$ErrorActionPreference='Continue';& $exe cluster status *> $null;return ($LASTEXITCODE -eq 0)}
+    finally{$ErrorActionPreference=$previous}
+}
 function Stage([string]$Message){[IO.File]::AppendAllText($progress,"✓ $Message`n",[Text.UTF8Encoding]::new($false))}
 function Move-Managed([string]$From,[string]$To){
     $base=[IO.Path]::GetFullPath($root).TrimEnd('\')+'\'
@@ -43,6 +56,12 @@ try {
         if($recent){Get-Content -LiteralPath $recent.FullName -Encoding UTF8};exit 0
     }
     if(-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)){throw 'Run from an Administrator terminal.'}
+    . (Join-Path $PSScriptRoot 'access.ps1')
+    if($Action -eq 'repair'){
+        Repair-PntAccess -DataPath (Join-Path $root 'data')
+        Write-Output 'PNT data permissions repaired. Database and certificates preserved. Run pnt.bat update next.'
+        exit 0
+    }
     if($Action -in @('start','stop','restart')){
         switch($Action){start{Start-Service PNT}stop{Stop-Service PNT}restart{Restart-Service PNT}};exit 0
     }
@@ -60,22 +79,26 @@ try {
             Start-Sleep -Milliseconds 500
         }
         if(Test-Path $progress){$lines=@(Get-Content $progress -Encoding UTF8);if($lines.Count -gt $shown){$lines[$shown..($lines.Count-1)]}}
+        $child.WaitForExit()
         $code=[int]([IO.File]::ReadAllText($result))
-        if($code -ne 0){Get-Content (Join-Path $operations "$Operation.err") -Tail 20;Get-Content (Join-Path $operations "$Operation.log") -Tail 20};exit $code
+        if($code -ne 0){Get-Content (Join-Path $operations "$Operation.err") -Encoding UTF8 -Tail 20;Get-Content (Join-Path $operations "$Operation.log") -Encoding UTF8 -Tail 20};exit $code
     }
     if($Operation -notmatch '^[0-9a-fA-F]{32}$'){throw 'Invalid operation ID'}
     $progress=Join-Path $operations "$Operation.progress";$result=Join-Path $operations "$Operation.result"
     $lock=$null;$temp=$null;$backup=$null;$stopped=$false;$maintenance=$false;$success=$false;$createdService=$false;$installedApp=$false
     try{
         $lock=[IO.File]::Open((Join-Path $root 'maintenance.lock'),[IO.FileMode]::OpenOrCreate,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)
-        $pntGroup=Get-LocalGroup -Name PNTAdmin -ErrorAction SilentlyContinue
-        if(-not $pntGroup){$pntGroup=New-LocalGroup -Name PNTAdmin -Description 'PNT cluster administrators'}
         if($Action -eq 'install' -and (Test-Path $exe)){throw 'PNT is installed; use update.'}
         if($Action -eq 'update' -and -not (Test-Path $exe)){throw 'Install PNT first.'}
         if($Action -eq 'update'){
-            & $exe cluster status *> $null
-            if($LASTEXITCODE -eq 0){& $exe cluster maintenance start;if($LASTEXITCODE -eq 0){$maintenance=$true;Stage 'Update status announced';Start-Sleep 8}}
-            Stop-Service PNT -ErrorAction Stop;$stopped=$true;Stage 'Service stopped'
+            Repair-PntAccess -DataPath (Join-Path $root 'data');Stage 'Data permissions repaired'
+            if(Cluster-Available){
+                try{Native $exe -Arguments @('cluster','maintenance','start');$maintenance=$true;Stage 'Update status announced';Start-Sleep 8}
+                catch{Write-Output ('Update announcement unavailable: '+$_.Exception.Message)}
+            }
+            $service=Get-Service PNT -ErrorAction SilentlyContinue
+            if($service -and $service.Status -ne 'Stopped'){Stop-Service PNT -ErrorAction Stop}
+            $stopped=[bool]$service;Stage 'Service stopped'
         }
         [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12
         $tools=Join-Path $root 'tools';New-Item -ItemType Directory -Force $tools | Out-Null
@@ -109,10 +132,10 @@ try {
         $rid=if($env:PROCESSOR_ARCHITECTURE -eq 'ARM64'){'win-arm64'}else{'win-x64'}
         $build=Join-Path $temp 'publish';Native dotnet -Arguments @('publish',(Join-Path $source 'pnt.csproj'),'-c','Release','-r',$rid,'--self-contained','true','-p:PublishSingleFile=true','-o',$build);Stage 'Binary built'
         $data=Join-Path $root 'data';New-Item -ItemType Directory -Force $data,$config,(Join-Path $root 'bin') | Out-Null
-        $groupAccess='*'+$pntGroup.SID.Value+':(OI)(CI)M'
-        Native icacls -Arguments @($data,'/inheritance:r','/grant:r','*S-1-5-18:(OI)(CI)F','*S-1-5-32-544:(OI)(CI)F',$groupAccess,'/T','/C','/L')
+        Repair-PntAccess -DataPath $data
         if(Test-Path $app){$backup=Join-Path $root ('app-backup-'+$Operation);Move-Managed $app $backup}
         Move-Managed $build $app;$installedApp=$true
+        Native $exe -Arguments @('_prepare-access')
         [IO.File]::WriteAllText($sourceFile,$source)
         [IO.File]::WriteAllText((Join-Path $root 'bin\pnt.cmd'),"@echo off`r`n`"$exe`" %*`r`n",[Text.Encoding]::ASCII)
         $bin=Join-Path $root 'bin';$machinePath=[Environment]::GetEnvironmentVariable('PATH','Machine')
@@ -124,8 +147,7 @@ try {
         if($maintenance){Native $exe -Arguments @('cluster','maintenance','done');$maintenance=$false}
         if($Action -eq 'update'){
             if($EventId){Native $exe -Arguments @('cluster','update','applied',$EventId)}else{
-                & $exe cluster status *> $null
-                if($LASTEXITCODE -eq 0){$commit=& git -C $source rev-parse HEAD;Native $exe -Arguments @('cluster','update','announce',$commit)}
+                if(Cluster-Available){$commit=& git -C $source rev-parse HEAD;Native $exe -Arguments @('cluster','update','announce',$commit)}
             }
         }
         $success=$true;Stage 'Operation completed'
@@ -139,11 +161,11 @@ try {
             }
             elseif($Action -eq 'install' -and $installedApp -and (Test-Path $app)){Move-Managed $app (Join-Path $root ('app-failed-'+$Operation))}
             if($stopped){Start-Service PNT -ErrorAction SilentlyContinue}
-            if($maintenance -and (Test-Path $exe)){& $exe cluster maintenance done}
+            if($maintenance -and (Test-Path $exe)){try{Native $exe -Arguments @('cluster','maintenance','done')}catch{Write-Output $_.Exception.Message}}
         }
         if($lock){$lock.Dispose()}
         Remove-Managed $temp
         if($success){Remove-Managed $backup}
         [IO.File]::WriteAllText($result,$(if($success){'0'}else{'1'}))
     }
-}catch{Write-Error $_;exit 1}
+}catch{[Console]::Error.WriteLine($_.Exception.Message);exit 1}

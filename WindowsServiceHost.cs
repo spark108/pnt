@@ -13,7 +13,6 @@ sealed class WindowsServiceHost(Store db,X509Certificate2 cert) : ServiceBase
     public static void Run(Store db,X509Certificate2 cert) => ServiceBase.Run(new WindowsServiceHost(db,cert){ServiceName="PNT",AutoLog=true,CanShutdown=true});
     protected override void OnStart(string[] args)
     {
-        LocalAccess.Prepare();
         Directory.CreateDirectory(App.Dir);
         var logPath=Path.Combine(App.Dir,"service.log");
         if(File.Exists(logPath)&&new FileInfo(logPath).Length>10*1024*1024)File.Move(logPath,logPath+".previous",true);

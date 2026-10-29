@@ -33,8 +33,12 @@ static class ForwardingChecks
             for(var i=0;i<30;i++){try{using var test=await http.GetAsync("/api/state");break;}catch(HttpRequestException){await Task.Delay(100);}}
             Assert((await http.GetAsync("/api/state")).StatusCode==HttpStatusCode.Unauthorized,"API is not protected");
             http.DefaultRequestHeaders.Authorization=new AuthenticationHeaderValue("Basic",Convert.ToBase64String(Encoding.UTF8.GetBytes("admin:test-password")));
+            db.ChangeRoutes(self,_=>[new CachedRoute(self,[self],0,App.Now,1,0,1,true)]);
             using var state=JsonDocument.Parse(await http.GetStringAsync("/api/state"));
             var csrf=state.RootElement.GetProperty("csrfToken").GetString()!;
+            Assert(state.RootElement.GetProperty("routes").ValueKind==JsonValueKind.Array,"Route cache missing from state");
+            Assert(state.RootElement.GetProperty("routes").EnumerateArray().Single().GetProperty("path")[0].GetString()==self,"Cached path missing from state");
+            Assert((await http.PutAsJsonAsync("/api/nodes/"+self+"/name",new RenameNode("forbidden"),App.Json)).StatusCode==HttpStatusCode.Forbidden,"Rename bypassed CSRF");
             var inventory=await http.GetFromJsonAsync<NodeInterface[]>("/api/nodes/"+self+"/interfaces");
             var loopback=inventory!.First(i=>i.Address=="127.0.0.1");
             var reservation=new TcpListener(IPAddress.Loopback,0);reservation.Start();var port=((IPEndPoint)reservation.LocalEndpoint).Port;reservation.Stop();
@@ -43,6 +47,15 @@ static class ForwardingChecks
             http.DefaultRequestHeaders.Add("X-PNT-CSRF",csrf);http.DefaultRequestHeaders.Add("Origin","https://other.example");
             Assert((await http.PostAsJsonAsync("/api/forwards",input,App.Json)).StatusCode==HttpStatusCode.Forbidden,"Foreign origin accepted");
             http.DefaultRequestHeaders.Remove("Origin");http.DefaultRequestHeaders.Add("Origin","https://127.0.0.1:8016");
+            foreach(var bad in new string?[]{null,"  ",new string('x',65),"bad\nname"})
+                Assert((await http.PutAsJsonAsync("/api/nodes/"+self+"/name",new RenameNode(bad),App.Json)).StatusCode==HttpStatusCode.BadRequest,"Invalid name accepted");
+            Assert((await http.PutAsJsonAsync("/api/nodes/missing/name",new RenameNode("valid"),App.Json)).StatusCode==HttpStatusCode.NotFound,"Unknown node renamed");
+            var original=db.Self()!;
+            Assert((await http.PutAsJsonAsync("/api/nodes/"+self+"/name",new RenameNode("  Новый сервер  "),App.Json)).IsSuccessStatusCode,"Rename failed");
+            var renamed=db.Self()!;
+            Assert(renamed.Name=="Новый сервер"&&renamed.Version>original.Version&&renamed.Id==original.Id&&renamed.Cert==original.Cert&&renamed.Ip==original.Ip,"Rename lost identity or version");
+            using(var updated=JsonDocument.Parse(await http.GetStringAsync("/api/state")))
+                Assert(updated.RootElement.GetProperty("nodes").EnumerateArray().Single().GetProperty("name").GetString()=="Новый сервер","Renamed state not visible");
             Assert((await http.PostAsJsonAsync("/api/forwards",input with{InInterface="does-not-exist"},App.Json)).StatusCode==HttpStatusCode.BadRequest,"Invalid interface accepted");
             Assert((await http.PostAsJsonAsync("/api/forwards",input with{InPort=8016},App.Json)).StatusCode==HttpStatusCode.BadRequest,"Reserved port accepted");
             using var created=await http.PostAsJsonAsync("/api/forwards",input,App.Json);
@@ -69,7 +82,7 @@ static class ForwardingChecks
                 Assert(!connected,"Deleted listener still accepts connections");
             }
             Assert(db.Rules().Single(r=>r.Id==rule.Id).Removed,"Removal not persisted");
-            Console.WriteLine("PASS: Basic auth, CSRF, interface inventory, validation, create/delete, ingress binding, exit source binding, real TCP traffic");
+            Console.WriteLine("PASS: Basic auth, CSRF, node rename/validation/identity, routes state, interface inventory, create/delete, ingress binding, exit source binding, real TCP traffic");
         }
         finally
         {

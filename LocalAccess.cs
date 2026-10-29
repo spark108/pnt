@@ -73,10 +73,11 @@ static class LocalAccess
         if(!identity.IsSystem&&!new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator))
             throw new UnauthorizedAccessException("Для настройки прав требуется запуск от имени администратора.");
         Directory.CreateDirectory(App.Dir);
-        var path=App.Dir.Replace("'","''");
-        var script="$ErrorActionPreference='Stop'; $g=Get-LocalGroup -Name PNTAdmin -ErrorAction SilentlyContinue; if(-not $g){$g=New-LocalGroup -Name PNTAdmin -Description 'PNT cluster administrators'}; "+
-            "$sid='*'+$g.SID.Value+':(OI)(CI)M'; & icacls '"+path+"' /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' $sid /T /C /L; exit $LASTEXITCODE";
-        Run("powershell.exe","-NoProfile","-NonInteractive","-Command",script);
+        var assembly=typeof(LocalAccess).Assembly;
+        var resource=assembly.GetManifestResourceNames().Single(n=>n.EndsWith(".deploy.access.ps1",StringComparison.OrdinalIgnoreCase));
+        using var reader=new StreamReader(assembly.GetManifestResourceStream(resource)!);
+        var script="$ErrorActionPreference='Stop';\n"+reader.ReadToEnd()+"\nRepair-PntAccess -DataPath '"+App.Dir.Replace("'","''")+"'";
+        Run("powershell.exe","-NoProfile","-NonInteractive","-EncodedCommand",Convert.ToBase64String(System.Text.Encoding.Unicode.GetBytes(script)));
     }
 
     static void Run(string executable,params string[] arguments)
