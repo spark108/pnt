@@ -1,5 +1,9 @@
 @echo off
 chcp 65001 >nul
+if /I "%~1"=="update" if "%~2"=="--check" (
+  "%ProgramData%\PNT\app\pnt.exe" update --check
+  exit /b
+)
 if "%~2"=="-r" (
   "%ProgramData%\PNT\app\pnt.exe" install -r "%~3"
   exit /b

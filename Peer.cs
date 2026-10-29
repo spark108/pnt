@@ -44,6 +44,13 @@ sealed class Peer : IDisposable
     }
     internal Peer(Stream stream, string fingerprint, string remoteId) { Stream = stream; this.fingerprint = fingerprint; this.remoteId = remoteId; }
     public void Dispose() { Stream.Dispose(); socket?.Dispose(); }
+    internal void EnableKeepAlive()
+    {
+        if(socket==null)return;
+        socket.Client.SetSocketOption(SocketOptionLevel.Socket,SocketOptionName.KeepAlive,true);
+        foreach(var option in new[]{(SocketOptionName.TcpKeepAliveTime,3),(SocketOptionName.TcpKeepAliveInterval,2),(SocketOptionName.TcpKeepAliveRetryCount,3)})
+            try{socket.Client.SetSocketOption(SocketOptionLevel.Tcp,option.Item1,option.Item2);}catch(SocketException){}
+    }
 
     public static Task<Peer> Connect(string ip, string expectedFingerprint, X509Certificate2 cert, CancellationToken cancellation = default)
         => MultiplexPool.Connect(ip, expectedFingerprint, cert, cancellation);

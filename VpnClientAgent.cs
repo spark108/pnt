@@ -9,6 +9,7 @@ namespace Pnt;
 
 static class VpnClientAgent
 {
+    static int relayCursor;
     public static VpnProfile Validate(string json)
     {
         if(json.Length>1_048_576)throw new ArgumentException("Профиль слишком большой.");
@@ -49,8 +50,13 @@ static class VpnClientAgent
             using var local=new UdpClient(new IPEndPoint(IPAddress.Loopback,0));
             using var direct=new UdpClient();direct.Connect(config.Host,config.Port);
             using var stop=new CancellationTokenSource();
-            Peer? relay=null;IPEndPoint? consumer=null;byte[]? lastPacket=null;
-            var transportGate=new SemaphoreSlim(1,1);long lastTraffic=0;
+            IPEndPoint? consumer=null;byte[]? lastPacket=null;
+            var relay=new VpnRelay(async(avoid,ct)=>
+            {
+                if(!profile.Entrypoints.Any(n=>!n.Removed&&n.Id!=avoid))return null;
+                return await Open(profile,identity,"udp",target,ct,avoid);
+            },peer=>Output(new{status="routing",mode="relay",route=peer.RouteReady?.Hops,server=target}));
+            long lastTraffic=0;
             var token=stop.Token;
             async Task Upload()
             {
@@ -59,16 +65,15 @@ static class VpnClientAgent
                     var packet=await local.ReceiveAsync(token);
                     if(consumer!=null&&!consumer.Equals(packet.RemoteEndPoint))continue;
                     consumer??=packet.RemoteEndPoint;lastPacket=packet.Buffer;
-                    await transportGate.WaitAsync(token);
-                    try{if(relay is null){try{await direct.SendAsync(packet.Buffer,token);}catch(SocketException){}}else await VpnDatagrams.Write(relay.Stream,packet.Buffer,token);}
-                    finally{transportGate.Release();}
+                    if(relay.Enabled)relay.Send(packet.Buffer);
+                    else try{await direct.SendAsync(packet.Buffer,token);}catch(SocketException){}
                 }
             }
             async Task DirectDownload()
             {
                 while(!token.IsCancellationRequested)
                 {
-                    try{var packet=await direct.ReceiveAsync(token);if(consumer!=null&&relay is null){Volatile.Write(ref lastTraffic,Environment.TickCount64);await local.SendAsync(packet.Buffer,consumer,token);}}
+                    try{var packet=await direct.ReceiveAsync(token);if(consumer!=null&&!relay.Enabled){Volatile.Write(ref lastTraffic,Environment.TickCount64);await local.SendAsync(packet.Buffer,consumer,token);}}
                     catch(SocketException){await Task.Delay(500,token);}
                 }
             }
@@ -77,22 +82,18 @@ static class VpnClientAgent
                 await Task.Delay(10_000,token);
                 while(!token.IsCancellationRequested)
                 {
-                    var statsReply=await Request(profile,identity,"stats",target,token);
-                    var stats=JsonSerializer.Deserialize<VpnStatistics>(statsReply.VpnPayload!,App.Json)!;
-                    Output(new{status="statistics",handshake=stats.Handshake});
-                    if(stats.Handshake>baseline&&Environment.TickCount64-Volatile.Read(ref lastTraffic)<60_000)
-                    {Output(new{status="connected",mode=relay is null?"direct":"relay",server=target});await Task.Delay(15_000,token);continue;}
-                    if(relay is null)
+                    try
                     {
-                        await transportGate.WaitAsync(token);
-                        try
-                        {
-                            relay=await Open(profile,identity,"udp",target,token);
-                            if(lastPacket!=null)await VpnDatagrams.Write(relay.Stream,lastPacket,token);
-                            Output(new{status="routing",mode="relay",route=relay.RouteReady?.Hops,server=target});
-                        }
-                        finally{transportGate.Release();}
-                        _=Task.Run(async()=>{try{while(!token.IsCancellationRequested){var packet=await VpnDatagrams.Read(relay.Stream,token);Volatile.Write(ref lastTraffic,Environment.TickCount64);if(consumer!=null)await local.SendAsync(packet,consumer,token);}}catch(Exception e){if(!token.IsCancellationRequested)Output(new{error="VPN-транспорт: "+e.Message});stop.Cancel();}},token);
+                        var statsReply=await Request(profile,identity,"stats",target,token);
+                        var stats=JsonSerializer.Deserialize<VpnStatistics>(statsReply.VpnPayload!,App.Json)!;
+                        Output(new{status="statistics",handshake=stats.Handshake});
+                        var healthy=stats.Handshake>baseline&&Environment.TickCount64-Volatile.Read(ref lastTraffic)<60_000;
+                        if(!relay.Enabled&&!healthy)relay.Enable(lastPacket);
+                        if(healthy)Output(new{status="connected",mode=relay.Enabled?"relay":"direct",server=target});
+                    }
+                    catch(Exception)when(!token.IsCancellationRequested)
+                    {
+                        if(Environment.TickCount64-Volatile.Read(ref lastTraffic)>60_000)relay.Enable(lastPacket);
                     }
                     await Task.Delay(15_000,token);
                 }
@@ -100,14 +101,18 @@ static class VpnClientAgent
             var endpoint=(IPEndPoint)local.Client.LocalEndPoint!;
             var native=Regex.Replace(config.Config,@"(?m)^Endpoint\s*=.*$","Endpoint = 127.0.0.1:"+endpoint.Port);
             Output(new{ok=true,config=native,server=target,host=config.Host,mode="direct",entrypoints=profile.Entrypoints.Select(n=>n.Ip).Distinct().ToArray()});
-            var tasks=new[]{Upload(),DirectDownload(),Monitor()};
+            var tasks=new[]{Upload(),DirectDownload(),Monitor(),relay.Run(async packet=>
+            {
+                Volatile.Write(ref lastTraffic,Environment.TickCount64);
+                if(consumer!=null)await local.SendAsync(packet,consumer,token);
+            },token)};
             var inputTask=Console.In.ReadLineAsync();
             try
             {
                 var finished=await Task.WhenAny(tasks.Append(inputTask));
                 if(finished!=inputTask)await finished;
             }
-            finally{stop.Cancel();relay?.Dispose();try{await Task.WhenAll(tasks);}catch{}transportGate.Dispose();}
+            finally{stop.Cancel();try{await Task.WhenAll(tasks);}catch{}}
             return 0;
         }
         catch(Exception e){Output(new{error=e.Message});return 1;}
@@ -116,16 +121,19 @@ static class VpnClientAgent
     {
         using var peer=await Open(profile,identity,action,target,token);return peer.RouteReady!;
     }
-    static async Task<Peer> Open(VpnProfile profile,X509Certificate2 identity,string action,string? target,CancellationToken token)
+    static async Task<Peer> Open(VpnProfile profile,X509Certificate2 identity,string action,string? target,CancellationToken token,string? exclude=null)
     {
         Exception? failure=null;
-        foreach(var node in profile.Entrypoints.Where(n=>!n.Removed))
+        var candidates=profile.Entrypoints.Where(n=>!n.Removed&&n.Id!=exclude).OrderBy(n=>n.Id!=target).ToArray();
+        var offset=action=="udp"&&candidates.Length>0?(int)((uint)Interlocked.Increment(ref relayCursor)%(uint)candidates.Length):0;
+        foreach(var node in candidates.Skip(offset).Concat(candidates.Take(offset)))
         {
             Peer? peer=null;
             try
             {
                 using var timeout=CancellationTokenSource.CreateLinkedTokenSource(token);timeout.CancelAfter(TimeSpan.FromSeconds(50));
                 peer=await Peer.ConnectRaw(node.Ip,node.Cert,identity,timeout.Token);
+                if(action=="udp")peer.EnableKeepAlive();
                 await Peer.Send(peer.Stream,new Message("vpn-client",profile.ClientId,Name:action,Target:target)).WaitAsync(timeout.Token);
                 var reply=await Peer.Read(peer.Stream).WaitAsync(timeout.Token);
                 if(reply?.Type!="vpn-result")throw new IOException(reply?.Error??"Нет ответа PNT.");

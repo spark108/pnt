@@ -44,6 +44,8 @@ await Invoke("nodes");
 Require(executed!.SequenceEqual(new[] { "nodes" }), "Omitted optional arguments must remain omitted");
 await Invoke("identity", "--fingerprint");
 Require(executed!.SequenceEqual(new[] { "identity", "--fingerprint" }), "Boolean option binding failed");
+await Invoke("update", "--check");
+Require(executed!.SequenceEqual(new[] { "update", "--check" }), "Update check must reach the read-only handler");
 await Invoke("install", "-r", "root@192.0.2.1");
 Require(executed!.SequenceEqual(new[] { "install", "-r", "root@192.0.2.1" }), "Remote install binding failed");
 

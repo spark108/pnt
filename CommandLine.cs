@@ -52,7 +52,7 @@ static class CommandLine
             var named = (options ?? []).Select(o => new Option<string>(o.Name)
                 { Description = o.Description, Required = o.Required }).ToArray();
             var switches = (flags ?? []).Select(f => new Option<bool>(f)
-                { Description = f == "--fingerprint" ? "Показать отпечаток сертификата." : "Интерактивный режим." }).ToArray();
+                { Description = f switch { "--fingerprint" => "Показать отпечаток сертификата.", "--check" => "Только проверить наличие новой версии без установки.", _ => "Интерактивный режим." } }).ToArray();
             foreach (var argument in arguments) command.Arguments.Add(argument);
             foreach (var option in named) command.Options.Add(option);
             foreach (var flag in switches) command.Options.Add(flag);
@@ -91,7 +91,7 @@ static class CommandLine
         Leaf("routes", "Показать основные и резервные маршруты.", [("node?", "ID, имя или IP конечного узла.")]);
         Leaf("ping", "Измерить пинг до внешнего адреса со всех доступных узлов.", [("host", "IPv4 или домен назначения.")]);
         Leaf("install", "Установить PNT локально или на удалённом сервере.", options: [("-r", "SSH-адрес удалённого сервера, например root@192.0.2.1.", false)]);
-        Leaf("update", "Обновить PNT и объявить обновление кластеру.");
+        Leaf("update", "Обновить PNT и объявить обновление кластеру.", flags: ["--check"]);
         Leaf("serve", "Запустить фоновую службу узла.");
         Leaf("cluster add", "Создать приглашение для указанного IP.", [("ip", "IP приглашаемого узла.")]);
         Leaf("cluster remove", "Исключить узел из кластера.", [("node", "ID, имя или IP узла.")]);

@@ -7,6 +7,36 @@ namespace Pnt;
 
 static class Management
 {
+    public static async Task<int> CheckUpdate()
+    {
+        var sourceFile=OperatingSystem.IsWindows()?Path.Combine(App.ConfigDir,"source-dir"):"/etc/pnt/source-dir";
+        var source=File.Exists(sourceFile)?File.ReadAllText(sourceFile).Trim():Directory.GetCurrentDirectory();
+        async Task<string> Git(params string[] args)
+        {
+            using var process=new Process{StartInfo=new ProcessStartInfo("git"){UseShellExecute=false,RedirectStandardOutput=true,RedirectStandardError=true,CreateNoWindow=true}};
+            process.StartInfo.Environment["GIT_TERMINAL_PROMPT"]="0";
+            foreach(var arg in args)process.StartInfo.ArgumentList.Add(arg);
+            process.Start();var output=process.StandardOutput.ReadToEndAsync();var error=process.StandardError.ReadToEndAsync();
+            using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(25));
+            try{await process.WaitForExitAsync(timeout.Token);}catch{process.Kill(true);throw new IOException("Истекло время проверки GitHub.");}
+            if(process.ExitCode!=0)throw new IOException((await error).Trim());
+            return (await output).Trim();
+        }
+        var branch="master";
+        if(Directory.Exists(source))
+            try{branch=await Git("-C",source,"symbolic-ref","--short","HEAD");}catch(IOException){}
+        var installed=typeof(Management).Assembly.GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute),false)
+            .Cast<System.Reflection.AssemblyInformationalVersionAttribute>().FirstOrDefault()?.InformationalVersion.Split('+').Last();
+        if(installed is null||!System.Text.RegularExpressions.Regex.IsMatch(installed,"^[0-9a-fA-F]{40}$"))
+            installed=await Git("-C",source,"rev-parse","HEAD");
+        var remote=await Git("ls-remote","--heads","https://github.com/spark108/pnt.git","refs/heads/"+branch);
+        var commit=remote.Split((char[]?)null,StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
+        if(commit is null||!System.Text.RegularExpressions.Regex.IsMatch(commit,"^[0-9a-fA-F]{40}$"))throw new IOException("Ветка обновления не найдена на GitHub: "+branch);
+        Console.WriteLine("Установлена: "+installed);Console.WriteLine("GitHub ("+branch+"): "+commit);
+        Console.WriteLine(string.Equals(installed,commit,StringComparison.OrdinalIgnoreCase)?"Установлена последняя версия PNT.":"Доступна новая версия PNT. Для установки: pnt update");
+        return 0;
+    }
+
     public static async Task<int> Local(string action)
     {
         LocalAccess.DemandAdministrator();

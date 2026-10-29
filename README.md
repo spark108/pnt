@@ -250,3 +250,5 @@ Each node sends three ICMP echo requests to the target and reports the average o
 - The cluster key is not rotated on removal. A removed node's certificate is rejected for operational requests by peers that learned the removal, but the removal is not immediate across disconnected partitions.
 - The firewall helper supports an existing `inet filter input` nftables chain or an iptables `INPUT` chain. Other firewall layouts need their own allow rules.
 - IPv4 addresses are supported for node joining and external forwarding.
+
+Проверить наличие новой версии без установки: `pnt update --check` (также `./pnt.sh update --check` или `pnt.bat update --check`). Проверка сравнивает SHA установленной сборки с веткой на GitHub, не меняет исходники, базу, службу или состояние кластера. Наличие обновления и актуальная версия возвращают код 0; ошибка проверки — код 1.

@@ -18,6 +18,7 @@ Usage: sudo ./pnt.sh <command>
   install                 Install PNT on this Debian server
   install -r root@ip      Install on another server and join it to this cluster
   update                  Update this server and announce it to the cluster
+  update --check          Check GitHub without installing or stopping the service
   start                   Start pnt.service
   stop                    Stop pnt.service
   restart                 Restart pnt.service
@@ -351,7 +352,10 @@ case "$command_name" in
             2) [ "$1" = -r ] || die 'Use install -r root@ip.'; start_remote_install "$2" ;;
             *) die 'Use install or install -r root@ip.' ;;
         esac ;;
-    update) [ "$#" -eq 0 ] || die 'update takes no arguments.'; launch_operation update ;;
+    update)
+        if [ "$#" -eq 1 ] && [ "$1" = --check ]; then exec "$BIN" update --check; fi
+        [ "$#" -eq 0 ] || die 'Use update or update --check.'
+        launch_operation update ;;
     _worker) worker "$@" ;;
     start) require_root; systemctl start pnt.service ;;
     stop) require_root; systemctl stop pnt.service ;;

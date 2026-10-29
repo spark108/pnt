@@ -72,6 +72,7 @@ static class App
             LocalAccess.Demand();
             if(a is ["_prepare-access"]){LocalAccess.Prepare();return 0;}
 
+            if(a is ["update","--check"])return await Management.CheckUpdate();
             if(a is ["install"] or ["update"])return await Management.Local(a[0]);
             if(OperatingSystem.IsWindows() && a is ["serve"])LocalAccess.Prepare();
             Directory.CreateDirectory(Dir);
