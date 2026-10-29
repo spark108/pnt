@@ -70,6 +70,16 @@ sealed class Service(Store db, X509Certificate2 cert)
                 if (request.Target == id) await Execute(peer.Stream, request);
                 else await RelayRequest(peer.Stream, request);
                 break;
+            case "exec-route":
+                if (request.Target == id)
+                {
+                    await Peer.Send(peer.Stream, new Message("ready", Hops: (request.Hops ?? []).Append(id).ToArray()));
+                    var command = await Peer.Read(peer.Stream).WaitAsync(TimeSpan.FromSeconds(30));
+                    if (command?.Type == "exec" && command.Target == id)
+                        await Execute(peer.Stream, command with { Hops = request.Hops }, false);
+                }
+                else await RelayRequest(peer.Stream, request);
+                break;
             case "ping-external":
                 if (request.Target == id) await ExecuteExternalPing(peer.Stream, request);
                 else await RelayRequest(peer.Stream, request);
@@ -346,7 +356,7 @@ sealed class Service(Store db, X509Certificate2 cert)
         await Peer.Send(incoming, new Message("ping-result", Ip: result.Ip, PingMs: result.Ms, Error: result.Error));
     }
 
-    async Task Execute(Stream incoming, Message request)
+    async Task Execute(Stream incoming, Message request, bool sendReady = true)
     {
         if (request.Command is not { Length: > 0 and <= 16_384 })
         {
@@ -365,7 +375,7 @@ sealed class Service(Store db, X509Certificate2 cert)
         catch (Exception e) { await Peer.Send(incoming, new Message("error", Error: e.Message)); return; }
         try
         {
-            await Peer.Send(incoming, new Message("ready", Hops: (request.Hops ?? []).Append(id).ToArray()));
+            if (sendReady) await Peer.Send(incoming, new Message("ready", Hops: (request.Hops ?? []).Append(id).ToArray()));
             _ = Task.Run(async () =>
             {
                 try

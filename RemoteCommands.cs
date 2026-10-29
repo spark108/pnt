@@ -21,21 +21,22 @@ static class RemoteCommands
             try
             {
                 using var peer = await Peer.Connect(node.Id == self.Id ? "127.0.0.1" : node.Ip, node.Cert, cert);
-                // After a request is sent, a lost acknowledgement does not prove that the command was not run.
-                // Never retry it through another relay in that case.
-                sent = true;
-                await Peer.Send(peer.Stream, new Message("exec", self.Id, Target: target.Id,
-                    Hops: [self.Id], Command: command, Interactive: interactive)).WaitAsync(TimeSpan.FromSeconds(10));
-                var answer = await Peer.Read(peer.Stream).WaitAsync(TimeSpan.FromSeconds(15));
+                await Peer.Send(peer.Stream, new Message("exec-route", self.Id, Target: target.Id,
+                    Hops: [self.Id])).WaitAsync(TimeSpan.FromSeconds(10));
+                var answer = await Peer.Read(peer.Stream).WaitAsync(TimeSpan.FromSeconds(45));
                 if (answer?.Type == "error")
                 {
                     Console.Error.WriteLine($"Маршрут через {node.Name} недоступен: {answer.Error ?? "нет ответа"}");
                     continue;
                 }
-                if (answer?.Type != "ready") throw new IOException("Не получено подтверждение запуска команды.");
+                if (answer?.Type != "ready") throw new IOException("Маршрут не подтверждён.");
                 if (answer.Hops is { Length: > 1 } path)
                     Console.Error.WriteLine("Маршрут: " + string.Join(" → ", path.Select(x =>
                         db.Nodes().FirstOrDefault(n => n.Id == x)?.Name ?? x)));
+                // Route discovery cannot execute a command. Retrying stops only after this commit.
+                sent = true;
+                await Peer.Send(peer.Stream, new Message("exec", self.Id, Target: target.Id,
+                    Command: command, Interactive: interactive)).WaitAsync(TimeSpan.FromSeconds(10));
                 using var inputStop = new CancellationTokenSource();
                 if (interactive) _ = Task.Run(async () =>
                 {

@@ -104,7 +104,7 @@ sudo pnt sh <node-id> 'uptime'
 sudo pnt sh <node-id> 'journalctl -u pnt -n 20 --no-pager'
 ```
 
-The CLI shows each attempted connection and the selected route. It streams stdout and stderr from the target as they are produced and returns the remote command's exit status. The command is noninteractive and runs through `/bin/sh -c` as the PNT service user (`root` in the supplied systemd unit). If the direct connection fails, PNT tries relays selected from fresh direct-link pings. After sending the command, a lost connection is treated as an uncertain result: the CLI does not retry it on another route, because the command might already have run. Every current cluster member can execute commands on every other member; protect cluster membership and node certificates accordingly.
+The CLI shows each attempted connection and the selected route. It streams stdout and stderr from the target as they are produced and returns the remote command's exit status. The command is noninteractive and runs through `/bin/sh -c` as the PNT service user (`root` in the supplied systemd unit). If the direct connection fails, PNT tries relays selected from fresh direct-link pings. Route discovery is completed before the command is sent, so an unresponsive relay can be skipped safely. All nodes on the selected route must support this protocol. After sending the command, a lost connection is treated as an uncertain result: the CLI does not retry it on another route, because the command might already have run. Every current cluster member can execute commands on every other member; protect cluster membership and node certificates accordingly.
 
 ## Ping from every node
 
