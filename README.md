@@ -4,6 +4,20 @@ VPN server registration, restricted client profiles and the PNT-only Windows VPN
 
 PNT is a .NET 10 cluster service for Debian and Windows. It uses TCP 442 for encrypted node communication, SQLite for local cluster state, and TCP streams for port forwarding. Every node has a persistent self-signed TLS certificate and a 16-character node ID derived from its public key. Connections pin the stored certificate fingerprint. New nodes request membership and an existing member explicitly approves their identity. The shared cluster key hash is distributed to approved members over TLS.
 
+## Command help
+
+The CLI uses System.CommandLine. Every group and subcommand has its own help page; a group without a subcommand displays only that level. Help does not open the database or create an identity.
+
+```sh
+pnt --help
+pnt cluster
+pnt vpn client --help
+pnt vpn client create --help
+pnt help forward add
+```
+
+Required arguments and unknown options are checked before a command runs. Named options can be supplied in any order. Arguments after `pnt sh <node>` are passed to the remote command, including its own `--help` and flags.
+
 ## Local access
 
 The installed CLI permits only `root` or members of `pnt` on Linux, and elevated administrators, LocalSystem, or members of the local `PNTAdmin` group on Windows. Authorization is checked before processing commands or opening cluster state, including help. Install/update creates the relevant group; it does not add ordinary users automatically.

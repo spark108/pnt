@@ -57,10 +57,21 @@ static class App
     {
         try
         {
+            if (a.Length > 0 && a[0] is "_vpn-client" or "_prepare-access") return await Execute(a);
+            LocalAccess.Demand();
+            return await CommandLine.Run(a, Execute);
+        }
+        catch (Exception e) { Console.Error.WriteLine("pnt: " + e.GetBaseException().Message); return 1; }
+    }
+
+    static async Task<int> Execute(string[] a)
+    {
+        try
+        {
             if(a is ["_vpn-client", .. var clientArgs])return await VpnClientAgent.Run(clientArgs);
             LocalAccess.Demand();
             if(a is ["_prepare-access"]){LocalAccess.Prepare();return 0;}
-            if (a.Length == 0 || a[0] is "help" or "--help") { Help(); return 0; }
+
             if(a is ["install"] or ["update"])return await Management.Local(a[0]);
             if(OperatingSystem.IsWindows() && a is ["serve"])LocalAccess.Prepare();
             Directory.CreateDirectory(Dir);
@@ -181,7 +192,7 @@ static class App
                 case ["forward", "remove", var id]:
                     var rule = db.Rules().FirstOrDefault(x => x.Id == id && !x.Removed) ?? throw new Exception("Правило не найдено.");
                     db.Put(rule with { Removed = true, Version = Now }); break;
-                default: Help(); return 2;
+                default: throw new ArgumentException("Неверная команда. Используйте pnt help <команда>.");
             }
             return 0;
         }
@@ -326,28 +337,4 @@ static class App
         Console.WriteLine("Присоединён к кластеру. ID: " + Certificate.Id(cert));
     }
 
-    static void Help() => Console.WriteLine("""
-        pnt create cluster <key>
-        pnt cluster add <ip> | remove <node|ip> | leave | nodes [node-id] | status | invites
-        pnt nodes [node-id]
-        pnt routes [node-id]
-        pnt sh <node-id> <command...>
-        pnt ping <IPv4|domain>
-        pnt install | update
-        pnt install -r root@IPv4
-        pnt connect cluster <IPv4> | connect status
-        pnt cluster requests | accept <id> | reject <id>
-        pnt identity
-        pnt cluster invite revoke <id>
-        pnt accept cluster <invite_key>
-        pnt name <name>
-        pnt vpn add server <node> <display_name> | remove <node> | servers
-        pnt vpn client create <name> --servers <node1,node2> --out <file>
-        pnt vpn client list | show <client> | allow <client> <node> | deny <client> <node> | revoke <client>
-        pnt vpn client handshake <client> [node]
-        pnt forward add --listen <node>:<port> [--via <node>] --to <node|ip>:<port> [--proto tcp]
-        pnt forward list | show <id> | remove <id>
-        pnt web enable | disable
-        pnt serve
-        """);
 }

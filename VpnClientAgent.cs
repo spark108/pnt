@@ -79,6 +79,7 @@ static class VpnClientAgent
                 {
                     var statsReply=await Request(profile,identity,"stats",target,token);
                     var stats=JsonSerializer.Deserialize<VpnStatistics>(statsReply.VpnPayload!,App.Json)!;
+                    Output(new{status="statistics",handshake=stats.Handshake});
                     if(stats.Handshake>baseline&&Environment.TickCount64-Volatile.Read(ref lastTraffic)<60_000)
                     {Output(new{status="connected",mode=relay is null?"direct":"relay",server=target});await Task.Delay(15_000,token);continue;}
                     if(relay is null)
