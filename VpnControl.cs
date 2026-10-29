@@ -39,17 +39,23 @@ static class VpnControl
         if(db.Self() is null||db.Get("left")=="1")throw new Exception("Сначала присоединитесь к кластеру.");
         switch(args)
         {
-            case ["add","server",var nodeName,var displayName]:
-                if(string.IsNullOrWhiteSpace(displayName)||displayName.Length>64||displayName.Any(char.IsControl))throw new ArgumentException("Имя сервера: от 1 до 64 символов.");
+            case ["server","install",var nodeName]:
                 var registeredNode=FindNode(db,nodeName);
-                await Query(db,cert,registeredNode.Id,new("probe"));
+                if(registeredNode.Platform=="windows")throw new PlatformNotSupportedException("Сервер AmneziaWG устанавливается на Debian Linux.");
                 var old=db.VpnServers().FirstOrDefault(s=>s.Id==registeredNode.Id);
+                var displayName=old?.Name??registeredNode.Name[..Math.Min(64,registeredNode.Name.Length)];
+                var inventory=JsonSerializer.Deserialize<VpnServerConfiguration[]>(await Query(db,cert,registeredNode.Id,new("inventory")),App.Json)??[];
+                var selection=VpnServerInstaller.Choose(inventory,Console.In,Console.Out);
+                var exit=registeredNode.Id==db.Self()!.Id?await VpnServerInstaller.Setup(selection)
+                    :await RemoteCommands.Run(db,cert,registeredNode.Id,"/usr/local/bin/pnt _vpn-server-setup "+selection);
+                if(exit!=0)throw new IOException("Установка AmneziaWG завершилась с ошибкой. Узел не добавлен в каталог VPN.");
+                await Query(db,cert,registeredNode.Id,new("probe"));
                 db.PutVpn(new VpnServer(registeredNode.Id,displayName.Trim(),Math.Max(App.Now,(old?.Version??0)+1)));
                 Console.WriteLine("VPN-сервер разрешён: "+displayName);break;
-            case ["remove",var name]:
+            case ["server","remove",var name]:
                 var server=FindServer(db,name);db.PutVpn(server with{Removed=true,Version=Math.Max(App.Now,server.Version+1)});
                 await ReconcileRemote(db,cert,server.Id);Console.WriteLine("Сервер удалён из каталога VPN.");break;
-            case ["servers"]:
+            case ["server","list"]:
                 foreach(var s in db.VpnServers().Where(s=>!s.Removed))Console.WriteLine($"{s.Id}  {db.Resolve(s.Id)?.Name}  {s.Name}");break;
             case ["client","create",var name,"--servers",var servers,"--out",var output]:
                 if(string.IsNullOrWhiteSpace(name)||name.Length>64||name.Any(char.IsControl))throw new ArgumentException("Имя клиента: от 1 до 64 символов.");
@@ -96,7 +102,7 @@ static class VpnControl
                     catch(Exception e){Console.WriteLine($"{id}: недоступен ({e.Message})");}
                 }
                 break;
-            default:throw new ArgumentException("Неверная команда. pnt vpn add server <node> <display_name>; pnt vpn servers; pnt vpn client create|list|show|allow|deny|revoke|handshake");
+            default:throw new ArgumentException("Неверная команда. pnt vpn server install|list|remove; pnt vpn client create|list|show|allow|deny|revoke|handshake");
         }
     }
     static async Task ReconcileRemote(Store db,X509Certificate2 cert,string id)
@@ -141,6 +147,7 @@ static class VpnControl
             }
             var output=operation.Action switch
             {
+                "inventory"=>await VpnServerInstaller.Inventory(token),
                 "probe"=>await VpnAdapter.Run("probe",null,[],token),
                 "ensure"=>JsonSerializer.Serialize(await Prepare(db,operation,token),App.Json),
                 "stats"=>await VpnAdapter.Run("stats",operation.Client,[],token),

@@ -25,7 +25,27 @@ def execute(request):
     client = request.get("client")
     if client is not None and not re.fullmatch("[0-9a-f]{16}", client):
         raise ValueError("Invalid client ID")
-    if action == "reconcile" and not list(root.glob("*.json")):
+    binding = request.get("binding")
+    if action == "reconcile" and binding is None and (root / "servers").is_dir():
+        failures = []
+        for entry in (root / "servers").glob("*.json"):
+            try:
+                execute(dict(request, binding=json.loads(entry.read_text())))
+            except Exception:
+                failures.append(entry.stem)
+        if failures:
+            raise RuntimeError("Could not reconcile VPN configurations: " + ", ".join(failures))
+        return {}
+    if binding is None and (root / "selected-server.json").is_file():
+        binding = json.loads((root / "selected-server.json").read_text())
+    if binding is not None:
+        if not re.fullmatch(r"[0-9a-f]{24}", binding["id"]):
+            raise RuntimeError("Invalid selected VPN configuration")
+        if not binding.get("legacy"):
+            root = root / "instances" / binding["id"]
+            root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    client_entries = lambda: [p for p in root.glob("*.json") if re.fullmatch(r"[0-9a-f]{16}", p.stem)]
+    if action == "reconcile" and not client_entries():
         return {}
     try:
         names = run(["docker", "ps", "--format", "{{.Names}}"] ).splitlines() if shutil.which("docker") else []
@@ -34,10 +54,10 @@ def execute(request):
     candidates = [name for name in names if name in ("amnezia-awg", "amnezia-awg2")]
     native_binary = shutil.which("awg")
     native_interfaces = run([native_binary, "show", "interfaces"]).split() if native_binary else []
-    if len(candidates) + len(native_interfaces) != 1:
+    if binding is None and len(candidates) + len(native_interfaces) != 1:
         raise RuntimeError("Expected exactly one active AmneziaWG service (Docker or native)")
-    container = candidates[0] if candidates else None
-    iface = "awg0" if container else native_interfaces[0]
+    container = binding.get("container") if binding is not None else candidates[0] if candidates else None
+    iface = binding["interface"] if binding is not None else "awg0" if container else native_interfaces[0]
     if not re.fullmatch(r"[A-Za-z0-9_.-]{1,15}", iface):
         raise RuntimeError("Unsupported AWG interface name")
 
@@ -45,8 +65,8 @@ def execute(request):
         return run((["docker", "exec", "-i", container] if container else []) + args, data)
 
     binary = "awg" if docker(["sh", "-c", "command -v awg || command -v wg"]).endswith("awg") else "wg"
-    config_path = "/opt/amnezia/awg/awg0.conf"
-    if not container:
+    config_path = binding["config"] if binding is not None else "/opt/amnezia/awg/awg0.conf"
+    if not container and binding is None:
         config_paths = [Path(directory) / (iface + ".conf") for directory in ("/etc/amnezia/amneziawg", "/etc/amneziawg", "/etc/wireguard", "/opt/amnezia/awg")]
         existing = [path for path in config_paths if path.is_file()]
         if len(existing) != 1:
@@ -63,6 +83,8 @@ def execute(request):
     if container:
         inspection = json.loads(run(["docker", "inspect", container]))[0]
         bindings = inspection["NetworkSettings"]["Ports"].get(str(internal_port) + "/udp") or []
+        if inspection.get("HostConfig", {}).get("NetworkMode") == "host":
+            bindings = [{"HostIp": "0.0.0.0", "HostPort": str(internal_port)}]
         binding = next((item for item in bindings if ":" not in item["HostIp"]), None)
         if not binding:
             raise RuntimeError("AWG UDP port is not published on an IPv4 host address")
@@ -89,7 +111,7 @@ def execute(request):
         config = docker(["cat", config_path])
         if action == "reconcile":
             allowed = set(request.get("allowed", []))
-            for entry in root.glob("*.json"):
+            for entry in client_entries():
                 if entry.stem in allowed:
                     continue
                 profile = json.loads(entry.read_text())

@@ -11,6 +11,12 @@ static class VpnChecks
     static void Assert(bool value,string message){if(!value)throw new Exception(message);}
     public static async Task Main()
     {
+        var configuration=new VpnServerConfiguration(new string('a',24),"native","awg0","/etc/amnezia/amneziawg/awg0.conf",true,true,"","10.8.0.1/24",51820,null);
+        Assert(VpnServerInstaller.Choose([],new StringReader(""),TextWriter.Null)=="new","Empty inventory did not select a new installation");
+        Assert(VpnServerInstaller.Choose([configuration],new StringReader("1\n"),TextWriter.Null)==configuration.Id,"Existing configuration selection failed");
+        Assert(VpnServerInstaller.Choose([configuration],new StringReader("0\n"),TextWriter.Null)=="new","New configuration selection failed");
+        Assert(VpnServerInstaller.Choose([configuration with{Supported=false}],new StringReader("1\n0\n"),TextWriter.Null)=="new","Unsupported configuration was selectable");
+        try{VpnServerInstaller.Choose([configuration],new StringReader(""),TextWriter.Null);throw new Exception("Missing selection was accepted");}catch(IOException){}
         var directory=Path.Combine(Path.GetTempPath(),"pnt-vpn-check-"+Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);Environment.SetEnvironmentVariable("PNT_DATA_DIR",directory);
         Environment.SetEnvironmentVariable("PNT_MANAGE_FIREWALL","0");
@@ -44,6 +50,7 @@ static class VpnChecks
             Assert((await Request(new Message("vpn-client",self,Name:"catalog"))).Type=="error","Forged client ID accepted");
             Assert((await Request(new Message("exec",profile.ClientId,Target:self,Command:"echo forbidden"))).Type=="error","Client obtained member privileges");
             Assert((await Request(new Message("vpn-client",profile.ClientId,Name:"exec",Target:self))).Type=="error","Client API accepted exec");
+            Assert((await Request(new Message("vpn-client",profile.ClientId,Name:"inventory",Target:self))).Type=="error","Unprivileged VPN client obtained installation inventory");
             var client=db.VpnClients().Single();db.PutVpn(client with{Servers=[],Version=client.Version+1});
             VpnControl.Merge(db,new Message("sync",VpnClients:[client with{Cert=new string('0',64),Version=client.Version+10}]));
             Assert(db.VpnClients().Single().Cert==client.Cert,"Client certificate changed through replication");

@@ -16,6 +16,7 @@
     <EmbeddedResource Include="web/index.html" />
     <EmbeddedResource Include="deploy/access.ps1" />
     <EmbeddedResource Include="deploy/vpn_adapter.py" />
+    <EmbeddedResource Include="deploy/vpn_server.py" />
     <PackageReference Include="System.CommandLine" Version="2.0.0" />
     <PackageReference Include="System.ServiceProcess.ServiceController" Version="10.0.0" />
   </ItemGroup>

@@ -57,7 +57,7 @@ static class App
     {
         try
         {
-            if (a.Length > 0 && a[0] is "_vpn-client" or "_prepare-access") return await Execute(a);
+            if (a.Length > 0 && a[0] is "_vpn-client" or "_prepare-access" or "_vpn-server-setup") return await Execute(a);
             LocalAccess.Demand();
             return await CommandLine.Run(a, Execute);
         }
@@ -71,6 +71,7 @@ static class App
             if(a is ["_vpn-client", .. var clientArgs])return await VpnClientAgent.Run(clientArgs);
             LocalAccess.Demand();
             if(a is ["_prepare-access"]){LocalAccess.Prepare();return 0;}
+            if(a is ["_vpn-server-setup",var selection])return await VpnServerInstaller.Setup(selection);
 
             if(a is ["update","--check"])return await Management.CheckUpdate();
             if(a is ["install"] or ["update"])return await Management.Local(a[0]);

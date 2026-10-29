@@ -4,6 +4,7 @@
     <Compile Include="../../*.cs"/><Compile Include="VpnChecks.cs"/>
     <EmbeddedResource Include="../../web/index.html" Link="web/index.html"/>
     <EmbeddedResource Include="../../deploy/vpn_adapter.py" Link="deploy/vpn_adapter.py"/>
+    <EmbeddedResource Include="../../deploy/vpn_server.py" Link="deploy/vpn_server.py"/>
     <FrameworkReference Include="Microsoft.AspNetCore.App"/>
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.14"/>
     <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.13"/>

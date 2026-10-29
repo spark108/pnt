@@ -19,7 +19,7 @@ spec.loader.exec_module(adapter)
 
 
 class AdapterChecks(unittest.TestCase):
-    def check_backend(self, backend):
+    def check_backend(self, backend, selected=False):
         key = lambda n: base64.b64encode(bytes([n]) * 32).decode()
         config = "[Interface]\nPrivateKey = " + key(1) + "\nAddress = 10.8.0.1/24\nListenPort = 51820\nJc = 4\nH1 = 123\n\n[Peer]\nPublicKey = " + key(2) + "\nAllowedIPs = 10.8.0.2/32\n"
         generated = 0
@@ -28,13 +28,13 @@ class AdapterChecks(unittest.TestCase):
         def run(args, data=None):
             nonlocal config, generated
             if args[:2] == ["docker", "ps"]:
-                return "amnezia-awg" if backend == "docker" else ""
+                return ("amnezia-awg\namnezia-awg2" if selected else "amnezia-awg") if backend == "docker" else ""
             if args[:2] == ["docker", "inspect"]:
                 return json.dumps([{"NetworkSettings": {"Ports": {"51820/udp": [{"HostIp": "0.0.0.0", "HostPort": "40000"}]}}}])
             if args[:3] == ["docker", "exec", "-i"]:
                 args = args[4:]
             if args == ["/usr/bin/awg", "show", "interfaces"]:
-                return "awg0"
+                return "awg0 awg1" if selected else "awg0"
             if args[:2] == ["sh", "-c"]:
                 if "command -v" in args[2]:
                     return "/usr/bin/awg"
@@ -69,6 +69,14 @@ class AdapterChecks(unittest.TestCase):
             return original_is_file(path)
 
         with tempfile.TemporaryDirectory(prefix="pnt-adapter-check-") as root, patch.dict(os.environ, PNT_VPN_DATA=root), patch.object(adapter, "run", run), patch.object(adapter.shutil, "which", lambda name: "/usr/bin/" + name if name == "docker" or (name == "awg" and backend == "native") else None), patch.object(Path, "is_file", is_file):
+            state = Path(root)
+            if selected:
+                binding = {"id": "c" * 24, "kind": backend, "container": "amnezia-awg" if backend == "docker" else None,
+                           "interface": "awg0", "config": "/opt/amnezia/awg/awg0.conf" if backend == "docker" else "/etc/amneziawg/awg0.conf"}
+                (Path(root) / "selected-server.json").write_text(json.dumps(binding))
+                (Path(root) / "servers").mkdir()
+                (Path(root) / "servers" / (binding["id"] + ".json")).write_text(json.dumps(binding))
+                state = Path(root) / "instances" / binding["id"]
             self.assertEqual(adapter.execute({"action": "probe"})["protocol"], "awg")
             first = adapter.execute({"action": "ensure", "client": "a" * 16})
             self.assertIn("10.8.0.3/32", first["config"])
@@ -86,7 +94,7 @@ class AdapterChecks(unittest.TestCase):
             self.assertNotIn(key(21), config)
             self.assertIn(key(22), config)
             self.assertIn(key(2), config)
-            self.assertFalse((Path(root) / ("a" * 16 + ".json")).exists())
+            self.assertFalse((state / ("a" * 16 + ".json")).exists())
             self.assertFalse(adapter.execute({"action": "stats", "client": "a" * 16})["exists"])
 
     def test_native(self):
@@ -94,6 +102,12 @@ class AdapterChecks(unittest.TestCase):
 
     def test_docker(self):
         self.check_backend("docker")
+
+    def test_selected_native_with_multiple_interfaces(self):
+        self.check_backend("native", True)
+
+    def test_selected_docker_with_multiple_containers(self):
+        self.check_backend("docker", True)
 
 
 if __name__ == "__main__":
