@@ -4,7 +4,7 @@ namespace Pnt;
 
 static class RemoteCommands
 {
-    public static async Task<int> Run(Store db, X509Certificate2 cert, string destination, string command)
+    public static async Task<int> Run(Store db, X509Certificate2 cert, string destination, string command, bool interactive = false)
     {
         if (db.Get("cluster") is null || db.Get("left") == "1" || db.Self()?.Removed == true)
             throw new Exception("Узел не состоит в активном кластере.");
@@ -25,7 +25,7 @@ static class RemoteCommands
                 // Never retry it through another relay in that case.
                 sent = true;
                 await Peer.Send(peer.Stream, new Message("exec", self.Id, Target: target.Id,
-                    Hops: [self.Id], Command: command)).WaitAsync(TimeSpan.FromSeconds(10));
+                    Hops: [self.Id], Command: command, Interactive: interactive)).WaitAsync(TimeSpan.FromSeconds(10));
                 var answer = await Peer.Read(peer.Stream).WaitAsync(TimeSpan.FromSeconds(15));
                 if (answer?.Type == "error")
                 {
@@ -36,7 +36,22 @@ static class RemoteCommands
                 if (answer.Hops is { Length: > 1 } path)
                     Console.Error.WriteLine("Маршрут: " + string.Join(" → ", path.Select(x =>
                         db.Nodes().FirstOrDefault(n => n.Id == x)?.Name ?? x)));
-                while (true)
+                using var inputStop = new CancellationTokenSource();
+                if (interactive) _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        while (!inputStop.IsCancellationRequested)
+                        {
+                            if (!Console.KeyAvailable) { await Task.Delay(30); continue; }
+                            var key = Console.ReadKey(true);
+                            var text = key.Key == ConsoleKey.Enter ? "\n" : key.Key == ConsoleKey.Backspace ? "\u007f" : key.KeyChar.ToString();
+                            await Peer.Send(peer.Stream, new Message("exec-input", Output: text));
+                        }
+                    }
+                    catch { }
+                });
+                try { while (true)
                 {
                     var message = await Peer.Read(peer.Stream) ?? throw new IOException("Соединение оборвалось до завершения команды.");
                     if (message.Type == "exec-output")
@@ -48,6 +63,7 @@ static class RemoteCommands
                     else if (message.Type == "exec-exit") return message.ExitCode;
                     else if (message.Type == "error") throw new Exception(message.Error ?? "Ошибка выполнения команды.");
                 }
+                } finally { inputStop.Cancel(); }
             }
             catch (Exception e)
             {

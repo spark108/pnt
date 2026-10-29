@@ -73,6 +73,15 @@ sealed class Service(Store db, X509Certificate2 cert)
                 if (request.Target == id) await ExecuteExternalPing(peer.Stream, request);
                 else await RelayRequest(peer.Stream, request);
                 break;
+            case "tcp-check":
+                if (request.Target == id)
+                {
+                    await Peer.Send(peer.Stream, new Message("ready", Hops: (request.Hops ?? []).Append(id).ToArray()));
+                    var check = await Management.CheckSsh(request.Host ?? "");
+                    await Peer.Send(peer.Stream, new Message("ping-result", Ip: check.Ip, PingMs: check.Ms, Error: check.Error));
+                }
+                else await RelayRequest(peer.Stream, request);
+                break;
             case "tunnel": await Tunnel(peer.Stream, request); break;
             default: await Peer.Send(peer.Stream, new Message("error", Error: "Неизвестный запрос.")); break;
         }
@@ -328,13 +337,15 @@ sealed class Service(Store db, X509Certificate2 cert)
         {
             await Peer.Send(incoming, new Message("error", Error: "Пустая или слишком длинная команда.")); return;
         }
-        using var process = new Process { StartInfo = new ProcessStartInfo("/bin/sh")
+        using var process = new Process { StartInfo = new ProcessStartInfo(request.Interactive ? "/usr/bin/script" : "/bin/sh")
         {
             UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true,
-            RedirectStandardInput = false, WorkingDirectory = App.Dir
+            RedirectStandardInput = request.Interactive, WorkingDirectory = App.Dir
         } };
+        if (request.Interactive) { process.StartInfo.ArgumentList.Add("-qef"); }
         process.StartInfo.ArgumentList.Add("-c");
         process.StartInfo.ArgumentList.Add(request.Command);
+        if (request.Interactive) process.StartInfo.ArgumentList.Add("/dev/null");
         try { process.Start(); }
         catch (Exception e) { await Peer.Send(incoming, new Message("error", Error: e.Message)); return; }
         try
@@ -342,7 +353,15 @@ sealed class Service(Store db, X509Certificate2 cert)
             await Peer.Send(incoming, new Message("ready", Hops: (request.Hops ?? []).Append(id).ToArray()));
             _ = Task.Run(async () =>
             {
-                try { while (await Peer.Read(incoming) is not null) { } }
+                try
+                {
+                    while (await Peer.Read(incoming) is Message input)
+                        if (request.Interactive && input.Type == "exec-input")
+                        {
+                            await process.StandardInput.WriteAsync(input.Output);
+                            await process.StandardInput.FlushAsync();
+                        }
+                }
                 catch { }
                 try { if (!process.HasExited) process.Kill(true); }
                 catch { }

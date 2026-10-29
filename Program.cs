@@ -23,7 +23,7 @@ record Message(string Type, string? Id = null, string? Name = null, string? Ip =
     string[]? Hops = null, Node[]? Nodes = null, Rule[]? Rules = null, string? Error = null, string? KeyHash = null,
     UpdateNotice? Update = null, PingReport[]? Pings = null, WebConfig? Web = null,
     string? Command = null, string? Output = null, bool Stderr = false, int ExitCode = 0,
-    string? Host = null, double? PingMs = null);
+    string? Host = null, double? PingMs = null, bool Interactive = false);
 
 static class App
 {
@@ -58,6 +58,9 @@ static class App
             var me = Certificate.Id(cert);
             switch (a)
             {
+                case ["install"]: return await Management.Local("install");
+                case ["update"]: return await Management.Local("update");
+                case ["install", "-r", var remoteHost]: return await Management.Remote(db, cert, remoteHost);
                 case ["serve"]: await new Service(db, cert).Run(); break;
                 case ["create", "cluster", var key]:
                     if (db.Get("cluster") != null) throw new Exception("Кластер уже создан или принят.");
@@ -90,6 +93,9 @@ static class App
                 case ["cluster", "nodes", var fromNode]: PrintNodes(db, fromNode); break;
                 case ["nodes"]: PrintNodes(db, null); break;
                 case ["nodes", var fromNode]: PrintNodes(db, fromNode); break;
+                case ["sh", var target, "--interactive", .. var command] when command.Length > 0:
+                    if (Console.IsInputRedirected) throw new Exception("Нужен интерактивный терминал.");
+                    return await RemoteCommands.Run(db, cert, target, string.Join(' ', command), true);
                 case ["sh", var target, .. var command] when command.Length > 0:
                     return await RemoteCommands.Run(db, cert, target, string.Join(' ', command));
                 case ["ping", var host]:
@@ -120,8 +126,8 @@ static class App
                     await SetMaintenance(db, cert, false); break;
                 case ["web", "enable"]:
                     Active(db);
-                    if (db.Rules().Any(x => !x.Removed && x.InPort == 600))
-                        throw new Exception("Порт 600 занят правилом проброса. Удалите правило перед включением веб интерфейса.");
+                    if (db.Rules().Any(x => !x.Removed && x.InPort == WebPanel.Port))
+                        throw new Exception($"Порт {WebPanel.Port} занят правилом проброса. Удалите правило перед включением веб интерфейса.");
                     var password = ReadPassword();
                     var salt = RandomNumberGenerator.GetBytes(32);
                     var hash = Rfc2898DeriveBytes.Pbkdf2(password, salt, 210_000, HashAlgorithmName.SHA256, 32);
@@ -129,7 +135,7 @@ static class App
                     db.PutWeb(new WebConfig(Guid.NewGuid().ToString("N"), true, Convert.ToHexString(salt),
                         Convert.ToHexString(hash), Math.Max(Now, (previous?.Version ?? 0) + 1)));
                     await Broadcast(db, cert);
-                    Console.WriteLine("Веб интерфейс включён на https://<IP>:600/ (логин admin). Изменение отправлено узлам."); break;
+                    Console.WriteLine($"Веб интерфейс включён на https://<IP>:{WebPanel.Port}/ (логин admin). Изменение отправлено узлам."); break;
                 case ["web", "disable"]:
                     Active(db);
                     var currentWeb = db.Web();
@@ -237,7 +243,7 @@ static class App
         if (!m.TryGetValue("--listen", out var input) || !m.TryGetValue("--to", out var output)) throw new Exception("Укажите --listen и --to.");
         var (inputHost, inputPort) = ParseEndpoint(input);
         var (outputHost, outputPort) = ParseEndpoint(output);
-        if (inputPort == 442 || inputPort == 600 && db.Web()?.Enabled == true)
+        if (inputPort == 442 || inputPort == WebPanel.Port && db.Web()?.Enabled == true)
             throw new Exception("Этот порт зарезервирован службой PNT.");
         var ingress = db.Resolve(inputHost) ?? throw new Exception("Узел входа не найден.");
         if (db.Rules().Any(x => !x.Removed && x.In == ingress.Id && x.InPort == inputPort)) throw new Exception("Этот входной порт уже используется другим правилом.");
@@ -283,6 +289,8 @@ static class App
         pnt nodes [node-id]
         pnt sh <node-id> <command...>
         pnt ping <IPv4|domain>
+        pnt install | update
+        pnt install -r root@IPv4
         pnt cluster invite revoke <id>
         pnt accept cluster <invite_key>
         pnt name <name>

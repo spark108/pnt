@@ -12,7 +12,7 @@ namespace Pnt;
 
 sealed class WebPanel(Store db)
 {
-    const int Port = 600;
+    public const int Port = 8016;
     readonly SemaphoreSlim gate = new(1, 1);
     readonly Dictionary<string, (int Failures, long Until)> attempts = new();
     WebApplication? app;

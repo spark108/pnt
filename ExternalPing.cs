@@ -47,17 +47,17 @@ static class ExternalPing
             .Select(id => db.Nodes().FirstOrDefault(x => x.Id == id)?.Name ?? id));
     }
 
-    static async Task<NodeExternalPing> Query(Store db, X509Certificate2 cert, Node self, Node node, string host)
+    internal static async Task<NodeExternalPing> Query(Store db, X509Certificate2 cert, Node self, Node node, string host, bool tcp = false)
     {
         if (node.Id == self.Id)
-            return new NodeExternalPing(node, [self.Id], await Measure(host));
+            return new NodeExternalPing(node, [self.Id], tcp ? await Management.CheckSsh(host) : await Measure(host));
         var lastError = "нет маршрута к узлу";
         foreach (var relay in RoutePlanner.Candidates(db, self.Id, node.Id, []))
         {
             try
             {
                 using var peer = await Peer.Connect(relay.Ip, relay.Cert, cert);
-                await Peer.Send(peer.Stream, new Message("ping-external", self.Id, Target: node.Id,
+                await Peer.Send(peer.Stream, new Message(tcp ? "tcp-check" : "ping-external", self.Id, Target: node.Id,
                     Hops: [self.Id], Host: host)).WaitAsync(TimeSpan.FromSeconds(10));
                 var ready = await Peer.Read(peer.Stream).WaitAsync(TimeSpan.FromSeconds(45));
                 if (ready?.Type != "ready")

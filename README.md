@@ -4,6 +4,16 @@ PNT is a .NET 10 cluster service for Debian. It uses TCP 442 for encrypted node 
 
 ## Install on Debian
 
+Once the PNT binary is available, management commands are also available directly:
+
+```sh
+sudo pnt install
+sudo pnt update
+sudo pnt install -r root@192.0.2.20
+```
+
+These commands use the existing installation worker `pnt.sh` from the configured source checkout. Keep that checkout on disk. Remote installation checks TCP port 22 from every reachable cluster node and chooses the reachable node with the fastest connection to the target. If that node is reached through relays, installation output and SSH prompts travel back through the cluster to the original terminal. SSH passwords are entered interactively and are not saved by PNT. The selected node creates the invitation and joins the installed server to the cluster. All participating nodes must be updated to support this protocol.
+
 Run from this source directory on Debian 12 or 13:
 
 ```sh
@@ -70,7 +80,7 @@ sudo pnt web enable     # Prompts for a password
 sudo pnt web disable    # Closes the panel on every connected node and clears the password
 ```
 
-Open `https://<node-ip>:600/` and sign in with username `admin` and the chosen password. TCP 442 remains reserved for encrypted communication between nodes. The web interface uses a separate self-signed HTTPS certificate for each node, so the browser will ask you to trust it. The password is stored as a salted PBKDF2 hash; only the hash and salt are synchronized between cluster members. A disconnected node applies enable or disable when it reconnects and receives the latest configuration. All nodes must run this version to host the panel.
+Open `https://<node-ip>:8016/` and sign in with username `admin` and the chosen password. TCP 442 remains reserved for encrypted communication between nodes. The web interface uses a separate self-signed HTTPS certificate for each node, so the browser will ask you to trust it. The password is stored as a salted PBKDF2 hash; only the hash and salt are synchronized between cluster members. A disconnected node applies enable or disable when it reconnects and receives the latest configuration. All nodes must run this version to host the panel.
 
 The network map shows solid lines for fresh direct connections and dashed lines for routes through intermediate nodes. Labels show the latest measured ping for a known route or the sum of direct-link pings for an inferred route. Choose servers A and B, then add transit servers in order to highlight a route. The forwarding page shows ingress, exit node, and final destination for every active TCP rule. Ping data older than 30 seconds is ignored, so a route may temporarily disappear during an update or disconnection.
 
