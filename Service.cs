@@ -11,6 +11,7 @@ sealed class Service(Store db, X509Certificate2 cert)
     readonly string id = Certificate.Id(cert);
     readonly Dictionary<string, TcpListener> listeners = new();
     readonly CancellationTokenSource stop = new();
+    readonly Dictionary<string, Task> checks = new();
     readonly WebPanel web = new(db);
 
     public async Task Run()
@@ -134,21 +135,35 @@ sealed class Service(Store db, X509Certificate2 cert)
                 {
                     foreach (var n in db.Nodes().Where(x => !x.Removed && x.Id != id))
                     {
-                        try
-                        {
-                            var watch = Stopwatch.StartNew();
-                            using var p = await Peer.Connect(n.Ip, n.Cert, cert);
-                            await Peer.Send(p.Stream, Sync());
-                            var reply = await Peer.Read(p.Stream);
-                            if (reply?.Type == "sync") { Merge(reply); db.SetPing(n.Id, watch.Elapsed.TotalMilliseconds, true, [id, n.Id]); }
-                        }
-                        catch { try { await Probe(n.Id, [], true); } catch { } }
+                        if (!checks.TryGetValue(n.Id, out var previous) || previous.IsCompleted)
+                            checks[n.Id] = CheckNode(n);
                     }
+                    foreach (var key in checks.Where(x => x.Value.IsCompleted && db.Resolve(x.Key) is null).Select(x => x.Key).ToArray()) checks.Remove(key);
                     if (db.Self()?.Removed != true) LaunchPendingUpdate();
                 }
             }
             catch (Exception e) { Console.Error.WriteLine("pnt: maintenance: " + e.Message); }
             await Task.Delay(5000, stop.Token);
+        }
+    }
+
+    async Task CheckNode(Node node)
+    {
+        try
+        {
+            var watch = Stopwatch.StartNew();
+            using var peer = await Peer.Connect(node.Ip, node.Cert, cert);
+            await Peer.Send(peer.Stream, Sync()).WaitAsync(TimeSpan.FromSeconds(8));
+            var reply = await Peer.Read(peer.Stream).WaitAsync(TimeSpan.FromSeconds(8));
+            if (reply?.Type != "sync") throw new IOException("Нет ответа синхронизации.");
+            Merge(reply);
+            db.SetPing(node.Id, watch.Elapsed.TotalMilliseconds, true, [id, node.Id]);
+        }
+        catch
+        {
+            if (stop.IsCancellationRequested) return;
+            try { await Probe(node.Id, [], true); }
+            catch { }
         }
     }
 
