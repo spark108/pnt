@@ -66,9 +66,8 @@ const path=require('node:path');
     await page.locator('#drawer-toggle').click();
     await page.evaluate(()=>viewer.camera.setView({destination:Cesium.Cartesian3.fromDegrees(5,52,300000),orientation:{heading:0,pitch:-Math.PI/2,roll:0}}));
     await page.mouse.move(250,475);await page.mouse.wheel(0,-15000);await page.waitForTimeout(1200);
-    assert.equal(await page.evaluate(()=>viewer.scene.screenSpaceCameraController.minimumZoomDistance),250000);
-    assert(await page.evaluate(()=>viewer.camera.positionCartographic.height>=249900),'Camera crossed minimum height');
+    assert(await page.evaluate(()=>viewer.camera.positionCartographic.height<249900),'Camera still blocked by the former zoom limit');
     assert.deepEqual(errors,[]);
-    console.log('PASS: globe, routes, manual locations, fresh links, offline assets, desktop/mobile layout, NASA tile protocol/fallback and mouse-wheel zoom limit.');
+    console.log('PASS: globe, routes, manual locations, fresh links, offline assets, desktop/mobile layout, NASA tile protocol/fallback and mouse-wheel zoom beyond the former limit.');
   }finally{await browser.close()}
 })().catch(e=>{console.error(e);process.exitCode=1});

@@ -70,7 +70,6 @@ body{overflow:hidden}#graph{position:fixed;inset:0;width:100vw;height:100dvh;min
 const $=id=>document.getElementById(id);
 let state={nodes:[],pings:[],links:[],rules:[]},from='',to='',via=[],pickTarget=false;
 let receivedAt=Date.now(),viewer=null,firstView=true,satelliteLayer=null;
-const MIN_CAMERA_HEIGHT=250000;
 let geographicLayer=null,geographicLabels=[];try{$('map-geography').checked=localStorage.getItem('pnt.mapGeography')!=='off'}catch{}
 let surfaceChoice='nasa';try{surfaceChoice=localStorage.getItem('pnt.mapSurface')||'nasa'}catch{}
 $('map-surface').value=surfaceChoice==='local'?'local':'nasa';
@@ -104,7 +103,7 @@ async function initGlobe(){try{
  if(!window.Cesium)throw Error('Не удалось загрузить Cesium');
  Cesium.Ion.defaultAccessToken='';
  viewer=new Cesium.Viewer('graph',{baseLayer:false,baseLayerPicker:false,geocoder:false,homeButton:false,sceneModePicker:false,navigationHelpButton:false,animation:false,timeline:false,fullscreenButton:false,infoBox:false,selectionIndicator:false,skyBox:false,scene3DOnly:true,requestRenderMode:true,maximumRenderTimeChange:Infinity});
- viewer.scene.screenSpaceCameraController.minimumZoomDistance=MIN_CAMERA_HEIGHT;viewer.scene.screenSpaceCameraController.enableCollisionDetection=true;
+ viewer.scene.screenSpaceCameraController.enableCollisionDetection=true;
  viewer.scene.backgroundColor=Cesium.Color.fromCssColorString('#050b16');viewer.scene.globe.baseColor=Cesium.Color.fromCssColorString('#16384b');viewer.scene.globe.enableLighting=false;
  viewer.camera.setView({destination:Cesium.Cartesian3.fromDegrees(35,40,18000000)});viewer.camera.percentageChanged=.02;viewer.camera.changed.addEventListener(layoutLabels);
  viewer.screenSpaceEventHandler.removeInputAction(Cesium.ScreenSpaceEventType.LEFT_DOUBLE_CLICK);
