@@ -117,6 +117,8 @@ sealed class Service(Store db, X509Certificate2 cert,int controlPort=442)
     {
         switch (request.Type)
         {
+            case "latency-open":
+                await LatencyProbe.Reply(stream,request,id,stop.Token);break;
             case "vpn-admin":
                 await VpnControl.Execute(db,cert,stream,request,stop.Token);break;
             case "route-info":
@@ -199,7 +201,7 @@ sealed class Service(Store db, X509Certificate2 cert,int controlPort=442)
         var task = await Peer.Read(incoming).WaitAsync(TimeSpan.FromSeconds(20));
         if (task is null) return;
         if (task.RequestId != request.RequestId || task.Id != path[0] || task.Deadline <= App.Now ||
-            task.Type is not ("sync" or "probe" or "exec" or "ping-external" or "tcp-check" or "interfaces" or "tunnel" or "vpn-admin"))
+            task.Type is not ("sync" or "probe" or "exec" or "ping-external" or "tcp-check" or "interfaces" or "tunnel" or "vpn-admin" or "latency-open"))
         {
             await Peer.Send(incoming, new Message("error", Error: "Запрос просрочен или не соответствует маршруту.", RequestId: task.RequestId)); return;
         }
@@ -304,14 +306,17 @@ sealed class Service(Store db, X509Certificate2 cert,int controlPort=442)
     {
         try
         {
-            using var peer = await routing.Connect(node.Id, cancellation: stop.Token);
-            var watch = Stopwatch.StartNew();
-            var request = await RouteTransport.SendTask(peer, Sync());
-            var reply = await RouteTransport.ReadResult(peer, request.RequestId, TimeSpan.FromSeconds(8), stop.Token);
-            if (reply.Type != "sync") return;
-            Merge(reply);
-            var path = peer.RouteReady!.Hops!;
-            db.SetPing(node.Id, (peer.RouteReady.PingMs ?? 0) + watch.Elapsed.TotalMilliseconds, path.Length == 2, path);
+            using(var peer = await routing.Connect(node.Id, cancellation: stop.Token))
+            {
+                var request = await RouteTransport.SendTask(peer, Sync());
+                var reply = await RouteTransport.ReadResult(peer, request.RequestId, TimeSpan.FromSeconds(8), stop.Token);
+                if (reply.Type != "sync") return;
+                Merge(reply);db.Set("peer_sync_seen:"+node.Id,App.Now.ToString());
+            }
+            using var measured = await routing.Connect(node.Id, cancellation: stop.Token);
+            var ms = await LatencyProbe.Measure(measured,id,node.Id,stop.Token);
+            var path = measured.RouteReady!.Hops!;
+            db.SetPing(node.Id,ms,path.Length==2,path);
         }
         catch { }
     }
@@ -454,14 +459,12 @@ sealed class Service(Store db, X509Certificate2 cert,int controlPort=442)
         {
             try
             {
-                var watch = Stopwatch.StartNew(); using var p = await Peer.Connect(n.Ip, n.Cert, cert);
+                using var p = await Peer.Connect(n.Ip, n.Cert, cert);
                 await Peer.Send(p.Stream, new Message("probe", id, Target: target, Hops: hops.Append(id).ToArray()));
                 var answer = await Peer.Read(p.Stream).WaitAsync(TimeSpan.FromSeconds(30));
                 if (answer?.Type == "ok" && answer.Hops is { Length: > 1 } path &&
                     path[0] == (hops.FirstOrDefault() ?? id) && path[^1] == target && path.Contains(id))
                 {
-                    var localRoute = path.SkipWhile(x => x != id).ToArray();
-                    db.SetPing(target, watch.Elapsed.TotalMilliseconds, localRoute.Length == 2, localRoute);
                     return path;
                 }
             }

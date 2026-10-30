@@ -158,6 +158,11 @@ static class TransportChecks
             Assert(peer.Transport == "quic", "Service did not start UDP transport.");
             await Peer.Send(peer.Stream, new Message("route-info", bid));
             Assert((await Peer.Read(peer.Stream).WaitAsync(TimeSpan.FromSeconds(5)))?.Type == "route-info", "Service did not dispatch QUIC requests.");
+            using(var measured=await Peer.Connect("127.0.0.1",afp,b,port:live.ControlPort))
+            {
+                Assert(measured.Transport=="quic","Probe did not use QUIC");
+                Assert(double.IsFinite(await LatencyProbe.Measure(measured,bid,aid)),"QUIC RTT failed");
+            }
             var member = db.Resolve(bid)!;
             db.Put(member with { Removed = true, Version = member.Version + 1 });
             using var revoked = await Peer.Connect("127.0.0.1", afp, b, port: live.ControlPort);

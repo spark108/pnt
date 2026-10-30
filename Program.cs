@@ -28,7 +28,7 @@ record Message(string Type, string? Id = null, string? Name = null, string? Ip =
     string? Host = null, double? PingMs = null, bool Interactive = false,
     string? RequestId = null, long Deadline = 0, string[][]? Routes = null, PingReport[]? Links = null,
     NodeInterface[]? Interfaces = null, string? OutAddress = null, string? OutInterface = null, string? Platform = null, bool BehindNat = false,
-    VpnServer[]? VpnServers = null, VpnClient[]? VpnClients = null, string? VpnPayload = null);
+    VpnServer[]? VpnServers = null, VpnClient[]? VpnClients = null, string? VpnPayload = null, int ProbeCount = 0);
 
 static class App
 {
@@ -217,8 +217,8 @@ static class App
                 : node.Updating && node.UpdatingSince > 0 && Now - node.UpdatingSince < 3600_000 ? "update"
                 : ping is not null ? $"{ping.Ms:0.0} ms" + (ping.Direct ? "" :
                     ping.Route is { Length: > 2 } route ? " через " + string.Join(" → ", route.Skip(1).SkipLast(1).Select(x => db.Nodes().FirstOrDefault(n => n.Id == x)?.Name ?? x)) : " через другой узел")
-                : "нет связи";
-            rows.Add([node.Id,node.Name,new(node.Ip,node.BehindNat?"grey":null),new(status,node.Removed||ping is null&&status!="update"?"red":status=="update"?"yellow":"green"),new(node.BehindNat?"NAT":"—",node.BehindNat?"cyan":"grey")]);
+                : long.TryParse(db.Get("peer_sync_seen:"+node.Id),out var seen)&&Now-seen<30_000?"нет замера":"нет связи";
+            rows.Add([node.Id,node.Name,new(node.Ip,node.BehindNat?"grey":null),new(status,node.Removed||status=="нет связи"?"red":status is "update" or "нет замера"?"yellow":"green"),new(node.BehindNat?"NAT":"—",node.BehindNat?"cyan":"grey")]);
         }
         CliOutput.Table(["ID","Имя","IP","Пинг / статус","NAT"],rows);
     }

@@ -36,9 +36,9 @@ sealed class RouteTransport(Store db, X509Certificate2 cert)
                     limit.CancelAfter(TimeSpan.FromSeconds(8));
                     var peer = await OpenPath(route.Path, Guid.NewGuid().ToString("N"), limit.Token);
                     db.ChangeRoutes(target, old => old.Select(r => r.Path.SequenceEqual(route.Path)
-                        ? r with { Updated = App.Now, Ms = peer.RouteReady!.PingMs ?? r.Ms, Successes = r.Successes+1,
+                        ? r with { Updated = App.Now, Successes = r.Successes+1,
                             Primary = r.Primary || !old.Any(p => p.Primary && App.Now-p.Updated<RouteCache.FreshFor) } : r).ToList());
-                    return peer;
+                    peer.RouteReady=peer.RouteReady! with {PingMs=route.Ms};return peer;
                 }
                 catch when (!cancellation.IsCancellationRequested)
                 {
@@ -62,14 +62,13 @@ sealed class RouteTransport(Store db, X509Certificate2 cert)
         Peer? peer = null;
         try
         {
-            var watch = Stopwatch.StartNew();
             peer = await Peer.Connect(next.Id == self ? "127.0.0.1" : next.Ip, next.Cert, cert, token);
             await Peer.Send(peer.Stream, new Message("route-open", self, Target: path[^1], Hops: path,
                 RequestId: requestId, Deadline: App.Now+20_000)).WaitAsync(token);
             var reply = await Peer.Read(peer.Stream).WaitAsync(token);
             if (reply?.Type != "ready" || reply.RequestId != requestId || reply.Hops is null || !reply.Hops.SequenceEqual(path))
                 throw new IOException(reply?.Error ?? "Маршрут не подтверждён.");
-            peer.RouteReady = reply with { PingMs = watch.Elapsed.TotalMilliseconds };
+            peer.RouteReady = reply with { PingMs = path.Length==1?0:null };
             return peer;
         }
         catch { peer?.Dispose(); throw; }
@@ -99,7 +98,7 @@ sealed class RouteTransport(Store db, X509Certificate2 cert)
                 {
                     await slots.WaitAsync(budget.Token); entered=true;
                     using var peer = await OpenPath(path,Guid.NewGuid().ToString("N"),budget.Token);
-                    return (Path: path, Ms: peer.RouteReady!.PingMs!.Value);
+                    return (Path: path, Ms: await LatencyProbe.Measure(peer,self,target,budget.Token,1));
                 }
                 catch { return (Path: path, Ms: double.PositiveInfinity); }
                 finally { if(entered) slots.Release(); }
@@ -191,7 +190,7 @@ sealed class RouteTransport(Store db, X509Certificate2 cert)
                 return;
             }
             using var limit = CancellationTokenSource.CreateLinkedTokenSource(token);
-            limit.CancelAfter(TimeSpan.FromSeconds(5));
+            limit.CancelAfter(TimeSpan.FromSeconds(8));
             using var slots = new SemaphoreSlim(8);
             await Task.WhenAll(db.Nodes().Where(n => !n.Removed && n.Id != self).Select(async node =>
             {
@@ -199,15 +198,16 @@ sealed class RouteTransport(Store db, X509Certificate2 cert)
                 try
                 {
                     await slots.WaitAsync(limit.Token); entered = true;
-                    var watch = Stopwatch.StartNew();
                     using var peer = await Peer.Connect(node.Ip, node.Cert, cert, limit.Token);
                     await Peer.Send(peer.Stream, new Message("route-info", self)).WaitAsync(limit.Token);
                     var reply = await Peer.Read(peer.Stream).WaitAsync(limit.Token);
                     if (reply?.Type == "route-info")
                     {
                         foreach (var ping in reply.Links ?? reply.Pings ?? []) db.PutLink(ping);
-                        db.PutLink(new PingReport(self,node.Id,watch.Elapsed.TotalMilliseconds,App.Now,true,[self,node.Id]));
                     }
+                    using var measurement=await Peer.Connect(node.Ip,node.Cert,cert,limit.Token);
+                    var ms=await LatencyProbe.Measure(measurement,self,node.Id,limit.Token);
+                    db.PutLink(new PingReport(self,node.Id,ms,App.Now,true,[self,node.Id]));
                 }
                 catch { }
                 finally { if (entered) slots.Release(); }
