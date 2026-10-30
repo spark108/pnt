@@ -73,6 +73,7 @@ static class WebChecks
             try{await imagery.Get(3,1,2,cancel.Token);throw new Exception("Tile cancellation ignored");}catch(OperationCanceledException){}
         }
         db.Put(new Node(self,"Amsterdam","8.8.8.8",Certificate.Fingerprint(cert),App.Now));
+        db.PutVpn(new VpnServer("bbbbbbbbbbbbbbbb","VPN Frankfurt",App.Now));
         using var handler=new GeoHandler();using var http=new HttpClient(handler);var geo=new GeoLocations(db,http);
         Assert(!GeoLocations.Public("192.168.1.1")&&!GeoLocations.Public("100.64.0.1")&&!GeoLocations.Public("::1")&&GeoLocations.Public("8.8.8.8"),"Private IP classification failed");
         await geo.Refresh(default);Assert(handler.Calls==1&&db.Self()!.Location?.Latitude==52.37,"Automatic geo lookup failed");
@@ -138,6 +139,7 @@ static class WebChecks
             Assert((await client.GetAsync("/api/cesium/ion/v1/assets/11/endpoint")).StatusCode==HttpStatusCode.Unauthorized,"Ion endpoint bypassed authentication");
             client.DefaultRequestHeaders.Authorization=new AuthenticationHeaderValue("Basic",Convert.ToBase64String(Encoding.UTF8.GetBytes("admin:web-test-password")));
             var state=await client.GetFromJsonAsync<JsonElement>("/api/state");var csrf=state.GetProperty("csrfToken").GetString()!;
+            Assert(state.GetProperty("nodes").EnumerateArray().Single(n=>n.GetProperty("id").GetString()=="bbbbbbbbbbbbbbbb").GetProperty("vpn").GetBoolean(),"VPN marker missing from state");
             Assert(state.GetProperty("cesium").GetProperty("configured").GetBoolean()&&!state.GetRawText().Contains(MasterToken),"State leaked master token");
             Assert((await client.GetAsync("/api/cesium/ion/v1/assets/1/endpoint")).StatusCode==HttpStatusCode.NotFound,"Disabled ion asset was accessible");
             Assert((await client.GetAsync("/api/cesium/ion/v1/assets/999/endpoint")).StatusCode==HttpStatusCode.NotFound,"Unregistered ion asset was accessible");

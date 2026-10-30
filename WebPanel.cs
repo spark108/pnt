@@ -195,7 +195,7 @@ sealed class WebPanel(Store db, X509Certificate2 cert,int listenPort=8016,HttpCl
     object State()=>new
     {
         self=db.Get("self"),csrfToken,
-        nodes=db.Nodes().Where(x=>!x.Removed).Select(x=>new{x.Id,x.Name,x.Ip,x.Updating,x.UpdatingSince,x.BehindNat,x.Platform,location=geolocations.Get(x)}),
+        nodes=db.Nodes().Where(x=>!x.Removed).Select(x=>new{x.Id,x.Name,x.Ip,x.Updating,x.UpdatingSince,x.BehindNat,x.Platform,vpn=db.VpnServers().Any(s=>s.Id==x.Id&&!s.Removed),location=geolocations.Get(x)}),
         pings=db.Pings(),links=db.Links().Where(p=>p.Updated>App.Now-30_000),
         routes=db.Nodes().Where(x=>!x.Removed).SelectMany(x=>db.Routes(x.Id)),rules=db.Rules().Where(x=>!x.Removed),time=App.Now,cesium=CesiumControl.Public(db.Cesium())
     };

@@ -98,15 +98,22 @@ function shortest(a,b,graph,blocked=new Set()){if(a===b)return {path:[a],ms:0};c
 function pathOf(a,b,graph,blocked=new Set()){return shortest(a,b,graph,blocked)}
 function route(graph){const stops=[from,...via,to];let path=[],ms=0;for(let i=0;i<stops.length-1;i++){const blocked=new Set(stops.filter((_,j)=>j!==i&&j!==i+1));const part=pathOf(stops[i],stops[i+1],graph,blocked);if(!part)return null;path.push(...part.path.slice(i?1:0));ms+=part.ms}return {path,ms}}
 function chooseNode(id){if(pickTarget&&id!==from){to=id;pickTarget=false}else{from=id;to='';pickTarget=true}controls();render()}
-function position(n,height=15000){return Cesium.Cartesian3.fromDegrees(n.location.longitude,n.location.latitude,height)}
+function position(n,height=50){return Cesium.Cartesian3.fromDegrees(n.location.longitude,n.location.latitude,height)}
+function groundHeight(n){return (viewer?.scene.globe.getHeight(Cesium.Cartographic.fromDegrees(n.location.longitude,n.location.latitude))??0)+50}
+const vpnPins=new Map();
+function vpnPin(color){if(!vpnPins.has(color))vpnPins.set(color,new Cesium.PinBuilder().fromText('VPN',Cesium.Color.fromCssColorString(color),44).toDataURL());return vpnPins.get(color)}
 function located(n){return n.location&&Number.isFinite(n.location.latitude)&&Number.isFinite(n.location.longitude)&&Math.abs(n.location.latitude)<=90&&Math.abs(n.location.longitude)<=180}
 function fitGlobe(){if(!viewer)return;const points=state.nodes.filter(located).map(n=>position(n));if(points.length)viewer.camera.flyToBoundingSphere(Cesium.BoundingSphere.fromPoints(points),{duration:1.1,offset:new Cesium.HeadingPitchRange(0,-1.2,Math.max(9000000, Cesium.BoundingSphere.fromPoints(points).radius*3))})}
 async function initGlobe(){try{
  if(!window.Cesium)throw Error('Не удалось загрузить Cesium');
  Cesium.Ion.defaultAccessToken='';
- viewer=new Cesium.Viewer('graph',{baseLayer:false,baseLayerPicker:false,geocoder:false,homeButton:false,sceneModePicker:false,navigationHelpButton:false,animation:false,timeline:false,fullscreenButton:false,infoBox:false,selectionIndicator:false,skyBox:false,scene3DOnly:true,requestRenderMode:true,maximumRenderTimeChange:Infinity});
+ viewer=new Cesium.Viewer('graph',{baseLayer:false,baseLayerPicker:false,geocoder:false,homeButton:false,sceneModePicker:false,navigationHelpButton:false,animation:false,timeline:false,fullscreenButton:false,infoBox:false,selectionIndicator:false,skyBox:false,scene3DOnly:true,requestRenderMode:true,automaticallyTrackDataSourceClocks:false,maximumRenderTimeChange:60});
  viewer.scene.screenSpaceCameraController.enableCollisionDetection=true;
- viewer.scene.backgroundColor=Cesium.Color.fromCssColorString('#050b16');viewer.scene.globe.baseColor=Cesium.Color.fromCssColorString('#16384b');viewer.scene.globe.enableLighting=false;
+ viewer.scene.backgroundColor=Cesium.Color.fromCssColorString('#050b16');viewer.scene.globe.baseColor=Cesium.Color.fromCssColorString('#16384b');viewer.scene.globe.enableLighting=true;
+ viewer.scene.light=new Cesium.SunLight();viewer.clock.clockStep=Cesium.ClockStep.SYSTEM_CLOCK;
+ viewer.scene.globe.dynamicAtmosphereLighting=true;viewer.scene.globe.dynamicAtmosphereLightingFromSun=true;
+ viewer.scene.globe.lightingFadeOutDistance=0;viewer.scene.globe.lightingFadeInDistance=1;
+ viewer.scene.atmosphere.dynamicLighting=Cesium.DynamicAtmosphereLightingType.SUNLIGHT;
  viewer.camera.setView({destination:Cesium.Cartesian3.fromDegrees(35,40,18000000)});viewer.camera.percentageChanged=.02;viewer.camera.changed.addEventListener(layoutLabels);
  viewer.screenSpaceEventHandler.removeInputAction(Cesium.ScreenSpaceEventType.LEFT_DOUBLE_CLICK);
  const idAt=pos=>{const picked=viewer.scene.pick(pos);return picked?.id?.id?.startsWith('node:')?picked.id.id.slice(5):null};
@@ -193,7 +200,7 @@ async function loadGeography(){try{
  await viewer.dataSources.add(geographicLayer);layoutLabels();
  }catch(e){$('geography-status').textContent='Не удалось загрузить границы и названия.';console.error(e)}}
 $('map-geography').onchange=()=>{const enabled=$('map-geography').checked;try{localStorage.setItem('pnt.mapGeography',enabled?'on':'off')}catch{}if(geographicLayer)geographicLayer.show=enabled;layoutLabels()};
-function arc(a,b){const start=Cesium.Cartographic.fromDegrees(a.location.longitude,a.location.latitude),end=Cesium.Cartographic.fromDegrees(b.location.longitude,b.location.latitude);try{const geodesic=new Cesium.EllipsoidGeodesic(start,end),height=Math.max(60000,Math.min(1800000,geodesic.surfaceDistance*.15));return Array.from({length:49},(_,i)=>{const t=i/48,p=geodesic.surfaceDistance>1?geodesic.interpolateUsingFraction(t):start;return Cesium.Cartesian3.fromRadians(p.longitude,p.latitude,15000+Math.sin(Math.PI*t)*height)})}catch{return [position(a),position(b)]}}
+function arc(a,b){const start=Cesium.Cartographic.fromDegrees(a.location.longitude,a.location.latitude),end=Cesium.Cartographic.fromDegrees(b.location.longitude,b.location.latitude);try{const startHeight=groundHeight(a),endHeight=groundHeight(b),geodesic=new Cesium.EllipsoidGeodesic(start,end),height=Math.max(60000,Math.min(1800000,geodesic.surfaceDistance*.15));return Array.from({length:49},(_,i)=>{const t=i/48,p=geodesic.surfaceDistance>1?geodesic.interpolateUsingFraction(t):start;return Cesium.Cartesian3.fromRadians(p.longitude,p.latitude,startHeight*(1-t)+endHeight*t+Math.sin(Math.PI*t)*height)})}catch{return [position(a,groundHeight(a)),position(b,groundHeight(b))]}}
 const geometryKeys=new Map();
 function render(){const graph=edges(),selected=from&&to?route(graph):null;
  $('route-time').replaceChildren();const strong=document.createElement('strong');strong.textContent=selected?`${selected.ms.toFixed(1)} ms`:'Нет доступного маршрута';$('route-time').append(strong);
@@ -205,16 +212,18 @@ function render(){const graph=edges(),selected=from&&to?route(graph):null;
 
  for(const item of state.nodes.filter(located)){
   const id='node:'+item.id,selectedNode=[from,to,...via].includes(item.id),key=JSON.stringify([item.location.latitude,item.location.longitude]);keep.add(id);
-  const color=Cesium.Color.fromCssColorString(selectedNode?'#f8c66a':'#67e8c4'),text=item.name+(item.updating&&now()-item.updatingSince<3600000?' · update':'');
+  const color=Cesium.Color.fromCssColorString(selectedNode?'#f8c66a':item.vpn?'#60a5fa':'#67e8c4'),text=item.name+(item.updating&&now()-item.updatingSince<3600000?' · update':'');
   let entity=viewer.entities.getById(id);
-  if(!entity)entity=viewer.entities.add({id,position:position(item),point:{pixelSize:12,color,outlineColor:Cesium.Color.fromCssColorString('#102338'),outlineWidth:3},label:{text,font:'13px sans-serif',fillColor:Cesium.Color.WHITE,outlineColor:Cesium.Color.fromCssColorString('#071020'),outlineWidth:4,style:Cesium.LabelStyle.FILL_AND_OUTLINE,pixelOffset:new Cesium.Cartesian2(0,-35),showBackground:true,backgroundColor:Cesium.Color.fromCssColorString('#0b1428dd')}});
-  else {entity.point.color=color;entity.label.text=text;if(geometryKeys.get(id)!==key)entity.position=position(item)}
+  if(!entity)entity=viewer.entities.add({id,position:position(item),label:{text,font:'13px sans-serif',heightReference:Cesium.HeightReference.RELATIVE_TO_GROUND,fillColor:Cesium.Color.WHITE,outlineColor:Cesium.Color.fromCssColorString('#071020'),outlineWidth:4,style:Cesium.LabelStyle.FILL_AND_OUTLINE,pixelOffset:new Cesium.Cartesian2(0,-35),showBackground:true,backgroundColor:Cesium.Color.fromCssColorString('#0b1428dd')}});
+  entity.label.text=text;if(geometryKeys.get(id)!==key)entity.position=position(item);
+  if(item.vpn){entity.point=undefined;const image=vpnPin(selectedNode?'#f8c66a':'#60a5fa');if(!entity.billboard)entity.billboard={image,width:44,height:44,verticalOrigin:Cesium.VerticalOrigin.BOTTOM,heightReference:Cesium.HeightReference.RELATIVE_TO_GROUND};else entity.billboard.image=image}
+  else {entity.billboard=undefined;if(!entity.point)entity.point={pixelSize:12,color,outlineColor:Cesium.Color.fromCssColorString('#102338'),outlineWidth:3,heightReference:Cesium.HeightReference.RELATIVE_TO_GROUND};else entity.point.color=color}
   geometryKeys.set(id,key);
  }
  let visibleLinks=0;
  for(const e of pairs(graph)){
   const a=node(e.a),b=node(e.b);if(!located(a)||!located(b))continue;
-  const id='link:'+e.a+':'+e.b,key=JSON.stringify([a.location.latitude,a.location.longitude,b.location.latitude,b.location.longitude]),selectedEdge=marked.has([e.a,e.b].sort().join('|')),color=Cesium.Color.fromCssColorString(selectedEdge?'#f8c66a':'#55d2c0');keep.add(id);
+  const id='link:'+e.a+':'+e.b,key=JSON.stringify([a.location.latitude,a.location.longitude,b.location.latitude,b.location.longitude,groundHeight(a),groundHeight(b)]),selectedEdge=marked.has([e.a,e.b].sort().join('|')),color=Cesium.Color.fromCssColorString(selectedEdge?'#f8c66a':'#55d2c0');keep.add(id);
   let entity=viewer.entities.getById(id);
   if(!entity){const points=arc(a,b);entity=viewer.entities.add({id,polyline:{positions:points,width:selectedEdge?4:2,arcType:Cesium.ArcType.NONE,material:color},position:points[Math.floor(points.length/2)],label:{text:`${e.ms.toFixed(1)} ms`,font:'12px sans-serif',fillColor:color,showBackground:true,backgroundColor:Cesium.Color.fromCssColorString('#071020dd'),pixelOffset:new Cesium.Cartesian2(0,-8),style:Cesium.LabelStyle.FILL_AND_OUTLINE,outlineWidth:2,outlineColor:Cesium.Color.BLACK}})}
   else {if(geometryKeys.get(id)!==key){const points=arc(a,b);entity.polyline.positions=points;entity.position=points[Math.floor(points.length/2)]}entity.polyline.width=selectedEdge?4:2;entity.polyline.material=color;entity.label.text=`${e.ms.toFixed(1)} ms`;entity.label.fillColor=color}
@@ -228,10 +237,10 @@ $('drawer-toggle').onclick=()=>{const open=$('drawer').classList.toggle('open');
 document.addEventListener('keydown',event=>{if(event.key==='Escape'&&$('drawer').classList.contains('open')&&!document.querySelector('dialog[open]'))$('drawer-toggle').click()});
 function layoutLabels(){
  if(!viewer)return;const occupied=[],time=viewer.clock.currentTime;
- const screen=entity=>Cesium.SceneTransforms.worldToWindowCoordinates(viewer.scene,entity.position.getValue(time));
+ const screen=entity=>Cesium.SceneTransforms.worldToWindowCoordinates(viewer.scene,entity.id.startsWith('node:')?position(node(entity.id.slice(5)),groundHeight(node(entity.id.slice(5)))):entity.position.getValue(time));
  for(const entity of viewer.entities.values.filter(e=>e.polyline)){const p=screen(entity);if(p)occupied.push({x:p.x-35,y:p.y-20,w:70,h:24})}
- for(const entity of viewer.entities.values.filter(e=>e.id.startsWith('node:'))){const p=screen(entity);if(!p)continue;occupied.push({x:p.x-10,y:p.y-10,w:20,h:20});const text=entity.label.text.getValue(time),w=Math.min(250,text.length*7+16),h=24;let offset=-28;
-  for(const candidate of [-28,-56,28,-84,56,-112,84,-140,112]){const rect={x:p.x-w/2,y:p.y+candidate-h/2,w,h};if(!occupied.some(r=>rect.x<r.x+r.w+4&&rect.x+rect.w+4>r.x&&rect.y<r.y+r.h+4&&rect.y+rect.h+4>r.y)){offset=candidate;occupied.push(rect);break}}
+ for(const entity of viewer.entities.values.filter(e=>e.id.startsWith('node:'))){const p=screen(entity);if(!p)continue;const vpn=!!entity.billboard;occupied.push(vpn?{x:p.x-22,y:p.y-44,w:44,h:44}:{x:p.x-10,y:p.y-10,w:20,h:20});const text=entity.label.text.getValue(time),w=Math.min(250,text.length*7+16),h=24;let offset=-28;
+  for(const candidate of (vpn?[-62,-90,28,-118,56,-146,84]:[-28,-56,28,-84,56,-112,84,-140,112])){const rect={x:p.x-w/2,y:p.y+candidate-h/2,w,h};if(!occupied.some(r=>rect.x<r.x+r.w+4&&rect.x+rect.w+4>r.x&&rect.y<r.y+r.h+4&&rect.y+rect.h+4>r.y)){offset=candidate;occupied.push(rect);break}}
   entity.label.pixelOffset=new Cesium.Cartesian2(0,offset);
  }
  if(geographicLayer?.show){const height=viewer.camera.positionCartographic.height,occluder=new Cesium.EllipsoidalOccluder(Cesium.Ellipsoid.WGS84,viewer.camera.positionWC);

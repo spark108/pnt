@@ -343,3 +343,5 @@ pnt vpn server remove <node>
 `server remove` убирает узел из VPN-каталога и отзывает обслуживаемые PNT профили. Он не удаляет AmneziaWG и чужие конфигурации/профили. Старые команды `pnt vpn add server`, `pnt vpn servers` и `pnt vpn remove` заменены новой группой `vpn server`.
 
 Update regression checks: `dotnet run --project tests/UpdateChecks -c Release`; on Linux run `python3 tests/UpdateChecks/worker_checks.py` as root in a test environment; on Windows run `powershell -NoProfile -File tests/UpdateChecks/windows_handoff.ps1`. The worker checks use temporary source/install directories and stub Git, build and service commands.
+
+Глобус освещается по текущему положению Солнца: ночная сторона затемнена. Метки узлов расположены в 50 м над поверхностью с учётом подключённого рельефа. Узлы действующего VPN-каталога обозначены синими метками VPN, выбранные узлы — золотыми.
