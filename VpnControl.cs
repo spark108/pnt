@@ -14,7 +14,7 @@ record VpnClient(string Id,string Name,string Cert,string[] Servers,long Version
 record VpnProfile(int Format,string Cluster,string ClientId,string Identity,Node[] Entrypoints,VpnServer[] Servers,string Issuer,string Signature);
 record VpnOperation(string Action,string? Client=null,string? Fingerprint=null,bool KeepAlive=false);
 record VpnConfiguration(string Config,string Host,int Port,string LocalHost,int LocalPort);
-record VpnStatistics(long Handshake,long Received,long Sent,bool Exists,bool? Connected=null,string? Mode=null);
+record VpnStatistics(long Handshake,long Received,long Sent,bool Exists,bool? Connected=null,string? Mode=null,string? Address=null,string[]? Route=null);
 
 static class VpnControl
 {
@@ -137,9 +137,20 @@ static class VpnControl
         {
             var state=client.Removed?(Status:"отключён",Mode:"—"):VpnConnections.Summary(reports.Where(r=>client.Servers.Contains(r.Id))
                 .Select(r=>r.Stats is null?null:r.Stats.GetValueOrDefault(client.Id)??new VpnStatistics(0,0,0,false,false)));
-            rows.Add([client.Id,client.Name,CliOutput.Status(client.Removed?"отозван":"активен"),client.Servers.Length.ToString(),CliOutput.Status(state.Status),CliOutput.Mode(state.Mode)]);
+            var active=client.Removed?[]:reports.Where(r=>client.Servers.Contains(r.Id)&&r.Stats?.GetValueOrDefault(client.Id)?.Connected==true)
+                .Select(r=>(r.Id,Stats:r.Stats![client.Id])).ToArray();
+            if(active.Length==0)
+                rows.Add([client.Id,client.Name,CliOutput.Status(client.Removed?"отозван":"активен"),client.Servers.Length.ToString(),CliOutput.Status(state.Status),CliOutput.Mode(state.Mode),"—","—","—","—"]);
+            foreach(var connection in active)
+            {
+                var stats=connection.Stats;
+                var route=stats.Mode=="direct"?"клиент → "+(db.Resolve(connection.Id)?.Name??connection.Id)
+                    :stats.Route is {Length:>0}?string.Join(" → ",stats.Route.Select(id=>db.Resolve(id)?.Name??id)):"неизвестен";
+                rows.Add([client.Id,client.Name,CliOutput.Status("активен"),client.Servers.Length.ToString(),CliOutput.Status("подключён"),CliOutput.Mode(stats.Mode=="relay"?"транспорт":"прямое"),
+                    connection.Id,db.VpnServers().FirstOrDefault(s=>s.Id==connection.Id)?.Name??db.Resolve(connection.Id)?.Name??connection.Id,stats.Address??"—",new(route,stats.Mode=="relay"?"cyan":"green")]);
+            }
         }
-        CliOutput.Table(["ID","Имя","Доступ","Серверов","Состояние","Подключение"],rows);
+        CliOutput.Table(["ID","Имя","Доступ","Серверов","Состояние","Подключение","ID узла","Название узла","Внутренний IP","Маршрут"],rows);
     }
     static async Task ReconcileRemote(Store db,X509Certificate2 cert,string id)
     {
@@ -179,7 +190,7 @@ static class VpnControl
             {
                 var config=await Prepare(db,operation,token);
                 await Peer.Send(stream,new Message("vpn-result",Name:operation.KeepAlive?"vpn-keepalive-v1":null,VpnPayload:"{}",RequestId:request.RequestId));
-                using var relay=new VpnConnections.Relay(Certificate.Id(cert),operation.Client!);
+                using var relay=new VpnConnections.Relay(Certificate.Id(cert),operation.Client!,(request.Hops??[]).Append(Certificate.Id(cert)).ToArray());
                 await VpnDatagrams.Exit(stream,config.LocalHost,config.LocalPort,()=>Allowed(db,operation),token,relay.Touch,operation.KeepAlive);return;
             }
             var output=operation.Action switch

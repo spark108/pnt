@@ -20,6 +20,8 @@ Required arguments and unknown options are checked before a command runs. Named 
 
 Lists of nodes, routes, forwarding rules, VPN clients/servers, VPN handshakes, invitations, membership requests and external ping results use Spectre.Console tables. Active/connected states are green, disconnected/revoked states and errors are red, update/unknown/backup states are yellow, and relay mode/NAT markers are cyan. Long values wrap to the terminal width, and names containing markup characters are rendered literally. Set `NO_COLOR=1` to disable colors. Redirected output and `TERM=dumb` use plain tab-separated columns without borders or ANSI sequences. JSON output, invitation tokens, client protocol messages and remote command streams retain their formats.
 
+`pnt vpn client list` also shows the connected VPN server's node ID and display name, the client's internal VPN IP on that server, and its current data transport route. Relay routes follow the active client tunnel from its PNT entry node to the VPN exit, independently of the route used to request statistics. Direct connections show `клиент → <exit-node>`. Concurrent connections to different VPN servers appear on separate rows. Disconnected clients show dashes; older servers may omit address/route details until updated. Existing relay tunnels obtain route tracking after reconnecting to the updated service.
+
 ## Local access
 
 The installed CLI permits only `root` or members of `pnt` on Linux, and elevated administrators, LocalSystem, or members of the local `PNTAdmin` group on Windows. Authorization is checked before processing commands or opening cluster state, including help. Install/update creates the relevant group; it does not add ordinary users automatically.

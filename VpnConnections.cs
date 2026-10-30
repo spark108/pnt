@@ -4,18 +4,30 @@ namespace Pnt;
 
 static class VpnConnections
 {
-    static readonly ConcurrentDictionary<(string Node, string Client, Guid Session), long> relays = new();
-    internal sealed class Relay(string node, string client) : IDisposable
+    sealed class Activity(string[] route)
+    {
+        public long Updated;
+        public readonly string[] Route=route;
+    }
+    static readonly ConcurrentDictionary<(string Node, string Client, Guid Session), Activity> relays = new();
+    internal sealed class Relay(string node, string client,string[]? route=null) : IDisposable
     {
         readonly Guid session = Guid.NewGuid();
-        public void Touch() => relays[(node, client, session)] = Environment.TickCount64;
+        readonly Activity activity=new((route??[node]).ToArray());
+        public void Touch()
+        {
+            Volatile.Write(ref activity.Updated,Environment.TickCount64);
+            relays[(node,client,session)]=activity;
+        }
         public void Dispose() => relays.TryRemove((node, client, session), out _);
     }
     internal static VpnStatistics Observe(string node, string client, VpnStatistics stats, long now)
     {
         var connected = stats.Exists && stats.Handshake > 0 && stats.Handshake <= now && now - stats.Handshake <= 180;
-        var relay = connected && relays.Any(p => p.Key.Node == node && p.Key.Client == client && Environment.TickCount64 - p.Value <= 180_000);
-        return stats with { Connected = connected, Mode = connected ? relay ? "relay" : "direct" : null };
+        var relay = connected ? relays.Where(p => p.Key.Node == node && p.Key.Client == client && Environment.TickCount64 - Volatile.Read(ref p.Value.Updated) <= 180_000)
+            .OrderByDescending(p=>Volatile.Read(ref p.Value.Updated)).Select(p=>p.Value).FirstOrDefault() : null;
+        return stats with { Connected = connected, Mode = connected ? relay is not null ? "relay" : "direct" : null,
+            Route=connected?relay?.Route.ToArray()??[node]:null };
     }
     internal static (string Status,string Mode) Summary(IEnumerable<VpnStatistics?> reports)
     {

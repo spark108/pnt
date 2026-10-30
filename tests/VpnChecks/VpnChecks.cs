@@ -11,18 +11,25 @@ static class VpnChecks
     static void Assert(bool value,string message){if(!value)throw new Exception(message);}
     public static async Task Main()
     {
-        var sample=new VpnStatistics(1000,10,20,true);
+        var sample=new VpnStatistics(1000,10,20,true,Address:"10.8.0.3");
         var direct=VpnConnections.Observe("server","client",sample,1100);
         Assert(direct.Connected==true&&direct.Mode=="direct","Fresh direct handshake missing");
-        using(var relay=new VpnConnections.Relay("server","client"))
+        Assert(direct.Route!.SequenceEqual(["server"])&&direct.Address=="10.8.0.3","Direct connection details missing");
+        using(var relay=new VpnConnections.Relay("server","client",["entry","transit","server"]))
         {
             Assert(VpnConnections.Observe("server","client",sample,1100).Mode=="direct","Idle standby was counted as transport");
             relay.Touch();
             Assert(VpnConnections.Observe("server","client",sample,1100).Mode=="relay","Active relay missing");
+            var observed=VpnConnections.Observe("server","client",sample,1100);
+            Assert(observed.Route!.SequenceEqual(["entry","transit","server"]),"Data tunnel route missing");
+            var restored=JsonSerializer.Deserialize<VpnStatistics>(JsonSerializer.Serialize(observed,App.Json),App.Json)!;
+            Assert(restored.Address=="10.8.0.3"&&restored.Route!.SequenceEqual(observed.Route!),"Connection details lost in protocol");
             Assert(VpnConnections.Observe("other","client",sample,1100).Mode=="direct","Relay activity leaked between servers");
             Assert(VpnConnections.Observe("server","other",sample,1100).Mode=="direct","Relay activity leaked between clients");
         }
         Assert(VpnConnections.Observe("server","client",sample,1100).Mode=="direct","Closed relay retained transport state");
+        Assert(VpnConnections.Observe("server","client",sample,1100).Route!.SequenceEqual(["server"]),"Closed transport retained its route");
+        Assert(VpnConnections.Observe("server","client",sample,1181).Route is null,"Disconnected client retained an active route");
         Assert(VpnConnections.Observe("server","client",sample,1181).Connected==false,"Stale handshake reported connected");
         Assert(VpnConnections.Observe("server","client",sample with{Handshake=0},1100).Connected==false,"No handshake reported connected");
         Assert(VpnConnections.Observe("server","client",sample with{Exists=false},1100).Connected==false,"Missing peer reported connected");

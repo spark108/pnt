@@ -130,9 +130,10 @@ def execute(request):
             paths = client_entries() if action == "clients" else [path] if path.exists() else []
             rows = {row[0]: row for line in docker([binary, "show", iface, "dump"]).splitlines()[1:] if (row := line.split("\t")) and len(row) >= 7} if paths else {}
             def statistics(entry):
-                public = json.loads(entry.read_text())["public"]
+                profile = json.loads(entry.read_text())
+                public = profile["public"]
                 row = rows.get(public)
-                return {"handshake": int(row[4]) if row else 0, "received": int(row[5]) if row else 0, "sent": int(row[6]) if row else 0, "exists": row is not None}
+                return {"handshake": int(row[4]) if row else 0, "received": int(row[5]) if row else 0, "sent": int(row[6]) if row else 0, "exists": row is not None, "address": profile.get("address")}
             if action == "clients":
                 return {entry.stem: statistics(entry) for entry in paths}
             return statistics(path) if paths else {"handshake": 0, "received": 0, "sent": 0, "exists": False}
