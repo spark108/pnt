@@ -218,7 +218,7 @@ static class App
                 : ping is not null ? $"{ping.Ms:0.0} ms" + (ping.Direct ? "" :
                     ping.Route is { Length: > 2 } route ? " через " + string.Join(" → ", route.Skip(1).SkipLast(1).Select(x => db.Nodes().FirstOrDefault(n => n.Id == x)?.Name ?? x)) : " через другой узел")
                 : "нет связи";
-            rows.Add([node.Id,node.Name,node.Ip,new(status,node.Removed||ping is null&&status!="update"?"red":status=="update"?"yellow":"green"),new(node.BehindNat?"NAT":"—",node.BehindNat?"cyan":"grey")]);
+            rows.Add([node.Id,node.Name,new(node.Ip,node.BehindNat?"grey":null),new(status,node.Removed||ping is null&&status!="update"?"red":status=="update"?"yellow":"green"),new(node.BehindNat?"NAT":"—",node.BehindNat?"cyan":"grey")]);
         }
         CliOutput.Table(["ID","Имя","IP","Пинг / статус","NAT"],rows);
     }
