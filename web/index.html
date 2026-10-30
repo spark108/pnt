@@ -30,6 +30,7 @@ body{overflow:hidden}#graph{position:fixed;inset:0;width:100vw;height:100dvh;min
 <button id="drawer-toggle" class="button" aria-label="Открыть меню" aria-controls="drawer" aria-expanded="false">☰</button>
 <aside id="drawer" class="drawer" aria-label="Управление кластером" inert>
 <div class="drawer-brand">PNT <span>●</span></div><div class="small" id="summary"></div><p class="small" id="updated">Загрузка…</p>
+<label for="map-surface">Поверхность</label><select id="map-surface"><option value="nasa">NASA Blue Marble · подробно</option><option value="local">Встроенная карта · без интернета</option></select><p id="surface-status" class="small"></p>
 <div class="tabs"><button id="tab-graph" class="active">Маршруты</button><button id="tab-forward">Пробросы портов</button></div>
 <section id="section-graph"><div class="card"><div class="panel-head"><h2>Построить маршрут</h2></div><div class="panel-body">
 <label for="from">Сервер А</label><select id="from"></select>
@@ -68,7 +69,10 @@ body{overflow:hidden}#graph{position:fixed;inset:0;width:100vw;height:100dvh;min
 <script>
 const $=id=>document.getElementById(id);
 let state={nodes:[],pings:[],links:[],rules:[]},from='',to='',via=[],pickTarget=false;
-let receivedAt=Date.now(),viewer=null,firstView=true;
+let receivedAt=Date.now(),viewer=null,firstView=true,satelliteLayer=null;
+const MIN_CAMERA_HEIGHT=250000;
+let surfaceChoice='nasa';try{surfaceChoice=localStorage.getItem('pnt.mapSurface')||'nasa'}catch{}
+$('map-surface').value=surfaceChoice==='local'?'local':'nasa';
 const now=()=>state.time?state.time+Date.now()-receivedAt:Date.now();
 const node=id=>state.nodes.find(n=>n.id===id),name=id=>node(id)?.name||id;
 const label=id=>{const n=node(id);return n?`${n.name} (${n.ip})`:id};
@@ -99,6 +103,7 @@ async function initGlobe(){try{
  if(!window.Cesium)throw Error('Не удалось загрузить Cesium');
  Cesium.Ion.defaultAccessToken='';
  viewer=new Cesium.Viewer('graph',{baseLayer:false,baseLayerPicker:false,geocoder:false,homeButton:false,sceneModePicker:false,navigationHelpButton:false,animation:false,timeline:false,fullscreenButton:false,infoBox:false,selectionIndicator:false,skyBox:false,scene3DOnly:true,requestRenderMode:true,maximumRenderTimeChange:Infinity});
+ viewer.scene.screenSpaceCameraController.minimumZoomDistance=MIN_CAMERA_HEIGHT;viewer.scene.screenSpaceCameraController.enableCollisionDetection=true;
  viewer.scene.backgroundColor=Cesium.Color.fromCssColorString('#050b16');viewer.scene.globe.baseColor=Cesium.Color.fromCssColorString('#16384b');viewer.scene.globe.enableLighting=false;
  viewer.camera.setView({destination:Cesium.Cartesian3.fromDegrees(35,40,18000000)});viewer.camera.percentageChanged=.02;viewer.camera.changed.addEventListener(layoutLabels);
  viewer.screenSpaceEventHandler.removeInputAction(Cesium.ScreenSpaceEventType.LEFT_DOUBLE_CLICK);
@@ -107,8 +112,24 @@ async function initGlobe(){try{
  viewer.canvas.addEventListener('contextmenu',event=>event.preventDefault());
  viewer.screenSpaceEventHandler.setInputAction(event=>{const id=idAt(event.position);if(id){const box=viewer.canvas.getBoundingClientRect();openNodeMenu({preventDefault(){},stopPropagation(){},clientX:box.left+event.position.x,clientY:box.top+event.position.y},id)}},Cesium.ScreenSpaceEventType.RIGHT_CLICK);
  const imagery=await Cesium.TileMapServiceImageryProvider.fromUrl('/assets/cesium/Assets/Textures/NaturalEarthII/',{maximumLevel:2});
- viewer.imageryLayers.addImageryProvider(imagery);render();
+ viewer.imageryLayers.addImageryProvider(imagery);applySurface();render();
  }catch(e){$('globe-status').textContent='Глобус недоступен: '+e.message;$('globe-status').className='error';console.error(e)}}
+function applySurface(){
+ if(!viewer)return;
+ if(satelliteLayer){viewer.imageryLayers.remove(satelliteLayer,true);satelliteLayer=null}
+ const detailed=$('map-surface').value==='nasa';
+ $('surface-status').textContent=detailed?'Снимки NASA загружаются из интернета. Приближение ограничено 250 км.':'Встроенная карта. Приближение ограничено 250 км.';
+ if(detailed){
+  const provider=new Cesium.UrlTemplateImageryProvider({url:'https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/BlueMarble_ShadedRelief_Bathymetry/default/GoogleMapsCompatible_Level8/{z}/{y}/{x}.jpeg',maximumLevel:8,enablePickFeatures:false,credit:'NASA GIBS · Blue Marble'});
+  const layer=viewer.imageryLayers.addImageryProvider(provider);satelliteLayer=layer;
+  const fallback=error=>{if(error)error.retry=false;if(satelliteLayer!==layer)return;clearTimeout(timeout);satelliteLayer=null;setTimeout(()=>{if(viewer.imageryLayers.contains(layer))viewer.imageryLayers.remove(layer,true);viewer.scene.requestRender()},0);$('surface-status').textContent='NASA недоступен — используется встроенная карта. Приближение ограничено 250 км.'};
+  const timeout=setTimeout(()=>fallback(),12000),requestImage=provider.requestImage.bind(provider);
+  provider.requestImage=(...args)=>{const pending=requestImage(...args);if(pending)Promise.resolve(pending).then(()=>clearTimeout(timeout),()=>{});return pending};
+  provider.errorEvent.addEventListener(fallback);
+ }
+ viewer.scene.requestRender();
+}
+$('map-surface').onchange=()=>{try{localStorage.setItem('pnt.mapSurface',$('map-surface').value)}catch{}applySurface()};
 function arc(a,b){const start=Cesium.Cartographic.fromDegrees(a.location.longitude,a.location.latitude),end=Cesium.Cartographic.fromDegrees(b.location.longitude,b.location.latitude);try{const geodesic=new Cesium.EllipsoidGeodesic(start,end),height=Math.max(60000,Math.min(1800000,geodesic.surfaceDistance*.15));return Array.from({length:49},(_,i)=>{const t=i/48,p=geodesic.surfaceDistance>1?geodesic.interpolateUsingFraction(t):start;return Cesium.Cartesian3.fromRadians(p.longitude,p.latitude,15000+Math.sin(Math.PI*t)*height)})}catch{return [position(a),position(b)]}}
 const geometryKeys=new Map();
 function render(){const graph=edges(),selected=from&&to?route(graph):null;
