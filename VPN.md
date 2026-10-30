@@ -49,6 +49,8 @@ The transport initially sends VPN UDP packets directly to the exit server. A suc
 
 Cluster hops prefer persistent certificate-pinned QUIC connections over UDP 442; TCP 442 remains the fallback. VPN datagrams retain their boundaries inside reliable QUIC streams, rather than using QUIC DATAGRAM. A lost packet can still delay its own VPN stream, while independent command and forwarding streams continue. The restricted VPN-client entry connection remains TLS over TCP. The client maintains a standby relay when another entry node is available and reconnects transport without replacing the VPN interface or keys; this does not preserve an exit server's NAT state if that server fails.
 
+Android 5.1.0.7 also negotiates an end-to-end relay heartbeat with the entry and exit PNT services. The client probes every three seconds and replaces a channel with no replies or received data for 15 seconds, including a channel whose TCP socket has not reported an error. Idle standby channels are checked too. Heartbeats are handled by PNT and are not sent to AmneziaWG or counted as VPN traffic. Older services retain the previous framing until the entry and exit are updated. Install the new Android APK and update PNT nodes to enable this recovery mechanism.
+
 The PNT-only client has no Premium/Free, SSH server setup, ordinary VPN-key/file/QR import, official gateway backend, website menu or official update checks. The imported PNT identity is stored in encrypted application settings. Reset Access Profile removes it locally and permits importing a replacement; it does not revoke the server-side identity.
 
 ## Regression checks

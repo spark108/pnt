@@ -83,6 +83,10 @@ static class VpnChecks
             await VpnDatagrams.Write(memory,bytes,default);await VpnDatagrams.Write(memory,new byte[]{7,8},default);memory.Position=0;
             Assert((await VpnDatagrams.Read(memory,default)).SequenceEqual(bytes),"Large UDP packet corrupted");
             Assert((await VpnDatagrams.Read(memory,default)).SequenceEqual(new byte[]{7,8}),"UDP packet boundaries lost");
+            using(var unnegotiated=new MemoryStream(new byte[]{0,0}))
+            {
+                try{await VpnDatagrams.Read(unnegotiated,default);throw new Exception("Legacy tunnel accepted a heartbeat frame");}catch(IOException){}
+            }
             using var echo=new UdpClient(new IPEndPoint(IPAddress.Loopback,0));
             var listener=new TcpListener(IPAddress.Loopback,0);listener.Start();
             try
@@ -96,6 +100,38 @@ static class VpnChecks
                 stop.Cancel();try{await exiting;}catch(OperationCanceledException){}
             }
             finally{listener.Stop();}
+            using var heartbeatListener=new TcpListener(IPAddress.Loopback,0);heartbeatListener.Start();
+            using(var input=new TcpClient())
+            {
+                var accepting=heartbeatListener.AcceptTcpClientAsync();await input.ConnectAsync(IPAddress.Loopback,((IPEndPoint)heartbeatListener.LocalEndpoint).Port);
+                using var exit=await accepting;using var stop=new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                var activity=0;
+                var exiting=VpnDatagrams.Exit(exit.GetStream(),"127.0.0.1",((IPEndPoint)echo.Client.LocalEndPoint!).Port,()=>true,stop.Token,()=>activity++,true);
+                await VpnDatagrams.WriteFrame(input.GetStream(),new VpnDatagrams.Frame(0,[]),stop.Token);
+                var pong=await VpnDatagrams.ReadFrame(input.GetStream(),stop.Token,true);
+                Assert(pong.Size==ushort.MaxValue&&activity==0&&!echo.Client.Poll(1000,SelectMode.SelectRead),"Heartbeat leaked into VPN traffic or activity");
+                await VpnDatagrams.Write(input.GetStream(),new byte[]{4,5},stop.Token);
+                var packet=await echo.ReceiveAsync(stop.Token);await echo.SendAsync(packet.Buffer,packet.RemoteEndPoint,stop.Token);
+                Assert((await VpnDatagrams.ReadFrame(input.GetStream(),stop.Token,true)).Data.SequenceEqual(new byte[]{4,5}),"Data framing broke after heartbeat");
+                var echoes=Task.Run(async()=>
+                {
+                    for(var i=0;i<10;i++){var received=await echo.ReceiveAsync(stop.Token);await echo.SendAsync(received.Buffer,received.RemoteEndPoint,stop.Token);}
+                });
+                for(var i=0;i<10;i++)
+                {
+                    await VpnDatagrams.Write(input.GetStream(),new byte[]{(byte)i},stop.Token);
+                    await VpnDatagrams.WriteFrame(input.GetStream(),new VpnDatagrams.Frame(0,[]),stop.Token);
+                }
+                var dataFrames=0;var heartbeats=0;
+                for(var i=0;i<20;i++)
+                {
+                    var frame=await VpnDatagrams.ReadFrame(input.GetStream(),stop.Token,true);
+                    if(frame.Size==ushort.MaxValue)heartbeats++;
+                    else{Assert(frame.Data.Length==1&&frame.Data[0]==dataFrames,"Concurrent heartbeat and data writes interleaved");dataFrames++;}
+                }
+                Assert(dataFrames==10&&heartbeats==10,"Heartbeat/data frames were lost");await echoes;
+                stop.Cancel();try{await exiting;}catch(OperationCanceledException){}
+            }
             Console.WriteLine("PASS: signed profiles, client identity, ACL catalog, member isolation, revoke tombstones, UDP framing and real UDP roundtrip.");
         }
         finally{service.Stop();await running;}

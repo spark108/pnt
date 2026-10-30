@@ -12,7 +12,7 @@ namespace Pnt;
 record VpnServer(string Id,string Name,long Version,bool Removed=false);
 record VpnClient(string Id,string Name,string Cert,string[] Servers,long Version,bool Removed=false);
 record VpnProfile(int Format,string Cluster,string ClientId,string Identity,Node[] Entrypoints,VpnServer[] Servers,string Issuer,string Signature);
-record VpnOperation(string Action,string? Client=null,string? Fingerprint=null);
+record VpnOperation(string Action,string? Client=null,string? Fingerprint=null,bool KeepAlive=false);
 record VpnConfiguration(string Config,string Host,int Port,string LocalHost,int LocalPort);
 record VpnStatistics(long Handshake,long Received,long Sent,bool Exists,bool? Connected=null,string? Mode=null);
 
@@ -178,9 +178,9 @@ static class VpnControl
             if(operation.Action=="udp")
             {
                 var config=await Prepare(db,operation,token);
-                await Peer.Send(stream,new Message("vpn-result",VpnPayload:"{}",RequestId:request.RequestId));
+                await Peer.Send(stream,new Message("vpn-result",Name:operation.KeepAlive?"vpn-keepalive-v1":null,VpnPayload:"{}",RequestId:request.RequestId));
                 using var relay=new VpnConnections.Relay(Certificate.Id(cert),operation.Client!);
-                await VpnDatagrams.Exit(stream,config.LocalHost,config.LocalPort,()=>Allowed(db,operation),token,relay.Touch);return;
+                await VpnDatagrams.Exit(stream,config.LocalHost,config.LocalPort,()=>Allowed(db,operation),token,relay.Touch,operation.KeepAlive);return;
             }
             var output=operation.Action switch
             {
@@ -220,15 +220,16 @@ static class VpnControl
             }
             if(request.Target is null||!Permitted(db,client,request.Target))throw new UnauthorizedAccessException("Сервер не разрешён клиенту.");
             if(request.Name is not ("ensure" or "udp" or "stats"))throw new UnauthorizedAccessException("Операция не разрешена клиенту.");
-            var op=new VpnOperation(request.Name,client.Id,client.Cert);
+            var op=new VpnOperation(request.Name,client.Id,client.Cert,request.Name=="udp"&&request.Command=="vpn-keepalive-v1");
             if(request.Name=="udp")
             {
                 using var outgoing=await new RouteTransport(db,cert).Connect(request.Target,cancellation:timeout.Token);
                 var task=await RouteTransport.SendTask(outgoing,new Message("vpn-admin",Certificate.Id(cert),Target:request.Target,VpnPayload:JsonSerializer.Serialize(op,App.Json),VpnServers:db.VpnServers().ToArray(),VpnClients:db.VpnClients().ToArray()));
                 var response=await RouteTransport.ReadResult(outgoing,task.RequestId,TimeSpan.FromSeconds(40));
                 if(response.Type!="vpn-result")throw new IOException(response.Error??"Нет VPN-туннеля.");
-                await Peer.Send(peer.Stream,new Message("vpn-result",Hops:outgoing.RouteReady?.Hops));
-                await VpnDatagrams.Relay(peer.Stream,outgoing.Stream,()=>Permitted(db,client,request.Target)&&db.VpnClients().Any(c=>c.Id==client.Id&&!c.Removed&&c.Servers.Contains(request.Target)),token);return;
+                var keepAlive=op.KeepAlive&&response.Name=="vpn-keepalive-v1";
+                await Peer.Send(peer.Stream,new Message("vpn-result",Name:keepAlive?"vpn-keepalive-v1":null,Hops:outgoing.RouteReady?.Hops));
+                await VpnDatagrams.Relay(peer.Stream,outgoing.Stream,()=>Permitted(db,client,request.Target)&&db.VpnClients().Any(c=>c.Id==client.Id&&!c.Removed&&c.Servers.Contains(request.Target)),token,keepAlive);return;
             }
             var result=await Query(db,cert,request.Target,op,timeout.Token);
             await Peer.Send(peer.Stream,new Message("vpn-result",VpnPayload:result));
@@ -270,11 +271,24 @@ static class VpnAdapter
 
 static class VpnDatagrams
 {
-    public static async Task<byte[]> Read(Stream stream,CancellationToken token)
+    internal readonly record struct Frame(ushort Size,byte[] Data);
+    internal static async Task<Frame> ReadFrame(Stream stream,CancellationToken token,bool keepAlive)
     {
         var header=new byte[2];await stream.ReadExactlyAsync(header,token);var size=BinaryPrimitives.ReadUInt16BigEndian(header);
+        if(keepAlive&&size is 0 or ushort.MaxValue)return new Frame(size,[]);
         if(size is 0 or >65507)throw new IOException("Некорректная UDP-датаграмма.");
-        var packet=new byte[size];await stream.ReadExactlyAsync(packet,token);return packet;
+        var packet=new byte[size];await stream.ReadExactlyAsync(packet,token);return new Frame(size,packet);
+    }
+    internal static async Task WriteFrame(Stream stream,Frame frame,CancellationToken token)
+    {
+        var header=new byte[2];BinaryPrimitives.WriteUInt16BigEndian(header,frame.Size);
+        await stream.WriteAsync(header,token);
+        if(frame.Data.Length>0)await stream.WriteAsync(frame.Data,token);
+        await stream.FlushAsync(token);
+    }
+    public static async Task<byte[]> Read(Stream stream,CancellationToken token)
+    {
+        return (await ReadFrame(stream,token,false)).Data;
     }
     public static async Task Write(Stream stream,ReadOnlyMemory<byte> packet,CancellationToken token)
     {
@@ -282,21 +296,32 @@ static class VpnDatagrams
         var header=new byte[2];BinaryPrimitives.WriteUInt16BigEndian(header,(ushort)packet.Length);
         await stream.WriteAsync(header,token);await stream.WriteAsync(packet,token);await stream.FlushAsync(token);
     }
-    public static async Task Relay(Stream input,Stream output,Func<bool> allowed,CancellationToken token)
+    public static async Task Relay(Stream input,Stream output,Func<bool> allowed,CancellationToken token,bool keepAlive=false)
     {
         allowed=CachedPermission(allowed);
         using var stop=CancellationTokenSource.CreateLinkedTokenSource(token);var t=stop.Token;
-        async Task Copy(Stream a,Stream b){while(!t.IsCancellationRequested){var packet=await Read(a,t);if(!allowed())throw new UnauthorizedAccessException("VPN-доступ отозван.");await Write(b,packet,t);}}
+        async Task Copy(Stream a,Stream b){while(!t.IsCancellationRequested){var packet=await ReadFrame(a,t,keepAlive);if(!allowed())throw new UnauthorizedAccessException("VPN-доступ отозван.");await WriteFrame(b,packet,t);}}
         var tasks=new[]{Copy(input,output),Copy(output,input)};
         try{await await Task.WhenAny(tasks);}finally{stop.Cancel();try{await Task.WhenAll(tasks);}catch{}}
     }
-    public static async Task Exit(Stream stream,string host,int port,Func<bool> allowed,CancellationToken token,Action? activity=null)
+    public static async Task Exit(Stream stream,string host,int port,Func<bool> allowed,CancellationToken token,Action? activity=null,bool keepAlive=false)
     {
         allowed=CachedPermission(allowed);
         using var udp=new UdpClient();udp.Connect(host,port);
         using var stop=CancellationTokenSource.CreateLinkedTokenSource(token);var t=stop.Token;
-        async Task Send(){while(!t.IsCancellationRequested){var data=await Read(stream,t);if(!allowed())throw new UnauthorizedAccessException("VPN-доступ отозван.");await udp.SendAsync(data,t);activity?.Invoke();}}
-        async Task Receive(){while(!t.IsCancellationRequested){var packet=await udp.ReceiveAsync(t);if(!allowed())throw new UnauthorizedAccessException("VPN-доступ отозван.");await Write(stream,packet.Buffer,t);}}
+        using var writer=new SemaphoreSlim(1,1);
+        async Task Reply(Frame frame){await writer.WaitAsync(t);try{await WriteFrame(stream,frame,t);}finally{writer.Release();}}
+        async Task Send()
+        {
+            while(!t.IsCancellationRequested)
+            {
+                var frame=await ReadFrame(stream,t,keepAlive);if(!allowed())throw new UnauthorizedAccessException("VPN-доступ отозван.");
+                if(frame.Size==0){await Reply(new Frame(ushort.MaxValue,[]));continue;}
+                if(frame.Size==ushort.MaxValue)throw new IOException("Unexpected VPN heartbeat response.");
+                await udp.SendAsync(frame.Data,t);activity?.Invoke();
+            }
+        }
+        async Task Receive(){while(!t.IsCancellationRequested){var packet=await udp.ReceiveAsync(t);if(!allowed())throw new UnauthorizedAccessException("VPN-доступ отозван.");await Reply(new Frame((ushort)packet.Buffer.Length,packet.Buffer));}}
         var tasks=new[]{Send(),Receive()};try{await await Task.WhenAny(tasks);}finally{stop.Cancel();try{await Task.WhenAll(tasks);}catch{}}
     }
     static Func<bool> CachedPermission(Func<bool> check)
