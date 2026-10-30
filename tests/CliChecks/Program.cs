@@ -1,6 +1,15 @@
 using System.CommandLine;
 using Pnt;
 
+if(args is ["--encoding-sample"])
+{
+    System.Text.Encoding.RegisterProvider(System.Text.CodePagesEncodingProvider.Instance);
+    if(OperatingSystem.IsWindows())Console.OutputEncoding=System.Text.Encoding.GetEncoding(866);
+    Console.Out.Write("");
+    CliOutput.Table(["Имя","Состояние"],[["Проверка",CliOutput.Status("подключён")]]);
+    return;
+}
+
 static void Require(bool condition, string message)
 {
     if (!condition) throw new Exception(message);

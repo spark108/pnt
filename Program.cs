@@ -55,6 +55,7 @@ static class App
 
     static async Task<int> Main(string[] a)
     {
+        CliOutput.Initialize();
         try
         {
             if (a.Length > 0 && a[0] is "_vpn-client" or "_prepare-access" or "_vpn-server-setup") return await Execute(a);

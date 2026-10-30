@@ -12,6 +12,11 @@ readonly record struct CliCell(string Value, string? Style = null)
 
 static class CliOutput
 {
+    internal static void Initialize()
+    {
+        if (OperatingSystem.IsWindows() && !Console.IsOutputRedirected && Console.OutputEncoding.CodePage != Encoding.UTF8.CodePage)
+            Console.OutputEncoding = new UTF8Encoding(false);
+    }
     static readonly Regex escapes = new(@"\x1B(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1B]*(?:\x07|\x1B\\))", RegexOptions.Compiled);
     internal static string Clean(string value) => string.Concat(escapes.Replace(value, "").Select(c => char.IsControl(c) ? ' ' : c));
     internal static CliCell Status(string value) => new(value, value switch
@@ -24,6 +29,7 @@ static class CliOutput
     internal static CliCell Mode(string value) => new(value, value.Contains("транспорт") ? "cyan" : value == "прямое" ? "green" : "grey");
     internal static void Error(string value)
     {
+        Initialize();
         if (Console.IsErrorRedirected || Environment.GetEnvironmentVariable("NO_COLOR") is not null || Environment.GetEnvironmentVariable("TERM") == "dumb")
         { Console.Error.WriteLine(Clean(value)); return; }
         AnsiConsole.Create(new AnsiConsoleSettings { Out = new AnsiConsoleOutput(Console.Error), Interactive = InteractionSupport.No })
@@ -31,6 +37,7 @@ static class CliOutput
     }
     internal static void Table(string[] columns, IEnumerable<CliCell[]> rows, TextWriter? output = null)
     {
+        if (output is null) Initialize();
         var writer = output ?? Console.Out;
         var data = rows.ToArray();
         if (data.Any(row => row.Length != columns.Length)) throw new ArgumentException("Incorrect table column count.");
@@ -40,7 +47,6 @@ static class CliOutput
             foreach (var row in data) writer.WriteLine(string.Join('\t', row.Select(c => Clean(c.Value))));
             return;
         }
-        if (OperatingSystem.IsWindows()) Console.OutputEncoding = new UTF8Encoding(false);
         var color = Environment.GetEnvironmentVariable("NO_COLOR") is null;
         var console = AnsiConsole.Create(new AnsiConsoleSettings
         {
