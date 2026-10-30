@@ -2,7 +2,7 @@
 
 VPN server registration, restricted client profiles and the PNT-only Windows VPN client are documented in [VPN.md](VPN.md).
 
-PNT is a .NET 10 cluster service for Debian and Windows. It uses TCP 442 for encrypted node communication, SQLite for local cluster state, and TCP streams for port forwarding. Every node has a persistent self-signed TLS certificate and a 16-character node ID derived from its public key. Connections pin the stored certificate fingerprint. New nodes request membership and an existing member explicitly approves their identity. The shared cluster key hash is distributed to approved members over TLS.
+PNT is a .NET 10 cluster service for Debian and Windows. Its primary node transport is QUIC on UDP 442, with pinned TLS 1.3 and independent streams for synchronization, commands and forwarding. TCP 442 provides compatibility and fallback when QUIC is unavailable. SQLite stores local cluster state. Every node has a persistent self-signed TLS certificate and a 16-character node ID derived from its public key. Connections pin the stored certificate fingerprint. New nodes request membership and an existing member explicitly approves their identity. The shared cluster key hash is distributed to approved members over TLS.
 
 ## Command help
 
@@ -56,7 +56,7 @@ Run from this source directory on Debian 12 or 13:
 sudo ./pnt.sh install
 ```
 
-The script installs required Debian packages, including the .NET 10 SDK, Git, OpenSSH client, and firewall utilities. If .NET 10 is missing, it adds Microsoft's Debian package feed first. It then publishes a self-contained binary for the machine's architecture with native SQLite embedded, installs a `systemd` service, and starts it. The service and CLI use `/var/lib/pnt`; run CLI commands with `sudo`. Set `PNT_ADVERTISE_IP` in `/etc/default/pnt` if automatic address selection is wrong, then restart the service before creating or joining a cluster.
+The script installs required Debian packages, including the .NET 10 SDK, libmsquic, Git, OpenSSH client, and firewall utilities. It adds Microsoft's Debian package feed for the runtime dependencies. It then publishes a self-contained binary for the machine's architecture with native SQLite embedded, installs a `systemd` service, and starts it. The service and CLI use `/var/lib/pnt`; run CLI commands with `sudo`. Set `PNT_ADVERTISE_IP` in `/etc/default/pnt` if automatic address selection is wrong, then restart the service before creating or joining a cluster.
 
 ```sh
 sudo ./pnt.sh start
@@ -73,9 +73,9 @@ sudo ./pnt.sh install -r root@192.0.2.20
 
 `install` and `update` run in a separate systemd unit and print a checkmark when each stage finishes. Closing the terminal does not cancel the worker. `./pnt.sh status` shows the service and the latest operation. `update` stops the service, fast-forwards the local checkout from the public GitHub repository, builds, installs the binary and unit, and starts the service. If pull, build, or service startup fails, the previous binary and unit are restored and a previously running service is started again.
 
-Before stopping the service for an update, the node announces its `update` status over TCP 442. `pnt cluster nodes` shows `update` in place of that node's ping, including when viewing pings from another node. The status travels through normal cluster synchronization, then clears after the service starts or the update rolls back. A stale status expires from the display after one hour. Existing nodes need this version once before they can announce their own update status.
+Before stopping the service for an update, the node announces its `update` status over the cluster transport. `pnt cluster nodes` shows `update` in place of that node's ping, including when viewing pings from another node. The status travels through normal cluster synchronization, then clears after the service starts or the update rolls back. A stale status expires from the display after one hour. Existing nodes need this version once before they can announce their own update status.
 
-After a manual update on a cluster member, it announces the Git commit to peers over TCP 442. Each connected member runs its own update in a separate systemd unit and relays the notice through normal cluster synchronization. A node that is offline updates after reconnecting. All existing nodes must first receive a version with this feature once by running `./pnt.sh update` locally.
+After a manual update on a cluster member, it announces the Git commit to peers over the cluster transport. Each connected member runs its own update in a separate systemd unit and relays the notice through normal cluster synchronization. A node that is offline updates after reconnecting. All existing nodes must first receive a version with this feature once by running `./pnt.sh update` locally.
 
 `install -r root@ip` selects a Linux executor with SSH access and asks for the remote root password or SSH key passphrase when needed. It installs from public GitHub on the remote Debian server, asks the new service to initiate enrollment back to the executor, and approves the matching identity received over that connection. The new server needs outbound access to the executor on TCP 442. An incoming TCP 442 port on the new server is not required.
 
@@ -170,7 +170,7 @@ sudo pnt forward show <id>
 sudo pnt forward remove <id>
 ```
 
-Rules synchronize to all reachable members. The ingress service opens its listening socket and tries to add a firewall allow rule in `nftables` (`inet filter input`) or `iptables` (`INPUT`). It removes its tagged rule when a forwarding rule is removed. Keep TCP 442 accessible between directly connected neighbors.
+Rules synchronize to all reachable members. The ingress service opens its listening socket and tries to add a firewall allow rule in `nftables` (`inet filter input`) or `iptables` (`INPUT`). It removes its tagged rule when a forwarding rule is removed. Keep UDP 442 and TCP 442 accessible between directly connected neighbors.
 
 ## Web interface
 
@@ -179,7 +179,7 @@ sudo pnt web enable     # Prompts for a password
 sudo pnt web disable    # Closes the panel on every connected node and clears the password
 ```
 
-Open `https://<node-ip>:8016/` and sign in with username `admin` and the chosen password. TCP 442 remains reserved for encrypted communication between nodes. The web interface uses a separate self-signed HTTPS certificate for each node, so the browser will ask you to trust it. The password is stored as a salted PBKDF2 hash; only the hash and salt are synchronized between cluster members. A disconnected node applies enable or disable when it reconnects and receives the latest configuration. All nodes must run this version to host the panel.
+Open `https://<node-ip>:8016/` and sign in with username `admin` and the chosen password. UDP 442 and TCP 442 remain reserved for encrypted communication between nodes. The web interface uses a separate self-signed HTTPS certificate for each node, so the browser will ask you to trust it. The password is stored as a salted PBKDF2 hash; only the hash and salt are synchronized between cluster members. A disconnected node applies enable or disable when it reconnects and receives the latest configuration. All nodes must run this version to host the panel.
 
 The network map shows solid lines for fresh direct connections and dashed lines for routes through intermediate nodes. Labels show the latest measured ping for a known route or the sum of direct-link pings for an inferred route. Choose servers A and B, then add transit servers in order to highlight a route. The forwarding page shows ingress, exit node, and final destination for every active TCP rule. Ping data older than 30 seconds is ignored, so a route may temporarily disappear during an update or disconnection.
 
@@ -215,7 +215,19 @@ Discovery floods a unique search ID and the visited path through available neigh
 
 Commands, synchronization, external ping/SSH checks, and forwarding use a fresh cached route. If all cached routes fail, the requester waits for a bounded discovery round. Relays follow the selected path exactly. A task is dispatched only after its route is confirmed, and its ID and start deadline are checked at the destination. Discovery never executes application tasks. A command whose dispatch result is uncertain is not automatically repeated. Cluster-wide ping and SSH checks still run in parallel on distinct executors and correlate their replies.
 
-Direct neighbors keep pinned TLS 1.3 sessions open on TCP 442. Independent logical streams carry requests and tunnels over those sessions; closing a stream does not close the session. Per-stream flow control limits queued data, so a stalled forwarding stream does not block control traffic. Keepalive frames run every 15 seconds, with a 45-second receive timeout. Broken sessions reconnect on the next check or request. CLI tasks enter through the local daemon, allowing successive commands to reuse its existing peer sessions. Encryption is between neighboring nodes; cluster relays remain trusted with task contents.
+Direct neighbors prefer persistent QUIC connections on UDP 442. Each request or tunnel uses a separate native QUIC stream; packet loss in one stream does not impose TCP ordering on other streams. TLS 1.3 authenticates both ends using the existing pinned node certificates. The listener accepts only active cluster members, and each task rechecks membership, including on established connections. QUIC keepalive runs every 10 seconds and idle timeout is 45 seconds. A channel is confirmed before dispatching a task; failed transport negotiation can safely fall back without repeating the task.
+
+QUIC connections are bidirectional: a node behind NAT opens an outbound connection, which peers reuse for reverse tasks and tunnels. TCP 442 remains available for initial enrollment, restricted VPN-client connections, older members, blocked UDP and platforms without QUIC support. A failed QUIC attempt uses TCP and delays the next UDP attempt for 30 seconds. A newly accepted reverse QUIC connection can be used immediately. Tasks already dispatched on a failed connection are not automatically repeated. On TCP fallback, PNT retains its existing multiplexing, flow control and 15-second keepalive. CLI tasks enter through the local daemon, allowing successive commands to reuse its peer sessions. Encryption is between neighboring nodes; cluster relays remain trusted with task contents.
+
+Open both UDP 442 and TCP 442 in external firewalls. The daemon manages local allow rules for both protocols. Debian install/update installs `libmsquic` from Microsoft's package feed. Windows 11/Server 2022 and later use the QUIC library included in .NET; unsupported systems continue over TCP. Set `PNT_DISABLE_QUIC=1` in the service environment to temporarily force TCP for diagnostics. Startup logs show `QUIC/UDP and TCP` when the UDP listener is active. This is a QUIC stream transport, not an L3 interface or an unreliable QUIC DATAGRAM implementation: VPN datagrams retain framing inside reliable streams.
+
+For the first upgrade from an installer predating QUIC, pull the new script before launching it (`git pull --ff-only`, then `sudo ./pnt.sh update`). A worker already running the old script cannot load newly added dependency steps after its own pull. A node updated by such a worker stays compatible over TCP until `libmsquic` is installed and the daemon is restarted; run the updated script again to install the dependency.
+
+Transport checks exercise UDP priority, connection reuse, independent streams, reverse NAT, certificate validation, member revocation and TCP fallback:
+
+```sh
+dotnet run --project tests/TransportChecks -c Release
+```
 
 Update every participating node before using these routes. New daemons continue accepting the original TLS synchronization protocol while old members are updating. The initial invitation remains a direct certificate-pinned connection.
 
@@ -241,7 +253,7 @@ sudo pnt ping 203.0.113.10
 sudo pnt ping example.com
 ```
 
-Each node sends three ICMP echo requests to the target and reports the average of successful replies. For a domain, each node resolves its own IPv4 address and the result shows that address. PNT contacts nodes directly or through relays over TCP 442, prints the path used to reach each responding node, and marks unreachable nodes separately. The final line names the node with the lowest ICMP latency to the target; relay latency between cluster nodes is not included in that comparison. ICMP may be blocked by a target or firewall, in which case the node reports the failure.
+Each node sends three ICMP echo requests to the target and reports the average of successful replies. For a domain, each node resolves its own IPv4 address and the result shows that address. PNT contacts nodes directly or through relays over the encrypted cluster transport, prints the path used to reach each responding node, and marks unreachable nodes separately. The final line names the node with the lowest ICMP latency to the target; relay latency between cluster nodes is not included in that comparison. ICMP may be blocked by a target or firewall, in which case the node reports the failure.
 
 ## Current limits
 

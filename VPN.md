@@ -7,15 +7,15 @@ VPN clients use a separate identity and authorization registry. They are not clu
 Update the participating PNT nodes before using VPN client transport, including transit nodes. On a cluster administrator terminal:
 
 ```sh
-pnt vpn add server node-name "Netherlands #1"
-pnt vpn servers
+pnt vpn server install node-name
+pnt vpn server list
 ```
 
 Registration probes the destination through PNT's verified routes. The first adapter supports AmneziaWG on Linux/Debian, either a native `awg` interface or an `amnezia-awg` / `amnezia-awg2` Docker container. Python 3 is required on that node and is installed by `pnt.sh`.
 
-Exactly one active service must be discoverable. Native configuration discovery checks `/etc/amnezia/amneziawg`, `/etc/amneziawg`, `/etc/wireguard`, and `/opt/amnezia/awg`, using the active interface name. Docker discovery reads `/opt/amnezia/awg/awg0.conf` and its published IPv4 UDP port. Ambiguous services/configurations are rejected. IPv4 server addresses and client subnets are supported.
+Installation lists existing AmneziaWG configurations and offers a choice or creation of a new server. Native discovery checks `/etc/amnezia/amneziawg`, `/etc/amneziawg`, and `/opt/amnezia/awg`. Ordinary WireGuard and its `wg` binary are not supported. Docker discovery reads configurations from `/opt/amnezia/awg` and uses the selected interface and published IPv4 UDP port. The selected provider is persisted, so multiple providers can coexist. IPv4 server addresses and client subnets are supported.
 
-PNT adds peers to the existing service; it does not install or replace AmneziaWG. It preserves existing unmanaged peers, allocates unused client addresses, and persists PNT-managed profiles under the node's `data/vpn` directory. Back up that directory along with the PNT database and node certificate.
+PNT installs AmneziaWG when needed or attaches an existing selected configuration, then adds managed peers to that service. It preserves existing unmanaged peers, allocates unused client addresses, and persists PNT-managed profiles under the node's `data/vpn` directory. Back up that directory along with the PNT database and node certificate.
 
 ## Issue client access
 
@@ -28,7 +28,7 @@ pnt vpn client deny alice another-node
 pnt vpn client handshake alice
 pnt vpn client handshake alice node-name
 pnt vpn client revoke alice
-pnt vpn remove node-name
+pnt vpn server remove node-name
 ```
 
 The exported profile contains a private client identity and trusted bootstrap node certificate fingerprints. Treat it as a credential; issue a different client identity for each device. Private profile identities are not stored in the replicated client registry. The profile contains an initial server list, while the server-side registry determines current permissions. Reimporting is not required when an administrator changes the list.
@@ -43,7 +43,7 @@ Import the `.pnt` file once. Every click on Connect loads the current permitted 
 
 The transport initially sends VPN UDP packets directly to the exit server. A successful new handshake, queried from that server, confirms the direct path. If it fails, PNT creates a tunnel using its cached/discovered cluster routes. VPN packets retain their datagram boundaries and travel to the selected server's VPN port. Initial direct-path verification takes approximately ten seconds. Outer control and transport destination addresses bypass the VPN to prevent routing loops.
 
-This first transport carries relayed datagrams over PNT's existing encrypted TCP streams, so packet loss can increase relay latency. A broken relay disconnects the VPN; Connect can obtain a new route. Native QUIC/UDP transport and seamless relay replacement are not implemented in this version.
+Cluster hops prefer persistent certificate-pinned QUIC connections over UDP 442; TCP 442 remains the fallback. VPN datagrams retain their boundaries inside reliable QUIC streams, rather than using QUIC DATAGRAM. A lost packet can still delay its own VPN stream, while independent command and forwarding streams continue. The restricted VPN-client entry connection remains TLS over TCP. The client maintains a standby relay when another entry node is available and reconnects transport without replacing the VPN interface or keys; this does not preserve an exit server's NAT state if that server fails.
 
 The PNT-only client has no Premium/Free, SSH server setup, ordinary VPN-key/file/QR import, official gateway backend, website menu or official update checks. The imported PNT identity is stored in encrypted application settings. Reset Access Profile removes it locally and permits importing a replacement; it does not revoke the server-side identity.
 

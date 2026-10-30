@@ -31,8 +31,10 @@ sealed class Peer : IDisposable
     readonly TcpClient? socket;
     readonly string? fingerprint;
     readonly string? remoteId;
+    readonly IPAddress? remoteAddress;
     public Stream Stream { get; }
-    public IPAddress? RemoteAddress => socket?.Client.RemoteEndPoint is IPEndPoint endpoint ? endpoint.Address : null;
+    public string Transport { get; } = "tcp";
+    public IPAddress? RemoteAddress => socket?.Client.RemoteEndPoint is IPEndPoint endpoint ? endpoint.Address : remoteAddress;
     public Message? RouteReady { get; set; }
     public string RemoteFingerprint => fingerprint!;
     public string RemoteId => remoteId!;
@@ -42,8 +44,9 @@ sealed class Peer : IDisposable
         using var remote = new X509Certificate2(stream.RemoteCertificate!);
         fingerprint=Certificate.Fingerprint(remote);remoteId=Certificate.Id(remote);
     }
-    internal Peer(Stream stream, string fingerprint, string remoteId) { Stream = stream; this.fingerprint = fingerprint; this.remoteId = remoteId; }
-    public void Dispose() { Stream.Dispose(); socket?.Dispose(); }
+    internal Peer(Stream stream, string fingerprint, string remoteId, IPAddress? remoteAddress = null, string transport = "tcp")
+    { Stream = stream; this.fingerprint = fingerprint; this.remoteId = remoteId; this.remoteAddress = remoteAddress; Transport = transport; }
+    public void Dispose() { if (!QuicTransport.DisposeStream(Stream)) Stream.Dispose(); socket?.Dispose(); }
     internal void EnableKeepAlive()
     {
         if(socket==null)return;
@@ -52,8 +55,12 @@ sealed class Peer : IDisposable
             try{socket.Client.SetSocketOption(SocketOptionLevel.Tcp,option.Item1,option.Item2);}catch(SocketException){}
     }
 
-    public static Task<Peer> Connect(string ip, string expectedFingerprint, X509Certificate2 cert, CancellationToken cancellation = default)
-        => MultiplexPool.Connect(ip, expectedFingerprint, cert, cancellation);
+    public static async Task<Peer> Connect(string ip, string expectedFingerprint, X509Certificate2 cert, CancellationToken cancellation = default, int port = 442)
+    {
+        var address = MultiplexPool.Address(Certificate.Id(cert), expectedFingerprint, ip);
+        return await QuicTransport.Connect(address, expectedFingerprint, cert, cancellation, port)
+            ?? await MultiplexPool.Connect(address, expectedFingerprint, cert, cancellation, port);
+    }
 
     internal static async Task<Peer> ConnectRaw(string ip, string? expectedFingerprint, X509Certificate2 cert, CancellationToken cancellation = default, int port = 442)
     {

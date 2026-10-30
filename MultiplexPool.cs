@@ -11,21 +11,23 @@ static class MultiplexPool
     static readonly ConcurrentDictionary<MultiplexSession, string> active = new();
     static readonly ConcurrentDictionary<string,string> addresses=new();
     internal static void SetAddress(string self,string fingerprint,string address)=>addresses[Key(self,fingerprint)]=address;
-    internal static void Register(string self, Func<Stream, string, string, Task> handler) => handlers[self] = handler;
+    internal static void Register(string self, Func<Stream, string, string, Task> handler)
+    { handlers[self] = handler; QuicTransport.Register(self, handler); }
+    internal static string Address(string self, string fingerprint, string fallback) => addresses.TryGetValue(Key(self, fingerprint), out var configured) ? configured : fallback;
     internal static bool IsService(string self) => handlers.ContainsKey(self);
     static string Key(string self, string fingerprint) => self + ":" + fingerprint;
 
-    public static async Task<Peer> Connect(string ip, string fingerprint, X509Certificate2 cert, CancellationToken token)
+    public static async Task<Peer> Connect(string ip, string fingerprint, X509Certificate2 cert, CancellationToken token, int port = 442)
     {
-        var self = Certificate.Id(cert); var key = Key(self, fingerprint);
+        var self = Certificate.Id(cert); var key = Key(self, fingerprint) + (port == 442 ? "" : ":" + port);
         var gate = gates.GetOrAdd(key, _ => new SemaphoreSlim(1,1));
         await gate.WaitAsync(token);
         try
         {
             if (!sessions.TryGetValue(key, out var session) || !session.Alive)
             {
-                if(addresses.TryGetValue(key,out var configured))ip=configured;
-                var raw = await Peer.ConnectRaw(ip, fingerprint, cert, token);
+                ip = Address(self, fingerprint, ip);
+                var raw = await Peer.ConnectRaw(ip, fingerprint, cert, token, port);
                 try
                 {
                     await Peer.Send(raw.Stream, new Message("mux", self, Name: handlers.ContainsKey(self) ? "service" : "client")).WaitAsync(TimeSpan.FromSeconds(5), token);
@@ -34,7 +36,7 @@ static class MultiplexPool
                     {
                         raw.Dispose();
                         // Old nodes still support the original pinned TLS protocol during rollout.
-                        return await Peer.ConnectRaw(ip, fingerprint, cert, token);
+                        return await Peer.ConnectRaw(ip, fingerprint, cert, token, port);
                     }
                     session = Create(raw, self, true);
                     sessions[key] = session;
@@ -81,6 +83,7 @@ static class MultiplexPool
 
     internal static void CloseLocal(string self)
     {
+        QuicTransport.CloseLocal(self);
         foreach (var pair in active.Where(p => p.Value == self)) pair.Key.Close();
     }
 }

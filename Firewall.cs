@@ -5,19 +5,20 @@ namespace Pnt;
 
 static class Firewall
 {
-    public static void Open(int port)
+    public static void Open(int port, string protocol = "tcp")
     {
+        if (protocol is not ("tcp" or "udp")) throw new ArgumentException("Unsupported firewall protocol.");
         if(Environment.GetEnvironmentVariable("PNT_MANAGE_FIREWALL")=="0")return;
-        if(OperatingSystem.IsWindows()) {WindowsRule(port,true);return;}
+        if(OperatingSystem.IsWindows()) {WindowsRule(port,protocol,true);return;}
         if (!OperatingSystem.IsLinux()) return;
         try
         {
             var chain = Run("nft", "list", "chain", "inet", "filter", "input");
             if (chain.code == 0)
             {
-                if (!chain.output.Contains($"tcp dport {port} accept", StringComparison.Ordinal))
+                if (!chain.output.Contains($"{protocol} dport {port} accept", StringComparison.Ordinal))
                 {
-                    var added = Run("nft", "add", "rule", "inet", "filter", "input", "tcp", "dport", port.ToString(), "accept", "comment", "pnt");
+                    var added = Run("nft", "add", "rule", "inet", "filter", "input", protocol, "dport", port.ToString(), "accept", "comment", "pnt");
                     if (added.code != 0) Console.Error.WriteLine("pnt: nftables: " + added.output);
                 }
                 return;
@@ -26,26 +27,27 @@ static class Firewall
         catch { }
         try
         {
-            if (Run("iptables", "-C", "INPUT", "-p", "tcp", "--dport", port.ToString(), "-j", "ACCEPT").code != 0)
+            if (Run("iptables", "-C", "INPUT", "-p", protocol, "--dport", port.ToString(), "-j", "ACCEPT").code != 0)
             {
-                var added = Run("iptables", "-I", "INPUT", "-p", "tcp", "--dport", port.ToString(), "-m", "comment", "--comment", "pnt", "-j", "ACCEPT");
+                var added = Run("iptables", "-I", "INPUT", "-p", protocol, "--dport", port.ToString(), "-m", "comment", "--comment", "pnt", "-j", "ACCEPT");
                 if (added.code != 0) Console.Error.WriteLine("pnt: iptables: " + added.output);
             }
         }
         catch (Exception e) { Console.Error.WriteLine("pnt: firewall: " + e.Message); }
     }
 
-    public static void Close(int port)
+    public static void Close(int port, string protocol = "tcp")
     {
+        if (protocol is not ("tcp" or "udp")) throw new ArgumentException("Unsupported firewall protocol.");
         if(Environment.GetEnvironmentVariable("PNT_MANAGE_FIREWALL")=="0")return;
-        if(OperatingSystem.IsWindows()) {WindowsRule(port,false);return;}
+        if(OperatingSystem.IsWindows()) {WindowsRule(port,protocol,false);return;}
         if (!OperatingSystem.IsLinux()) return;
         try
         {
             var chain = Run("nft", "-a", "list", "chain", "inet", "filter", "input");
             if (chain.code == 0)
             {
-                foreach (var line in chain.output.Split('\n').Where(x => x.Contains($"tcp dport {port} accept") && x.Contains("pnt")))
+                foreach (var line in chain.output.Split('\n').Where(x => x.Contains($"{protocol} dport {port} accept") && x.Contains("pnt")))
                 {
                     var match = Regex.Match(line, @"# handle (\d+)");
                     if (match.Success) Run("nft", "delete", "rule", "inet", "filter", "input", "handle", match.Groups[1].Value);
@@ -54,16 +56,16 @@ static class Firewall
             }
         }
         catch { }
-        try { Run("iptables", "-D", "INPUT", "-p", "tcp", "--dport", port.ToString(), "-m", "comment", "--comment", "pnt", "-j", "ACCEPT"); }
+        try { Run("iptables", "-D", "INPUT", "-p", protocol, "--dport", port.ToString(), "-m", "comment", "--comment", "pnt", "-j", "ACCEPT"); }
         catch { }
     }
 
-    static void WindowsRule(int port,bool open)
+    static void WindowsRule(int port,string protocol,bool open)
     {
         try
         {
-            var command=open ? $"if (-not (Get-NetFirewallRule -Name PNT-TCP-{port} -ErrorAction SilentlyContinue)) {{ New-NetFirewallRule -Name PNT-TCP-{port} -DisplayName 'PNT TCP {port}' -Direction Inbound -Action Allow -Protocol TCP -LocalPort {port} | Out-Null }}"
-                : $"Get-NetFirewallRule -Name PNT-TCP-{port} -ErrorAction SilentlyContinue | Remove-NetFirewallRule";
+            var command=open ? $"if (-not (Get-NetFirewallRule -Name PNT-{protocol.ToUpperInvariant()}-{port} -ErrorAction SilentlyContinue)) {{ New-NetFirewallRule -Name PNT-{protocol.ToUpperInvariant()}-{port} -DisplayName 'PNT {protocol.ToUpperInvariant()} {port}' -Direction Inbound -Action Allow -Protocol {protocol.ToUpperInvariant()} -LocalPort {port} | Out-Null }}"
+                : $"Get-NetFirewallRule -Name PNT-{protocol.ToUpperInvariant()}-{port} -ErrorAction SilentlyContinue | Remove-NetFirewallRule";
             var result=Run("powershell.exe","-NoProfile","-NonInteractive","-Command",command);
             if(result.code!=0)Console.Error.WriteLine("pnt: Windows firewall: "+result.output);
         }

@@ -66,11 +66,14 @@ install_dependencies() {
     apt-get update
     apt-get install -y ca-certificates curl git openssh-client systemd nftables iptables util-linux python3 \
         libc6 libgcc-s1 libgssapi-krb5-2 libstdc++6 tzdata zlib1g "$icu_package" "$ssl_package"
-    if ! command -v dotnet >/dev/null 2>&1 || ! dotnet --list-sdks 2>/dev/null | grep -q '^10\.'; then
+    if ! dpkg-query -W -f='${Status}' packages-microsoft-prod 2>/dev/null | grep -q 'install ok installed'; then
         curl -fsSL "https://packages.microsoft.com/config/debian/$VERSION_ID/packages-microsoft-prod.deb" \
             -o "$TEMP_DIR/packages-microsoft-prod.deb"
         dpkg -i "$TEMP_DIR/packages-microsoft-prod.deb"
         apt-get update
+    fi
+    apt-get install -y libmsquic
+    if ! command -v dotnet >/dev/null 2>&1 || ! dotnet --list-sdks 2>/dev/null | grep -q '^10\.'; then
         apt-get install -y dotnet-sdk-10.0
     fi
     dotnet --list-sdks | grep -q '^10\.' || die '.NET 10 SDK installation failed.'
@@ -143,6 +146,7 @@ update_local() {
     printf '✓ Служба остановлена\n' >> "$PROGRESS"
     as_invoker git -C "$SCRIPT_DIR" remote set-url origin "$REPOSITORY"
     step 'Исходники обновлены из GitHub' as_invoker git -C "$SCRIPT_DIR" pull --ff-only origin "$branch"
+    step 'Зависимости Debian и QUIC установлены' install_dependencies
     if [ "$(invoker)" != root ]; then chown "$(invoker)" "$TEMP_DIR"; fi
     step 'Бинарник собран' as_invoker dotnet publish "$SCRIPT_DIR/pnt.csproj" -c Release \
         -r "$(runtime_id)" --self-contained true -p:PublishSingleFile=true -o "$TEMP_DIR/build"

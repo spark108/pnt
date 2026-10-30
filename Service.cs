@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
+using System.Net.Quic;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography.X509Certificates;
 
@@ -28,7 +29,17 @@ sealed class Service(Store db, X509Certificate2 cert,int controlPort=442)
         var control = new TcpListener(IPAddress.Any, ControlPort); control.Start();
         ControlPort=((IPEndPoint)control.LocalEndpoint).Port;
         Firewall.Open(ControlPort);
-        Console.WriteLine("pnt: service listening on TCP "+ControlPort);
+        QuicListener? udp = null;
+        try { udp = await QuicTransport.Listen(cert, new IPEndPoint(IPAddress.Any, ControlPort), QuicMember, stop.Token); }
+        catch (Exception e) { Console.Error.WriteLine("pnt: QUIC unavailable, using TCP: " + e.Message); }
+        Task udpWork = Task.CompletedTask;
+        if (udp is not null)
+        {
+            Firewall.Open(ControlPort, "udp");
+            udpWork = QuicTransport.AcceptLoop(udp, id, QuicMember, ObserveQuic, stop.Token);
+        }
+        Console.WriteLine("pnt: service listening on " + (udp is null ? "TCP " : "QUIC/UDP and TCP ") + ControlPort);
+        if (udp is null && QuicTransport.Enabled) Console.Error.WriteLine("pnt: UDP transport inactive; check QUIC support and libmsquic on Linux.");
         using var term = OperatingSystem.IsLinux() ? PosixSignalRegistration.Create(PosixSignal.SIGTERM, x => { x.Cancel = true; stop.Cancel(); }) : null;
         Console.CancelKeyPress += (_, x) => { x.Cancel = true; stop.Cancel(); };
         _ = Task.Run(Maintain);
@@ -43,6 +54,8 @@ sealed class Service(Store db, X509Certificate2 cert,int controlPort=442)
         catch (OperationCanceledException) { }
         finally
         {
+            stop.Cancel();
+            if (udp is not null && QuicTransport.Supported) { await udp.DisposeAsync(); await udpWork; Firewall.Close(ControlPort, "udp"); }
             MultiplexPool.CloseLocal(id);
             await web.Stop();
             control.Stop();
@@ -51,6 +64,14 @@ sealed class Service(Store db, X509Certificate2 cert,int controlPort=442)
         }
     }
     public void Stop()=>stop.Cancel();
+
+    bool QuicMember(string remote, string fingerprint) => db.Resolve(remote) is Node member && !member.Removed && member.Cert == fingerprint
+        && db.Get("left") != "1" && db.Self()?.Removed == false;
+    void ObserveQuic(string remote, IPAddress address)
+    {
+        if (db.Resolve(remote) is Node known && !known.BehindNat && Enrollment.Private(known.Ip) && address.MapToIPv4().ToString() != known.Ip)
+            db.Put(known with { BehindNat = true, Version = Math.Max(App.Now, known.Version + 1) });
+    }
 
     async Task Handle(TcpClient socket)
     {
