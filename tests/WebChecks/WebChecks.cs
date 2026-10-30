@@ -21,12 +21,42 @@ static class WebChecks
             return new(HttpStatusCode.OK){Content=new StringContent("{\"success\":true,\"ip\":\"8.8.8.8\",\"latitude\":52.37,\"longitude\":4.89,\"city\":\"Amsterdam\",\"country\":\"Netherlands\"}")};
         }
     }
+    sealed class TileHandler : HttpMessageHandler
+    {
+        public int Calls;
+        public string Type="image/jpeg";
+        public string? Requested;
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,CancellationToken token)
+        {
+            Calls++;Requested=request.RequestUri!.ToString();
+            var content=new ByteArrayContent([255,216,255,217]);content.Headers.ContentType=new MediaTypeHeaderValue(Type);
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK){Content=content});
+        }
+    }
     public static async Task Main(string[] args)
     {
         var folder=Path.Combine(Path.GetTempPath(),"pnt-web-check-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(folder);
         Environment.SetEnvironmentVariable("PNT_DATA_DIR",folder);Environment.SetEnvironmentVariable("PNT_MANAGE_FIREWALL","0");
         using var cert=Certificate.Load(Path.Combine(folder,"node.pfx"));
         using var db=new Store(Path.Combine(folder,"pnt.db"));var self=Certificate.Id(cert);db.Set("self",self);db.Set("cluster","test");
+        using(var tiles=new TileHandler())
+        using(var tileHttp=new HttpClient(tiles))
+        using(var imagery=new NasaImagery(tileHttp))
+        {
+            var image=await imagery.Get(2,1,2,default);
+            Assert((await imagery.Get(2,1,2,default)).SequenceEqual(image)&&tiles.Calls==1,"NASA tile cache failed");
+            Assert(tiles.Requested=="https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/BlueMarble_ShadedRelief_Bathymetry/default/GoogleMapsCompatible_Level8/2/1/2.jpeg","Wrong upstream tile coordinates");
+            foreach(var (z,y,x) in new[]{(-1,0,0),(9,0,0),(0,1,0),(2,-1,0),(2,0,4)})
+            {
+                try{await imagery.Get(z,y,x,default);throw new Exception("Invalid tile requested");}catch(ArgumentOutOfRangeException){}
+            }
+            Assert(tiles.Calls==1,"Invalid tiles contacted upstream");
+            tiles.Type="text/html";
+            try{await imagery.Get(2,1,3,default);throw new Exception("Non-image tile accepted");}catch(IOException){}
+            tiles.Type="image/jpeg";await imagery.Get(2,1,3,default);Assert(tiles.Calls==3,"Failed tile was cached");
+            using var cancel=new CancellationTokenSource();cancel.Cancel();
+            try{await imagery.Get(3,1,2,cancel.Token);throw new Exception("Tile cancellation ignored");}catch(OperationCanceledException){}
+        }
         db.Put(new Node(self,"Amsterdam","8.8.8.8",Certificate.Fingerprint(cert),App.Now));
         using var handler=new GeoHandler();using var http=new HttpClient(handler);var geo=new GeoLocations(db,http);
         Assert(!GeoLocations.Public("192.168.1.1")&&!GeoLocations.Public("100.64.0.1")&&!GeoLocations.Public("::1")&&GeoLocations.Public("8.8.8.8"),"Private IP classification failed");
@@ -58,11 +88,13 @@ static class WebChecks
         try
         {
             Assert((await client.GetAsync("/api/state")).StatusCode==HttpStatusCode.Unauthorized,"Web authentication bypassed");
+            Assert((await client.GetAsync("/api/imagery/nasa/0/0/0.jpg")).StatusCode==HttpStatusCode.Unauthorized,"Tile proxy bypassed authentication");
             client.DefaultRequestHeaders.Authorization=new AuthenticationHeaderValue("Basic",Convert.ToBase64String(Encoding.UTF8.GetBytes("admin:web-test-password")));
             var state=await client.GetFromJsonAsync<JsonElement>("/api/state");var csrf=state.GetProperty("csrfToken").GetString()!;
             Assert(state.GetProperty("nodes")[0].TryGetProperty("location",out _),"State omitted locations");
             Assert((await client.GetAsync("/assets/cesium/Cesium.js")).Content.Headers.ContentType?.MediaType=="text/javascript","Cesium asset unavailable");
             Assert((await client.GetAsync("/assets/cesium/Assets/Textures/NaturalEarthII/tilemapresource.xml")).IsSuccessStatusCode,"Offline base map missing");
+            Assert((await client.GetAsync("/api/imagery/nasa/9/0/0.jpg")).StatusCode==HttpStatusCode.BadRequest,"Tile endpoint did not validate coordinates");
             var endpoint="/api/nodes/bbbbbbbbbbbbbbbb/location";
             Assert((await client.PutAsJsonAsync(endpoint,new{latitude=90,longitude=180})).StatusCode==HttpStatusCode.Forbidden,"Location CSRF bypassed");
             client.DefaultRequestHeaders.Add("X-PNT-CSRF",csrf);

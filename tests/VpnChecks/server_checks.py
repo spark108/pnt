@@ -166,6 +166,9 @@ class ServerChecks(unittest.TestCase):
             {"table": {"family": "inet", "name": "filter"}},
             {"chain": {"family": "inet", "table": "filter", "name": "input", "hook": "input"}},
             {"chain": {"family": "inet", "table": "filter", "name": "forward", "hook": "forward"}},
+            {"chain": {"family": "inet", "table": "filter", "name": "custom_chain"}},
+            {"chain": {"family": "ip", "table": "filter", "name": "DOCKER-USER"}},
+            {"chain": {"family": "ip", "table": "filter", "name": "ufw-before-input"}},
             {"rule": {"family": "inet", "table": "filter", "chain": "input", "handle": 4, "comment": marker}},
             {"rule": {"family": "inet", "table": "filter", "chain": "input", "handle": 5, "comment": "user-rule"}}]}
         batches = []
@@ -183,6 +186,9 @@ class ServerChecks(unittest.TestCase):
         self.assertIn("masquerade", batch)
         self.assertIn("ct state established,related", batch)
         self.assertNotIn("flush", batch)
+        self.assertNotIn("insert rule inet filter custom_chain", batch)
+        self.assertNotIn("insert rule ip filter DOCKER-USER", batch)
+        self.assertNotIn("insert rule ip filter ufw-before-input", batch)
 
     def test_iptables_rules_are_idempotent(self):
         spec = {"interface": "awg0", "subnet": "10.77.0.0/24", "port": 51820, "outgoing": "eth0", "incoming": None}

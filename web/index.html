@@ -118,14 +118,14 @@ function applySurface(){
  if(!viewer)return;
  if(satelliteLayer){viewer.imageryLayers.remove(satelliteLayer,true);satelliteLayer=null}
  const detailed=$('map-surface').value==='nasa';
- $('surface-status').textContent=detailed?'Снимки NASA загружаются из интернета. Приближение ограничено 250 км.':'Встроенная карта. Приближение ограничено 250 км.';
+ $('surface-status').textContent=detailed?'Снимки NASA загружаются через сервер PNT. Приближение ограничено 250 км.':'Встроенная карта. Приближение ограничено 250 км.';
  if(detailed){
-  const provider=new Cesium.UrlTemplateImageryProvider({url:'https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/BlueMarble_ShadedRelief_Bathymetry/default/GoogleMapsCompatible_Level8/{z}/{y}/{x}.jpeg',maximumLevel:8,enablePickFeatures:false,credit:'NASA GIBS · Blue Marble'});
+  const provider=new Cesium.UrlTemplateImageryProvider({url:'/api/imagery/nasa/{z}/{y}/{x}.jpg',maximumLevel:8,enablePickFeatures:false,credit:'NASA GIBS · Blue Marble'});
   const layer=viewer.imageryLayers.addImageryProvider(provider);satelliteLayer=layer;
   const fallback=error=>{if(error)error.retry=false;if(satelliteLayer!==layer)return;clearTimeout(timeout);satelliteLayer=null;setTimeout(()=>{if(viewer.imageryLayers.contains(layer))viewer.imageryLayers.remove(layer,true);viewer.scene.requestRender()},0);$('surface-status').textContent='NASA недоступен — используется встроенная карта. Приближение ограничено 250 км.'};
-  const timeout=setTimeout(()=>fallback(),12000),requestImage=provider.requestImage.bind(provider);
-  provider.requestImage=(...args)=>{const pending=requestImage(...args);if(pending)Promise.resolve(pending).then(()=>clearTimeout(timeout),()=>{});return pending};
-  provider.errorEvent.addEventListener(fallback);
+  let failures=0;const timeout=setTimeout(()=>fallback(),20000),requestImage=provider.requestImage.bind(provider);
+  provider.requestImage=(...args)=>{const pending=requestImage(...args);if(pending)Promise.resolve(pending).then(()=>{clearTimeout(timeout);if(satelliteLayer===layer)$('surface-status').textContent='NASA Blue Marble · через PNT. Приближение ограничено 250 км.'},()=>{});return pending};
+  provider.errorEvent.addEventListener(error=>{if(satelliteLayer!==layer)return;error.retry=(error.timesRetried??0)<1;if(++failures>=4)fallback(error)});
  }
  viewer.scene.requestRender();
 }

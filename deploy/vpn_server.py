@@ -16,6 +16,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import traceback
 import urllib.request
 
 os.environ["PATH"] = "/usr/local/sbin:/usr/local/bin:" + os.environ.get("PATH", "/usr/sbin:/usr/bin:/sbin:/bin")
@@ -300,7 +301,10 @@ def firewall_spec(binding):
 def nft_rules(spec, chains, marker):
     commands = []
     for chain in chains:
-        family, table, name, hook = (chain[k] for k in ("family", "table", "name", "hook"))
+        hook = chain.get("hook")
+        if hook not in ("input", "forward"):
+            continue
+        family, table, name = (chain[k] for k in ("family", "table", "name"))
         if family not in ("ip", "inet") or hook not in ("input", "forward"):
             continue
         prefix = f"insert rule {family} {nft_identifier(table)} {nft_identifier(name)} "
@@ -469,6 +473,6 @@ if __name__ == "__main__":
                 setup(root, request["selection"], request["source"])
             else:
                 raise ValueError("Unknown installer action")
-    except Exception as error:
-        print(str(error), file=sys.stderr)
+    except Exception:
+        traceback.print_exc()
         sys.exit(1)

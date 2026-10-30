@@ -53,6 +53,8 @@ sealed class WebPanel(Store db, X509Certificate2 cert,int listenPort=8016)
         var webCert = LoadWebCertificate();
         builder.WebHost.ConfigureKestrel(options => { options.Limits.MaxRequestBodySize=16*1024; options.ListenAnyIP(listenPort, endpoint => endpoint.UseHttps(webCert)); });
         var server = builder.Build();
+        var imagery=new NasaImagery();
+        server.Lifetime.ApplicationStopped.Register(imagery.Dispose);
         server.Use(async (context, next) =>
         {
             context.Response.Headers.CacheControl = "no-store";
@@ -83,6 +85,7 @@ sealed class WebPanel(Store db, X509Certificate2 cert,int listenPort=8016)
         var html = reader.ReadToEnd();
         server.MapGet("/", () => Results.Content(html, "text/html; charset=utf-8"));
         server.MapGet("/assets/cesium/{**path}",WebAssets.Cesium);
+        server.MapGet("/api/imagery/nasa/{z:int}/{y:int}/{x:int}.jpg",imagery.Tile);
         server.MapGet("/api/state", () => Results.Json(State()));
         server.MapGet("/api/events",async (HttpContext context)=>
         {
