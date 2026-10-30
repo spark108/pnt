@@ -120,6 +120,7 @@ static class CommandLine
         Leaf("forward show", "Показать свойства проброса.", [("id", "ID правила.")]);
         Leaf("forward remove", "Удалить проброс порта.", [("id", "ID правила.")]);
         Leaf("vpn server install", "Установить AmneziaWG, выбрать конфигурацию и разрешить узел как VPN-сервер.", [("node", "ID или имя узла Debian Linux.")]);
+        Leaf("vpn server rename", "Изменить отображаемое имя VPN-сервера у клиентов.", [("node", "ID или имя узла."), ("name", "Новое отображаемое имя VPN-сервера.")]);
         Leaf("vpn server remove", "Исключить узел из каталога VPN.", [("node", "ID или имя узла.")]);
         Leaf("vpn server list", "Показать разрешённые VPN-серверы.");
         Leaf("vpn client create", "Создать клиента и экспортировать подписанный профиль доступа.", [("name", "Уникальное имя клиента.")],

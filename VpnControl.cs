@@ -52,6 +52,12 @@ static class VpnControl
                 await Query(db,cert,registeredNode.Id,new("probe"));
                 db.PutVpn(new VpnServer(registeredNode.Id,displayName.Trim(),Math.Max(App.Now,(old?.Version??0)+1)));
                 Console.WriteLine("VPN-сервер разрешён: "+displayName);break;
+            case ["server","rename",var node,var value]:
+                var renamedServer=FindServer(db,node);
+                var newName=value.Trim();
+                if(newName.Length is <1 or >64||newName.Any(char.IsControl))throw new ArgumentException("Отображаемое имя: от 1 до 64 символов, без управляющих символов.");
+                db.PutVpn(renamedServer with{Name=newName,Version=Math.Max(App.Now,renamedServer.Version+1)});
+                Console.WriteLine("Имя VPN-сервера изменено: "+newName);break;
             case ["server","remove",var name]:
                 var server=FindServer(db,name);db.PutVpn(server with{Removed=true,Version=Math.Max(App.Now,server.Version+1)});
                 await ReconcileRemote(db,cert,server.Id);Console.WriteLine("Сервер удалён из каталога VPN.");break;
@@ -110,7 +116,7 @@ static class VpnControl
                 }
                 CliOutput.Table(["Сервер","Рукопожатие (UTC)","Принято","Отправлено"],handshakeRows);
                 break;
-            default:throw new ArgumentException("Неверная команда. pnt vpn server install|list|remove; pnt vpn client create|list|show|allow|deny|revoke|handshake");
+            default:throw new ArgumentException("Неверная команда. pnt vpn server install|rename|list|remove; pnt vpn client create|list|show|allow|deny|revoke|handshake");
         }
     }
     static async Task ListClients(Store db,X509Certificate2 cert)

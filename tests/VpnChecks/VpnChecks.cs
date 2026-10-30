@@ -53,6 +53,14 @@ static class VpnChecks
         db.PutVpn(registered with{Removed=true,Version=registered.Version+1});
         db.PutVpn(registered with{Version=registered.Version+2});
         Assert(!db.VpnServers().Single().Removed,"Explicit server re-registration failed");
+        var beforeRename=db.VpnServers().Single();
+        await VpnControl.Command(db,cert,["server","rename","local"," Нидерланды #1 "]);
+        var renamed=db.VpnServers().Single();
+        Assert(renamed.Id==beforeRename.Id&&renamed.Name=="Нидерланды #1"&&renamed.Version>beforeRename.Version&&db.Self()!.Name=="local","VPN rename changed identity or cluster name");
+        foreach(var bad in new[]{" ",new string('a',65),"bad\nname"})
+        {
+            try{await VpnControl.Command(db,cert,["server","rename",self,bad]);throw new Exception("Invalid VPN display name accepted");}catch(ArgumentException){}
+        }
         var output=Path.Combine(directory,"client.pnt");
         await VpnControl.Command(db,cert,["client","create","Alice","--servers","local","--out",output]);
         var profile=VpnClientAgent.Validate(await File.ReadAllTextAsync(output));
