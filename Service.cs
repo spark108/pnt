@@ -230,10 +230,10 @@ sealed class Service(Store db, X509Certificate2 cert,int controlPort=442)
         }
         if (!db.Consume(invite)) { await Peer.Send(peer.Stream, new Message("error", Error: "Приглашение уже использовано.")); return; }
         db.Put(new Node(m.Id, m.Name, m.Ip, m.Cert, App.Now,Platform:m.Platform=="windows"?"windows":"linux"));
-        await Peer.Send(peer.Stream, new Message("welcome", id, Nodes: db.Nodes().ToArray(), Rules: db.Rules().ToArray(), KeyHash: db.Get("key_hash"), Update: db.Update(), Web: db.Web()));
+        await Peer.Send(peer.Stream, new Message("welcome", id, Nodes: db.Nodes().ToArray(), Rules: db.Rules().ToArray(), KeyHash: db.Get("key_hash"), Update: db.Update(), Web: db.Web(),Cesium:db.Cesium()));
     }
 
-    Message Sync() => new("sync", id, Nodes: db.Nodes().ToArray(), Rules: db.Rules().ToArray(), Update: db.Update(), Pings: db.Pings().ToArray(), Web: db.Web(), Links: db.Links().ToArray(),VpnServers:db.VpnServers().ToArray(),VpnClients:db.VpnClients().ToArray());
+    Message Sync() => new("sync", id, Nodes: db.Nodes().ToArray(), Rules: db.Rules().ToArray(), Update: db.Update(), Pings: db.Pings().ToArray(), Web: db.Web(), Links: db.Links().ToArray(),VpnServers:db.VpnServers().ToArray(),VpnClients:db.VpnClients().ToArray(),Cesium:db.Cesium());
 
     void Merge(Message m)
     {
@@ -251,6 +251,7 @@ sealed class Service(Store db, X509Certificate2 cert,int controlPort=442)
         foreach (var link in m.Links ?? []) db.PutLink(link);
         if (m.Update is not null) db.PutUpdate(m.Update);
         if (m.Web is not null) db.PutWeb(m.Web);
+        if (m.Cesium is not null) db.PutCesium(m.Cesium);
     }
 
     async Task Maintain()

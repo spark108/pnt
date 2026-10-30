@@ -10,13 +10,34 @@ const path=require('node:path');
     const page=await context.newPage(),errors=[],external=[];
     const url=process.argv[2];if(!url)throw Error('Usage: node tests/WebChecks/browser.cjs <WebChecks --serve URL>');
     page.on('pageerror',e=>errors.push(e.message));
+    const ionTile=await (await page.request.get(url+'/assets/cesium/Assets/Textures/NaturalEarthII/0/0/0.jpg')).body();
+    const flatTerrain=Buffer.alloc(65*65*2+1);for(let i=0;i<65*65;i++)flatTerrain.writeUInt16LE(5000,i*2);
     await page.route('**/*',route=>{
+      if(new URL(route.request().url()).hostname==='assets.cesium.com'){
+        const headers={'Access-Control-Allow-Origin':'*','Access-Control-Allow-Headers':'authorization,x-cesium-client,x-cesium-client-version','Access-Control-Allow-Methods':'GET,OPTIONS'};
+        if(route.request().method()==='OPTIONS')return route.fulfill({status:204,headers});
+        assert.equal(route.request().headers().authorization,'Bearer temporary-asset-only-key');
+        const pathname=new URL(route.request().url()).pathname;
+        if(pathname==='/1/layer.json')return route.fulfill({contentType:'application/json',headers,body:JSON.stringify({tilejson:'2.1.0',format:'heightmap-1.0',version:'1.0.0',scheme:'tms',projection:'EPSG:4326',tiles:['{z}/{x}/{y}.terrain?v={version}'],maxzoom:0,available:[[{startX:0,startY:0,endX:1,endY:0}]]})});
+        if(pathname.startsWith('/1/'))return route.fulfill({contentType:'application/octet-stream',headers,body:flatTerrain});
+        if(pathname==='/11/tileset.json')return route.fulfill({contentType:'application/json',headers,body:JSON.stringify({asset:{version:'1.0'},geometricError:0,root:{boundingVolume:{sphere:[6378137,0,0,1000]},geometricError:0,refine:'ADD',children:[]}})});
+        if(pathname==='/13/data.geojson')return route.fulfill({contentType:'application/json',headers,body:JSON.stringify({type:'FeatureCollection',features:[{type:'Feature',properties:{name:'ion fixture'},geometry:{type:'Point',coordinates:[8,51]}}]})});
+        if(pathname==='/12/tilemapresource.xml')return route.fulfill({contentType:'application/xml',headers,body:'<TileMap version="1.0.0"><Title>Test imagery</Title><SRS>EPSG:4326</SRS><BoundingBox minx="-180" miny="-90" maxx="180" maxy="90"/><Origin x="-180" y="-90"/><TileFormat width="256" height="256" mime-type="image/jpeg" extension="jpg"/><TileSets profile="global-geodetic"><TileSet href="0" units-per-pixel="0.703125" order="0"/><TileSet href="1" units-per-pixel="0.3515625" order="1"/></TileSets></TileMap>'});
+        if(pathname.startsWith('/12/'))return route.fulfill({contentType:'image/jpeg',headers,body:ionTile});
+        return route.abort();
+      }
       if(new URL(route.request().url()).origin!==new URL(url).origin){external.push(route.request().url());return route.abort()}
       return route.continue();
     });
     await page.goto(url);
     await page.waitForFunction(()=>typeof viewer!=='undefined'&&viewer&&viewer.entities.values.some(e=>e.polyline),{timeout:30000});
     await page.waitForFunction(()=>typeof geographicLayer!=='undefined'&&geographicLayer&&geographicLabels.length>800,{timeout:30000});
+    await page.waitForFunction(()=>ionLayers.size===4&&[...ionLayers.values()].every(item=>item.object),{timeout:30000});
+    assert.equal(await page.evaluate(()=>ionLayers.get(1).kind),'terrain');
+    assert(await page.evaluate(()=>viewer.terrainProvider instanceof Cesium.CesiumTerrainProvider));
+    assert.equal(await page.evaluate(()=>ionLayers.get(11).kind),'tiles');
+    assert.equal(await page.evaluate(()=>ionLayers.get(12).kind),'imagery');
+    assert.equal(await page.evaluate(()=>ionLayers.get(13).object.entities.values.length),1);
     assert(await page.evaluate(()=>geographicLayer.entities.values.some(e=>e.id.startsWith('border:')&&e.polyline)));
     assert(await page.evaluate(()=>geographicLabels.some(x=>x.city&&x.entity.label.text.getValue(viewer.clock.currentTime)==='Москва')));
     assert.equal(await page.evaluate(()=>viewer.entities.values.filter(e=>e.polyline).length),2);
@@ -52,6 +73,7 @@ const path=require('node:path');
     assert.deepEqual(errors,[]);assert.deepEqual(external,[]);
     await page.locator('#drawer-toggle').click();
     await page.route('**/api/imagery/nasa/**',route=>route.abort());
+    await page.evaluate(()=>{ionLayers.get(12).object.show=false;viewer.scene.requestRender()});
     await page.selectOption('#map-surface','nasa');
     await page.waitForFunction(()=>document.querySelector('#surface-status').textContent.includes('NASA недоступен'));
     assert.deepEqual(external,[]);
@@ -67,7 +89,12 @@ const path=require('node:path');
     await page.evaluate(()=>viewer.camera.setView({destination:Cesium.Cartesian3.fromDegrees(5,52,300000),orientation:{heading:0,pitch:-Math.PI/2,roll:0}}));
     await page.mouse.move(250,475);await page.mouse.wheel(0,-15000);await page.waitForTimeout(1200);
     assert(await page.evaluate(()=>viewer.camera.positionCartographic.height<249900),'Camera still blocked by the former zoom limit');
+    await page.evaluate(()=>{window.previousIon=ionLayers.get(11).object;applyState({...state,cesium:{...state.cesium,revision:'token-removed',configured:false}})});
+    assert.equal(await page.evaluate(()=>ionLayers.size),0);
+    assert(await page.evaluate(()=>previousIon.isDestroyed()&&viewer.terrainProvider instanceof Cesium.EllipsoidTerrainProvider));
+    await page.evaluate(()=>refresh());
+    await page.waitForFunction(()=>ionLayers.size===4&&[...ionLayers.values()].every(item=>item.object));
     assert.deepEqual(errors,[]);
-    console.log('PASS: globe, routes, manual locations, fresh links, offline assets, desktop/mobile layout, NASA tile protocol/fallback and mouse-wheel zoom beyond the former limit.');
+    console.log('PASS: globe, routes, manual locations, fresh links, offline assets, desktop/mobile layout, NASA tile protocol/fallback and mouse-wheel zoom, native ion terrain/imagery/3D/vector loading, scoped asset keys and live unloading.');
   }finally{await browser.close()}
 })().catch(e=>{console.error(e);process.exitCode=1});

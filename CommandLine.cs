@@ -78,6 +78,14 @@ static class CommandLine
         Group("cluster maintenance", "Статус обслуживания текущего узла.");
         Group("forward", "Проброс TCP-портов через сеть PNT.");
         Group("web", "Веб-интерфейс всех узлов кластера.");
+        Group("cesium", "Датасеты Cesium ion на глобусе.");
+        Leaf("cesium token", "Сохранить токен Cesium ion; без аргумента — скрытый ввод. clear удаляет токен.", [("token?", "Токен Cesium ion либо clear.")]);
+        Leaf("cesium add", "Подключить датасет по ID Cesium ion.", [("id", "Числовой ID ассета."),("name?", "Отображаемое имя.")]);
+        Leaf("cesium remove", "Удалить датасет с глобуса.", [("id", "ID ассета.")]);
+        Leaf("cesium enable", "Включить датасет.", [("id", "ID ассета.")]);
+        Leaf("cesium disable", "Выключить датасет.", [("id", "ID ассета.")]);
+        Leaf("cesium list", "Показать подключённые датасеты.");
+        Leaf("cesium status", "Показать состояние настройки Cesium без токена.");
         Group("vpn", "VPN-серверы и доступ клиентов.");
         Group("vpn server", "Установка и управление VPN-серверами.");
         Group("vpn client", "Управление VPN-клиентами и их правами.");

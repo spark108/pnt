@@ -10,6 +10,7 @@ namespace Pnt;
 
 static class WebChecks
 {
+    const string MasterToken="private-primary-ion-token-0123456789";
     static void Assert(bool condition,string message){if(!condition)throw new Exception(message);}
     sealed class GeoHandler : HttpMessageHandler
     {
@@ -31,6 +32,20 @@ static class WebChecks
             Calls++;Requested=request.RequestUri!.ToString();
             var content=new ByteArrayContent([255,216,255,217]);content.Headers.ContentType=new MediaTypeHeaderValue(Type);
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK){Content=content});
+        }
+    }
+    sealed class IonHandler : HttpMessageHandler
+    {
+        public HttpStatusCode Status=HttpStatusCode.OK;
+        public bool Leak;
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,CancellationToken token)
+        {
+            Assert(request.RequestUri!.Host=="api.cesium.com"&&request.RequestUri.Query.Contains(MasterToken),"Primary token was not sent only to ion API");
+            var id=long.Parse(request.RequestUri.Segments[^2].Trim('/'));
+            var type=id switch{1 or 2=>"TERRAIN",11=>"3DTILES",12=>"IMAGERY",13=>"GEOJSON",14=>"CZML",_=>"KML"};
+            var file=type switch{"3DTILES"=>"tileset.json","GEOJSON"=>"data.geojson","CZML"=>"data.czml","KML"=>"data.kml",_=>""};
+            var text=JsonSerializer.Serialize(new{type,url=$"https://assets.cesium.com/{id}/"+file,accessToken=Leak?MasterToken:"temporary-asset-only-key",attributions=new[]{new{html="Cesium test credit",collapsible=false}}},App.Json);
+            return Task.FromResult(new HttpResponseMessage(Status){Content=new StringContent(text,Encoding.UTF8,"application/json")});
         }
     }
     public static async Task Main(string[] args)
@@ -83,14 +98,54 @@ static class WebChecks
         db.PutLink(new(self,"bbbbbbbbbbbbbbbb",22.5,App.Now,true));db.PutLink(new("bbbbbbbbbbbbbbbb","cccccccccccccccc",18.1,App.Now,true));
         var salt=RandomNumberGenerator.GetBytes(32);var hash=Rfc2898DeriveBytes.Pbkdf2("web-test-password",salt,210_000,HashAlgorithmName.SHA256,32);
         db.PutWeb(new(Guid.NewGuid().ToString("N"),true,Convert.ToHexString(salt),Convert.ToHexString(hash),App.Now));
-        var panel=new WebPanel(db,cert,0);await panel.Refresh();
+        using var ionHandler=new IonHandler();using var ionHttp=new HttpClient(ionHandler);
+        var originalOut=Console.Out;using var captured=new StringWriter();
+        try
+        {
+            Console.SetOut(captured);
+            await CesiumControl.Command(db,["token",MasterToken],ionHttp);
+            var tokenRevision=db.Cesium()!.Id;
+            try{await CesiumControl.Command(db,["token",""],ionHttp);throw new Exception("Empty token cleared credentials");}catch(ArgumentException){}
+            Assert(db.Cesium()!.Id==tokenRevision,"Empty token input changed stored credentials");
+            await CesiumControl.Command(db,["add","1","Terrain one"],ionHttp);
+            await CesiumControl.Command(db,["add","2","Terrain two"],ionHttp);
+            Assert(db.Cesium()!.Assets.Single(a=>a.Id==2).Enabled&&!db.Cesium()!.Assets.Single(a=>a.Id==1).Enabled,"Multiple terrain datasets enabled");
+            await CesiumControl.Command(db,["enable","1"],ionHttp);await CesiumControl.Command(db,["disable","1"],ionHttp);
+            foreach(var (id,name) in new[]{("11","Buildings"),("12","Imagery"),("13","Vector")})await CesiumControl.Command(db,["add",id,name],ionHttp);
+            await CesiumControl.Command(db,["status"],ionHttp);await CesiumControl.Command(db,["list"],ionHttp);
+            Assert(!captured.ToString().Contains(MasterToken),"CLI leaked the primary token");
+            var before=db.Cesium()!;
+            ionHandler.Status=HttpStatusCode.Forbidden;
+            try{await CesiumControl.Command(db,["add","14"],ionHttp);throw new Exception("Forbidden asset added");}catch(IOException e){Assert(!e.Message.Contains(MasterToken),"API error leaked primary token");}
+            ionHandler.Status=HttpStatusCode.OK;ionHandler.Leak=true;
+            try{await CesiumControl.Command(db,["add","14"],ionHttp);throw new Exception("Primary token response accepted");}catch(IOException){}
+            ionHandler.Leak=false;Assert(db.Cesium()!.Id==before.Id,"Failed API request modified configuration");
+            using var replica=new Store(Path.Combine(folder,"ion-replica.db"));var replicaService=new Service(replica,cert);
+            var sync=(Message)typeof(Service).GetMethod("Sync",BindingFlags.NonPublic|BindingFlags.Instance)!.Invoke(new Service(db,cert),null)!;
+            typeof(Service).GetMethod("Merge",BindingFlags.NonPublic|BindingFlags.Instance)!.Invoke(replicaService,[JsonSerializer.Deserialize<Message>(JsonSerializer.Serialize(sync,App.Json),App.Json)!]);
+            Assert(replica.Cesium()?.Token==MasterToken&&replica.Cesium()!.Assets.Length==5,"Cluster did not replicate ion configuration");
+            replica.Set("self",self);
+            await CesiumControl.Command(replica,["token","clear"],ionHttp);replica.PutCesium(before);
+            Assert(replica.Cesium()!.Token.Length==0,"Stale gossip resurrected a removed token");
+        }
+        finally{Console.SetOut(originalOut);}
+        var panel=new WebPanel(db,cert,0,ionHttp);await panel.Refresh();
         using var client=new HttpClient(new HttpClientHandler{ServerCertificateCustomValidationCallback=(_,_,_,_)=>true}){BaseAddress=new Uri("https://127.0.0.1:"+panel.ListeningPort)};
         try
         {
             Assert((await client.GetAsync("/api/state")).StatusCode==HttpStatusCode.Unauthorized,"Web authentication bypassed");
             Assert((await client.GetAsync("/api/imagery/nasa/0/0/0.jpg")).StatusCode==HttpStatusCode.Unauthorized,"Tile proxy bypassed authentication");
+            Assert((await client.GetAsync("/api/cesium/ion/v1/assets/11/endpoint")).StatusCode==HttpStatusCode.Unauthorized,"Ion endpoint bypassed authentication");
             client.DefaultRequestHeaders.Authorization=new AuthenticationHeaderValue("Basic",Convert.ToBase64String(Encoding.UTF8.GetBytes("admin:web-test-password")));
             var state=await client.GetFromJsonAsync<JsonElement>("/api/state");var csrf=state.GetProperty("csrfToken").GetString()!;
+            Assert(state.GetProperty("cesium").GetProperty("configured").GetBoolean()&&!state.GetRawText().Contains(MasterToken),"State leaked master token");
+            Assert((await client.GetAsync("/api/cesium/ion/v1/assets/1/endpoint")).StatusCode==HttpStatusCode.NotFound,"Disabled ion asset was accessible");
+            Assert((await client.GetAsync("/api/cesium/ion/v1/assets/999/endpoint")).StatusCode==HttpStatusCode.NotFound,"Unregistered ion asset was accessible");
+            var ion=await client.GetStringAsync("/api/cesium/ion/v1/assets/11/endpoint");
+            Assert(ion.Contains("temporary-asset-only-key")&&!ion.Contains(MasterToken),"Asset endpoint leaked primary token");
+            await CesiumControl.Command(db,["token","clear"],ionHttp);
+            Assert((await client.GetAsync("/api/cesium/ion/v1/assets/11/endpoint")).StatusCode==HttpStatusCode.NotFound,"Removed token still served asset keys");
+            await CesiumControl.Command(db,["token",MasterToken],ionHttp);
             Assert(state.GetProperty("nodes")[0].TryGetProperty("location",out _),"State omitted locations");
             Assert((await client.GetAsync("/assets/cesium/Cesium.js")).Content.Headers.ContentType?.MediaType=="text/javascript","Cesium asset unavailable");
             Assert((await client.GetAsync("/assets/cesium/Assets/Textures/NaturalEarthII/tilemapresource.xml")).IsSuccessStatusCode,"Offline base map missing");
@@ -117,6 +172,7 @@ static class WebChecks
             Assert(await reader.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(5)) is null,"SSE retained access after web credential configuration changed");
             if(args.Contains("--serve"))
             {
+                await CesiumControl.Command(db,["enable","1"],ionHttp);
                 Console.WriteLine("BROWSER_URL=https://127.0.0.1:"+panel.ListeningPort);
                 for(var i=0;i<180;i++)
                 {

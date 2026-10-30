@@ -28,7 +28,7 @@ record Message(string Type, string? Id = null, string? Name = null, string? Ip =
     string? Host = null, double? PingMs = null, bool Interactive = false,
     string? RequestId = null, long Deadline = 0, string[][]? Routes = null, PingReport[]? Links = null,
     NodeInterface[]? Interfaces = null, string? OutAddress = null, string? OutInterface = null, string? Platform = null, bool BehindNat = false,
-    VpnServer[]? VpnServers = null, VpnClient[]? VpnClients = null, string? VpnPayload = null, int ProbeCount = 0);
+    VpnServer[]? VpnServers = null, VpnClient[]? VpnClients = null, string? VpnPayload = null, int ProbeCount = 0, CesiumConfig? Cesium = null);
 
 static class App
 {
@@ -84,6 +84,7 @@ static class App
             switch (a)
             {
                 case ["vpn", .. var vpnArgs]: await VpnControl.Command(db,cert,vpnArgs);break;
+                case ["cesium", .. var cesiumArgs]:await CesiumControl.Command(db,cesiumArgs);break;
                 case ["install", "-r", var remoteHost]: return await Management.Remote(db, cert, remoteHost);
                 case ["serve"]:
                     if (OperatingSystem.IsWindows() && !Environment.UserInteractive) WindowsServiceHost.Run(db,cert);
@@ -271,7 +272,7 @@ static class App
     {
         var self = db.Self()!;
         var message = new Message("sync", self.Id, Nodes: db.Nodes().ToArray(),
-            Rules: db.Rules().ToArray(), Update: db.Update(), Pings: db.Pings().ToArray(), Web: db.Web());
+            Rules: db.Rules().ToArray(), Update: db.Update(), Pings: db.Pings().ToArray(), Web: db.Web(),Cesium:db.Cesium());
         var peers = db.Nodes().Where(x => !x.Removed && x.Id != self.Id).ToArray();
         var routing = new RouteTransport(db, cert);
         var results = await Task.WhenAll(peers.Select(async node =>
@@ -336,6 +337,7 @@ static class App
         foreach (var r in reply.Rules ?? []) db.Put(r);
         if (reply.Update is not null) db.PutUpdate(reply.Update);
         if (reply.Web is not null) db.PutWeb(reply.Web);
+        if (reply.Cesium is not null) db.PutCesium(reply.Cesium);
         Console.WriteLine("Присоединён к кластеру. ID: " + Certificate.Id(cert));
     }
 

@@ -125,6 +125,22 @@ sealed class Store : IDisposable
         var json = Get("web_config");
         return json is null ? null : JsonSerializer.Deserialize<WebConfig>(json, App.Json);
     }
+    public CesiumConfig? Cesium()=>JsonSerializer.Deserialize<CesiumConfig>(Get("cesium_config")??"null",App.Json);
+    public void ChangeCesium(Func<CesiumConfig?,CesiumConfig?> change)
+    {
+        using var c=Open();using var tx=c.BeginTransaction(deferred:false);
+        using var read=c.CreateCommand();read.Transaction=tx;read.CommandText="SELECT v FROM meta WHERE k='cesium_config'";
+        var old=JsonSerializer.Deserialize<CesiumConfig>(read.ExecuteScalar() as string??"null",App.Json);var value=change(old);
+        if(value is null)return;
+        if(!CesiumControl.Valid(value))throw new ArgumentException("Некорректная конфигурация Cesium.");
+        using var write=c.CreateCommand();write.Transaction=tx;write.CommandText="INSERT INTO meta(k,v) VALUES('cesium_config',$value) ON CONFLICT(k) DO UPDATE SET v=excluded.v";
+        write.Parameters.AddWithValue("$value",JsonSerializer.Serialize(value,App.Json));write.ExecuteNonQuery();tx.Commit();
+    }
+    public void PutCesium(CesiumConfig value)
+    {
+        if(!CesiumControl.Valid(value))return;
+        ChangeCesium(old=>old is not null&&(old.Version>value.Version||old.Version==value.Version&&string.CompareOrdinal(old.Id,value.Id)>=0)?null:value);
+    }
     public void PutWeb(WebConfig config)
     {
         if (config.Id.Length != 32 || !config.Id.All(Uri.IsHexDigit) ||

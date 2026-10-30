@@ -189,6 +189,52 @@ The network map is a full-window CesiumJS globe. The menu button in the upper le
 
 The **Границы и названия** overlay adds locally bundled Natural Earth country outlines, Russian country names and major-city/capital labels on either surface. It works offline and is enabled initially; its toggle is saved in the browser. Zoom and label collision filtering keep the globe readable, with PNT node names and ping labels taking priority. Successful surface loading does not show a technical status or zoom-limit caption in the sidebar.
 
+### Cesium ion datasets
+
+Configure ion from the CLI on any cluster member:
+
+```sh
+pnt cesium token                    # Hidden token entry
+pnt cesium add 1 "Рельеф"             # Asset ID from your Cesium ion account
+pnt cesium add 96188 "Здания"         # Cesium OSM Buildings, if available to your token
+pnt cesium list
+pnt cesium status
+pnt cesium disable 96188
+pnt cesium enable 96188
+pnt cesium remove 96188
+pnt cesium token clear              # Clear token, keep dataset definitions
+```
+
+`pnt cesium token <token>` is also supported. Use hidden entry to avoid putting the
+credential in shell history. `add <ID> [name]` checks access to the asset and detects
+its type through the ion endpoint API. Supported types are terrain, imagery,
+3D Tiles, GeoJSON, CZML and KML. Only one terrain dataset can be enabled; enabling
+another terrain automatically disables the previous one. Imagery layers follow
+the configured order above the local/NASA base map. 3D and vector datasets have
+a **Показать** button in the sidebar. Changes apply through the panel's live state
+stream without reloading or moving the camera automatically.
+
+The token and dataset definitions are stored in the protected local PNT database
+and synchronized over authenticated cluster connections, including enrollment.
+Update all members to support this setting. The primary token is omitted from
+CLI status/list output, HTML and web state. The authenticated
+`/api/cesium/ion/v1/assets/<ID>/endpoint` endpoint permits only configured, enabled
+assets. It exchanges the stored primary token for ion's asset-specific access
+information. CesiumJS then downloads asset content directly from its provider
+using the asset access keys and handles their renewal through PNT. These asset
+keys are visible to authenticated panel users; the primary account token is not.
+This also supports ion's external imagery providers and preserves their credits.
+
+Use a token with `assets:read` access to the selected assets. It does not need
+account-wide write permissions. The assets must be available in your ion account
+and token restrictions must permit server-side endpoint requests. Native content
+requires internet access from the browser, and the hosting PNT node must reach
+`api.cesium.com`. Provider quotas and entitlements still apply. Without a token,
+or after it is cleared, ion datasets are unloaded and the ordinary globe remains
+usable. Clearing the token does not delete assets from the ion account.
+
+### Геолокация и управление узлами
+
 IP geolocation is resolved in the background through [ipwho.is](https://ipwhois.io/documentation) over HTTPS and cached for seven days; failed lookups retry after an hour. Public node IPs are queried explicitly. A node with a private address determines its own public egress location, then synchronizes it through the cluster. Private addresses belonging to other nodes are never submitted as public IPs. IP geolocation is approximate. Unknown locations remain in the sidebar instead of appearing at invented coordinates. Right-click a node and choose **Геолокация**, use its properties, or select an unlocated node in the sidebar to set latitude/longitude manually. Manual coordinates are stored in the node's local database and synchronized through normal membership updates, take priority over automatic lookup, and can be reset with **По IP**. All nodes should be updated to preserve and exchange location fields.
 
 The **Пробросы портов** tab can create and delete TCP rules. Select ingress node, interface/IPv4 address and listening port, then exit node, outgoing interface/IPv4 address, destination IPv4 and destination port. Interface lists are fetched from the selected nodes over their PNT routes. A rule is saved locally and applied as cluster synchronization reaches its ingress and exit nodes. Both nodes need a version supporting interface selection.

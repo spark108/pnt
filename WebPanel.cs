@@ -13,7 +13,7 @@ namespace Pnt;
 
 record RenameNode(string? Name);
 
-sealed class WebPanel(Store db, X509Certificate2 cert,int listenPort=8016)
+sealed class WebPanel(Store db, X509Certificate2 cert,int listenPort=8016,HttpClient? ionClient=null)
 {
     public const int Port = 8016;
     internal int ListeningPort {get;private set;}
@@ -86,6 +86,19 @@ sealed class WebPanel(Store db, X509Certificate2 cert,int listenPort=8016)
         server.MapGet("/", () => Results.Content(html, "text/html; charset=utf-8"));
         server.MapGet("/assets/cesium/{**path}",WebAssets.Cesium);
         server.MapGet("/assets/geography.json",WebAssets.Geography);
+        server.MapGet("/api/cesium/ion/v1/assets/{asset:long}/endpoint",async (long asset,HttpContext context)=>
+        {
+            var config=db.Cesium();
+            if(string.IsNullOrEmpty(config?.Token)||!config.Assets.Any(a=>a.Id==asset&&a.Enabled))
+                return Results.NotFound(new{error="Датасет Cesium не подключён или выключен."});
+            try
+            {
+                var endpoint=await new CesiumIonApi(ionClient).Endpoint(asset,config.Token,context.RequestAborted);
+                if(db.Cesium()?.Id!=config.Id)return Results.Json(new{error="Настройка Cesium изменилась. Повторите запрос."},statusCode:409);
+                return Results.Json(endpoint);
+            }
+            catch(IOException e){return Results.Json(new{error=e.Message},statusCode:502);}
+        });
         server.MapGet("/api/imagery/nasa/{z:int}/{y:int}/{x:int}.jpg",imagery.Tile);
         server.MapGet("/api/state", () => Results.Json(State()));
         server.MapGet("/api/events",async (HttpContext context)=>
@@ -184,7 +197,7 @@ sealed class WebPanel(Store db, X509Certificate2 cert,int listenPort=8016)
         self=db.Get("self"),csrfToken,
         nodes=db.Nodes().Where(x=>!x.Removed).Select(x=>new{x.Id,x.Name,x.Ip,x.Updating,x.UpdatingSince,x.BehindNat,x.Platform,location=geolocations.Get(x)}),
         pings=db.Pings(),links=db.Links().Where(p=>p.Updated>App.Now-30_000),
-        routes=db.Nodes().Where(x=>!x.Removed).SelectMany(x=>db.Routes(x.Id)),rules=db.Rules().Where(x=>!x.Removed),time=App.Now
+        routes=db.Nodes().Where(x=>!x.Removed).SelectMany(x=>db.Routes(x.Id)),rules=db.Rules().Where(x=>!x.Removed),time=App.Now,cesium=CesiumControl.Public(db.Cesium())
     };
 
     X509Certificate2 LoadWebCertificate()

@@ -50,7 +50,7 @@ static class Enrollment
             member=db.Nodes().FirstOrDefault(n=>n.Id==request.Id&&!n.Removed);
         }
         if(member is null)return;
-        await Peer.Send(peer.Stream,new Message("welcome",Certificate.Id(cert),Host:db.Get("cluster"),KeyHash:db.Get("key_hash"),Nodes:db.Nodes().ToArray(),Rules:db.Rules().ToArray(),Web:db.Web(),Update:db.Update()));
+        await Peer.Send(peer.Stream,new Message("welcome",Certificate.Id(cert),Host:db.Get("cluster"),KeyHash:db.Get("key_hash"),Nodes:db.Nodes().ToArray(),Rules:db.Rules().ToArray(),Web:db.Web(),Update:db.Update(),Cesium:db.Cesium()));
         var mux=await Peer.Read(peer.Stream).WaitAsync(TimeSpan.FromSeconds(10),token);
         if(mux?.Type=="mux" && mux.Id==member.Id)await MultiplexPool.Accept(peer,Certificate.Id(cert),true);
     }
@@ -77,6 +77,7 @@ static class Enrollment
         foreach(var n in reply.Nodes)db.Put(n);
         foreach(var rule in reply.Rules??[])db.Put(rule);
         if(reply.Web is not null)db.PutWeb(reply.Web);
+        if(reply.Cesium is not null)db.PutCesium(reply.Cesium);
         if(reply.Update is not null){db.PutUpdate(reply.Update);db.Set("update_applied",reply.Update.Id);}
         db.Set("cluster",reply.Host);
         Console.WriteLine("pnt: joined cluster through outbound channel to "+host);

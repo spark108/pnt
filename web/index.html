@@ -22,7 +22,7 @@ label{display:block;font-size:12px;color:#a6b5d0;margin:14px 0 6px}select,input{
 #node-menu{position:fixed;z-index:10;min-width:180px;padding:6px;background:#18233a;border:1px solid #526482;border-radius:10px;box-shadow:0 8px 30px #0008}#node-menu button{display:block;width:100%;text-align:left;border:0;background:transparent;color:#e9eefb;padding:10px;font:inherit;cursor:pointer;border-radius:6px}#node-menu button:hover,#node-menu button:focus{background:#254a69}.node:focus circle{stroke:#fff;stroke-width:4}dialog{width:min(620px,calc(100% - 32px));max-height:85vh;overflow:auto;padding:24px;border:1px solid #526482;border-radius:16px;background:#111a2d;color:#e9eefb}dialog::backdrop{background:#02050ebd}dialog h2{margin-bottom:16px}dialog dl{display:grid;grid-template-columns:100px minmax(0,1fr);gap:12px}dialog dt{color:#a6b5d0}dialog dd{margin:0;overflow-wrap:anywhere}.dialog-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:20px}#property-routes{padding-left:20px;overflow-wrap:anywhere}#property-routes li{padding:7px 0}.node-tools{margin-top:12px}
 </style>
 <style>
-body{overflow:hidden}#graph{position:fixed;inset:0;width:100vw;height:100dvh;min-height:0;border-radius:0}#drawer-toggle{position:fixed;left:16px;top:16px;z-index:25;width:46px;height:46px;padding:0;font-size:23px;background:#111a2ded;box-shadow:0 4px 20px #0005}.drawer{position:fixed;inset:0 auto 0 0;z-index:20;width:400px;max-width:calc(100vw - 24px);padding:78px 22px 24px;background:#111a2df5;border-right:1px solid #344563;box-shadow:8px 0 40px #0005;overflow-y:auto;transform:translateX(-100%);visibility:hidden;transition:transform .2s,visibility .2s}.drawer.open{transform:translateX(0);visibility:visible}.drawer-brand{position:absolute;top:20px;left:82px;font-size:24px;font-weight:800;letter-spacing:.1em}.drawer-brand span{color:#67e8c4}.drawer .tabs{margin-top:20px;flex-wrap:wrap}.drawer .card{border:0;box-shadow:none;background:transparent;border-radius:0}.drawer .panel-head{padding:12px 0}.drawer .panel-body{padding:14px 0}.drawer .forward-config{grid-template-columns:1fr}.drawer .forward{grid-template-columns:1fr}.drawer .arrow{transform:rotate(90deg);text-align:center}.drawer .forward-list{padding:12px 0}.drawer .node-tools{flex-wrap:wrap}#globe-status{padding:18px 0 0}#unlocated{padding:8px 0}.drawer .top{display:none}.map-overlay-toggle{display:flex;align-items:center;gap:9px;font-size:14px;color:#dce7fa}.map-overlay-toggle input{width:auto;accent-color:#67e8c4}#surface-status:empty,#geography-status:empty{display:none}#node-menu{z-index:40}#node-notice{position:fixed;bottom:20px;left:76px;right:20px;margin:0;pointer-events:none;text-shadow:0 1px 4px #000;padding:0!important}#node-notice:empty{display:none}@media(prefers-reduced-motion:reduce){.drawer{transition:none}}
+body{overflow:hidden}#graph{position:fixed;inset:0;width:100vw;height:100dvh;min-height:0;border-radius:0}#drawer-toggle{position:fixed;left:16px;top:16px;z-index:25;width:46px;height:46px;padding:0;font-size:23px;background:#111a2ded;box-shadow:0 4px 20px #0005}.drawer{position:fixed;inset:0 auto 0 0;z-index:20;width:400px;max-width:calc(100vw - 24px);padding:78px 22px 24px;background:#111a2df5;border-right:1px solid #344563;box-shadow:8px 0 40px #0005;overflow-y:auto;transform:translateX(-100%);visibility:hidden;transition:transform .2s,visibility .2s}.drawer.open{transform:translateX(0);visibility:visible}.drawer-brand{position:absolute;top:20px;left:82px;font-size:24px;font-weight:800;letter-spacing:.1em}.drawer-brand span{color:#67e8c4}.drawer .tabs{margin-top:20px;flex-wrap:wrap}.drawer .card{border:0;box-shadow:none;background:transparent;border-radius:0}.drawer .panel-head{padding:12px 0}.drawer .panel-body{padding:14px 0}.drawer .forward-config{grid-template-columns:1fr}.drawer .forward{grid-template-columns:1fr}.drawer .arrow{transform:rotate(90deg);text-align:center}.drawer .forward-list{padding:12px 0}.drawer .node-tools{flex-wrap:wrap}#globe-status{padding:18px 0 0}#unlocated{padding:8px 0}.drawer .top{display:none}#cesium-assets{max-height:260px;overflow-y:auto}.ion-asset{padding:10px 0;border-bottom:1px solid #25314a}.ion-asset b{display:block;color:#dce7fa;overflow-wrap:anywhere}.ion-asset button{margin-top:6px;padding:5px 10px}.map-overlay-toggle{display:flex;align-items:center;gap:9px;font-size:14px;color:#dce7fa}.map-overlay-toggle input{width:auto;accent-color:#67e8c4}#surface-status:empty,#geography-status:empty{display:none}#node-menu{z-index:40}#node-notice{position:fixed;bottom:20px;left:76px;right:20px;margin:0;pointer-events:none;text-shadow:0 1px 4px #000;padding:0!important}#node-notice:empty{display:none}@media(prefers-reduced-motion:reduce){.drawer{transition:none}}
 </style>
 </head>
 <body>
@@ -31,6 +31,7 @@ body{overflow:hidden}#graph{position:fixed;inset:0;width:100vw;height:100dvh;min
 <aside id="drawer" class="drawer" aria-label="Управление кластером" inert>
 <div class="drawer-brand">PNT <span>●</span></div><div class="small" id="summary"></div><p class="small" id="updated">Загрузка…</p>
 <label for="map-surface">Поверхность</label><select id="map-surface"><option value="nasa">NASA Blue Marble · подробно</option><option value="local">Встроенная карта · без интернета</option></select><p id="surface-status" class="small"></p><label class="map-overlay-toggle"><input id="map-geography" type="checkbox" checked> Границы и названия</label><p id="geography-status" class="small" role="status"></p>
+<div id="cesium-panel"><h2 style="margin-top:20px">Cesium ion</h2><div id="cesium-assets" class="small"></div></div>
 <div class="tabs"><button id="tab-graph" class="active">Маршруты</button><button id="tab-forward">Пробросы портов</button></div>
 <section id="section-graph"><div class="card"><div class="panel-head"><h2>Построить маршрут</h2></div><div class="panel-body">
 <label for="from">Сервер А</label><select id="from"></select>
@@ -70,6 +71,7 @@ body{overflow:hidden}#graph{position:fixed;inset:0;width:100vw;height:100dvh;min
 const $=id=>document.getElementById(id);
 let state={nodes:[],pings:[],links:[],rules:[]},from='',to='',via=[],pickTarget=false;
 let receivedAt=Date.now(),viewer=null,firstView=true,satelliteLayer=null;
+let ionRevision=null,ionGeneration=0;const ionLayers=new Map();
 let geographicLayer=null,geographicLabels=[];try{$('map-geography').checked=localStorage.getItem('pnt.mapGeography')!=='off'}catch{}
 let surfaceChoice='nasa';try{surfaceChoice=localStorage.getItem('pnt.mapSurface')||'nasa'}catch{}
 $('map-surface').value=surfaceChoice==='local'?'local':'nasa';
@@ -112,24 +114,67 @@ async function initGlobe(){try{
  viewer.canvas.addEventListener('contextmenu',event=>event.preventDefault());
  viewer.screenSpaceEventHandler.setInputAction(event=>{const id=idAt(event.position);if(id){const box=viewer.canvas.getBoundingClientRect();openNodeMenu({preventDefault(){},stopPropagation(){},clientX:box.left+event.position.x,clientY:box.top+event.position.y},id)}},Cesium.ScreenSpaceEventType.RIGHT_CLICK);
  const imagery=await Cesium.TileMapServiceImageryProvider.fromUrl('/assets/cesium/Assets/Textures/NaturalEarthII/',{maximumLevel:2});
- viewer.imageryLayers.addImageryProvider(imagery);applySurface();loadGeography();render();
+ viewer.imageryLayers.addImageryProvider(imagery);applySurface();loadGeography();syncCesium();render();
  }catch(e){$('globe-status').textContent='Глобус недоступен: '+e.message;$('globe-status').className='error';console.error(e)}}
 function applySurface(){
  if(!viewer)return;
  if(satelliteLayer){viewer.imageryLayers.remove(satelliteLayer,true);satelliteLayer=null}
  const detailed=$('map-surface').value==='nasa';
- $('surface-status').textContent=detailed?'Загрузка снимков…':'';
+ $('surface-status').textContent='';
  if(detailed){
   const provider=new Cesium.UrlTemplateImageryProvider({url:'/api/imagery/nasa/{z}/{y}/{x}.jpg',maximumLevel:8,enablePickFeatures:false,credit:'NASA GIBS · Blue Marble'});
-  const layer=viewer.imageryLayers.addImageryProvider(provider);satelliteLayer=layer;
+  const layer=viewer.imageryLayers.addImageryProvider(provider,1);satelliteLayer=layer;
   const fallback=error=>{if(error)error.retry=false;if(satelliteLayer!==layer)return;clearTimeout(timeout);satelliteLayer=null;setTimeout(()=>{if(viewer.imageryLayers.contains(layer))viewer.imageryLayers.remove(layer,true);viewer.scene.requestRender()},0);$('surface-status').textContent='NASA недоступен — используется встроенная карта.'};
-  let failures=0;const timeout=setTimeout(()=>fallback(),20000),requestImage=provider.requestImage.bind(provider);
-  provider.requestImage=(...args)=>{const pending=requestImage(...args);if(pending)Promise.resolve(pending).then(()=>{clearTimeout(timeout);if(satelliteLayer===layer)$('surface-status').textContent=''},()=>{});return pending};
+  let failures=0,timeout=null,requested=false;const requestImage=provider.requestImage.bind(provider);
+  provider.requestImage=(...args)=>{const pending=requestImage(...args);if(pending){if(!requested){requested=true;timeout=setTimeout(()=>fallback(),20000);if(satelliteLayer===layer)$('surface-status').textContent='Загрузка снимков…'}Promise.resolve(pending).then(()=>{clearTimeout(timeout);if(satelliteLayer===layer)$('surface-status').textContent=''},()=>{})}return pending};
   provider.errorEvent.addEventListener(error=>{if(satelliteLayer!==layer)return;error.retry=(error.timesRetried??0)<1;if(++failures>=4)fallback(error)});
  }
  viewer.scene.requestRender();
 }
 $('map-surface').onchange=()=>{try{localStorage.setItem('pnt.mapSurface',$('map-surface').value)}catch{}applySurface()};
+function ionList(){
+ const root=$('cesium-assets');root.replaceChildren();const config=state.cesium;
+ if(!config?.assets?.length){root.textContent='Нет подключённых датасетов';return}
+ for(const asset of config.assets){const row=document.createElement('div');row.className='ion-asset';const title=document.createElement('b');title.textContent=asset.name;const info=document.createElement('div');info.textContent=asset.id+' · '+asset.type;const item=ionLayers.get(asset.id),status=document.createElement('div');status.textContent=!asset.enabled?'Выключен':!config.configured?'Токен не задан':item?.error?'Ошибка загрузки':item?.object?'Подключён':'Загрузка…';status.className=item?.error?'error':item?.object?'notice':'small';row.append(title,info,status);
+  if(item?.object&&['tiles','data'].includes(item.kind)){const button=document.createElement('button');button.className='button';button.textContent='Показать';button.onclick=()=>viewer.flyTo(item.object,{duration:1});row.append(button)}root.append(row);
+ }
+}
+function releaseIon(item){
+ if(!viewer||!item?.object)return;const object=item.object;
+ if(item.kind==='imagery')viewer.imageryLayers.remove(object,true);
+ else if(item.kind==='tiles'){if(!viewer.scene.primitives.remove(object)&&!object.isDestroyed())object.destroy()}
+ else if(item.kind==='data')viewer.dataSources.remove(object,true);
+ else if(item.kind==='terrain'&&viewer.terrainProvider===object)viewer.terrainProvider=new Cesium.EllipsoidTerrainProvider();
+ for(const credit of item.credits||[])viewer.creditDisplay.removeStaticCredit(credit);
+}
+function syncCesium(){
+ if(!viewer)return;const config=state.cesium||{revision:'',configured:false,assets:[]};if(ionRevision===config.revision)return;ionRevision=config.revision;const generation=++ionGeneration;
+ for(const item of ionLayers.values())releaseIon(item);ionLayers.clear();
+ if(config.configured)for(const asset of config.assets.filter(a=>a.enabled)){const item={};ionLayers.set(asset.id,item);loadIon(asset,item,generation)}ionList();viewer.scene.requestRender();
+}
+async function loadIon(asset,item,generation){
+ try{
+  const options={server:location.origin+'/api/cesium/ion/?revision='+encodeURIComponent(ionRevision),accessToken:''};let resource,object,kind;
+  if(asset.type==='IMAGERY'){const provider=await Cesium.IonImageryProvider.fromAssetId(asset.id,options);object=new Cesium.ImageryLayer(provider);kind='imagery'}
+  else {
+   resource=await Cesium.IonResource.fromAssetId(asset.id,options);
+   if(asset.type==='TERRAIN'){object=await Cesium.CesiumTerrainProvider.fromUrl(resource,{requestVertexNormals:true});kind='terrain'}
+   else if(asset.type==='3DTILES'){object=await Cesium.Cesium3DTileset.fromUrl(resource,{maximumScreenSpaceError:24});kind='tiles'}
+   else if(asset.type==='GEOJSON'){object=await Cesium.GeoJsonDataSource.load(resource);kind='data'}
+   else if(asset.type==='CZML'){object=await Cesium.CzmlDataSource.load(resource);kind='data'}
+   else if(asset.type==='KML'){object=await Cesium.KmlDataSource.load(resource,{camera:viewer.camera,canvas:viewer.canvas});kind='data'}
+   else throw Error('Unsupported asset type');
+  }
+  if(generation!==ionGeneration){if(typeof object.destroy==='function'&&!object.isDestroyed?.())object.destroy();return}
+  item.object=object;item.kind=kind;
+  if(kind==='imagery'){viewer.imageryLayers.add(object);for(const a of state.cesium.assets){const layer=ionLayers.get(a.id);if(layer?.kind==='imagery')viewer.imageryLayers.raiseToTop(layer.object)}}
+  else if(kind==='tiles')viewer.scene.primitives.add(object);
+  else if(kind==='terrain')viewer.terrainProvider=object;
+  else {object.name=asset.name;await viewer.dataSources.add(object);if(generation!==ionGeneration){viewer.dataSources.remove(object,true);return}}
+  if(resource?.credits){item.credits=resource.credits;for(const credit of item.credits)viewer.creditDisplay.addStaticCredit(credit)}
+ }catch(e){if(generation!==ionGeneration)return;releaseIon(item);item.object=null;item.error=true;console.error('Cesium asset '+asset.id+': load failed')}
+ if(generation===ionGeneration){ionList();viewer.scene.requestRender()}
+}
 async function loadGeography(){try{
  const response=await fetch('/assets/geography.json');if(!response.ok)throw Error('HTTP '+response.status);const data=await response.json();
  geographicLayer=new Cesium.CustomDataSource('geography');geographicLayer.show=$('map-geography').checked;
@@ -226,7 +271,7 @@ for(const side of ['in','out'])$('forward-'+side+'-node').onchange=()=>loadInter
 function forwards(){const root=$('forwards');root.replaceChildren();$('forward-count').textContent=`${state.rules.length} правил`;if(!state.rules.length){const e=document.createElement('div');e.className='empty';e.textContent='Пробросов пока нет';root.append(e);return}
  for(const r of state.rules){const card=document.createElement('div');card.className='forward';const exit=r.via||node(r.to)?.id||'';const points=[['Вход',`${name(r.in)}:${r.inPort}`,`${r.inInterface||'Все интерфейсы'} · ${r.inAddress||'0.0.0.0'}`],['Выход',exit?name(exit):'Автоматически',r.outInterface?`${r.outInterface} · ${r.outAddress}`:'Системный маршрут'],['Назначение',`${name(r.to)}:${r.toPort}`,'TCP']];points.forEach(([kind,value,detail],i)=>{if(i){const arrow=document.createElement('span');arrow.className='arrow';arrow.textContent='→';card.append(arrow)}const p=document.createElement('div');p.className='point';const s=document.createElement('small');s.textContent=kind;const b=document.createElement('b');b.textContent=value;const d=document.createElement('div');d.className='detail';d.textContent=detail;p.append(s,b,d);card.append(p)});
  const remove=document.createElement('button');remove.className='button';remove.textContent='Удалить';remove.onclick=async()=>{remove.disabled=true;try{await mutateForward('/api/forwards/'+encodeURIComponent(r.id),'DELETE');await refresh();forwardStatus('Удаление распространяется по кластеру.')}catch(e){forwardStatus(e.message,true);remove.disabled=false}};card.append(remove);card.title=`Правило ${r.id} · TCP`;root.append(card)}}
-function applyState(data){state=data;receivedAt=Date.now();controls();render();forwardControls();forwards();if($('properties-dialog').open)updateProperties();$('summary').textContent=`${state.nodes.length} узлов · ${state.rules.length} пробросов`;$('updated').textContent=`Обновлено ${new Date().toLocaleTimeString('ru-RU')}`}
+function applyState(data){state=data;receivedAt=Date.now();controls();syncCesium();render();forwardControls();forwards();if($('properties-dialog').open)updateProperties();$('summary').textContent=`${state.nodes.length} узлов · ${state.rules.length} пробросов`;$('updated').textContent=`Обновлено ${new Date().toLocaleTimeString('ru-RU')}`}
 async function refresh(){try{const response=await fetch('/api/state',{cache:'no-store'});if(!response.ok)throw Error(`HTTP ${response.status}`);applyState(await response.json())}catch(e){$('updated').textContent='Нет связи с панелью';console.error(e)}}
 $('from').onchange=e=>{from=e.target.value;pickTarget=false;controls();render()};$('to').onchange=e=>{to=e.target.value;pickTarget=false;controls();render()};$('add-transit').onclick=()=>{const id=$('transit').value;if(id&&!via.includes(id)&&id!==from&&id!==to){via.push(id);controls();render()}};
 for(const tab of ['graph','forward'])$('tab-'+tab).onclick=()=>{for(const t of ['graph','forward']){$('tab-'+t).classList.toggle('active',t===tab);$('section-'+t).classList.toggle('hidden',t!==tab)}if(tab==='graph')render()};
