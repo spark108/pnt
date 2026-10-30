@@ -20,6 +20,7 @@ static class ExternalPing
         Console.WriteLine($"Пинг {host} с {nodes.Length} узлов кластера...");
         var routing = new RouteTransport(db, cert);
         var results = await Task.WhenAll(nodes.Select(node => Query(db, cert, self, node, host, routing: routing)));
+        var rows=new List<CliCell[]>();
         foreach (var result in results)
         {
             var route = FormatRelay(db, result.Route);
@@ -27,8 +28,9 @@ static class ExternalPing
             var value = measurement.Ms is double ms
                 ? $"{ms:0.0} ms до {measurement.Ip}{route}"
                 : $"{measurement.Error ?? "нет ответа"}{route}";
-            Console.WriteLine($"{result.Node.Id}  {result.Node.Name,-20} {result.Node.Ip,-16} {value}");
+            rows.Add([result.Node.Id,result.Node.Name,result.Node.Ip,new(value,measurement.Ms.HasValue?"green":"red")]);
         }
+        CliOutput.Table(["ID","Узел","IP узла","Пинг до цели / маршрут"],rows);
         var best = results.Where(x => x.Measurement.Ms.HasValue)
             .OrderBy(x => x.Measurement.Ms).FirstOrDefault();
         if (best is null)

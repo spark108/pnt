@@ -56,7 +56,8 @@ static class VpnControl
                 var server=FindServer(db,name);db.PutVpn(server with{Removed=true,Version=Math.Max(App.Now,server.Version+1)});
                 await ReconcileRemote(db,cert,server.Id);Console.WriteLine("Сервер удалён из каталога VPN.");break;
             case ["server","list"]:
-                foreach(var s in db.VpnServers().Where(s=>!s.Removed))Console.WriteLine($"{s.Id}  {db.Resolve(s.Id)?.Name}  {s.Name}");break;
+                CliOutput.Table(["ID","Узел","Название"],db.VpnServers().Where(s=>!s.Removed)
+                    .Select(s=>new CliCell[]{s.Id,db.Resolve(s.Id)?.Name??"—",s.Name}));break;
             case ["client","create",var name,"--servers",var servers,"--out",var output]:
                 if(string.IsNullOrWhiteSpace(name)||name.Length>64||name.Any(char.IsControl))throw new ArgumentException("Имя клиента: от 1 до 64 символов.");
                 if(db.VpnClients().Any(c=>!c.Removed&&c.Name.Equals(name,StringComparison.OrdinalIgnoreCase)))throw new ArgumentException("Имя клиента уже занято.");
@@ -96,11 +97,18 @@ static class VpnControl
             case ["client","handshake",var name,..var targets] when targets.Length<=1:
                 var requested=FindClient(db,name);
                 var ids=targets.Length==1?new[]{FindNode(db,targets[0]).Id}:requested.Servers;
+                var handshakeRows=new List<CliCell[]>();
                 foreach(var id in ids)
                 {
-                    try{var result=await Query(db,cert,id,new("stats",requested.Id,requested.Cert));var stats=JsonSerializer.Deserialize<VpnStatistics>(result,App.Json)!;Console.WriteLine($"{db.VpnServers().FirstOrDefault(s=>s.Id==id)?.Name??id}: "+(!stats.Exists?"профиль не создан":stats.Handshake==0?"рукопожатий не было":DateTimeOffset.FromUnixTimeSeconds(stats.Handshake).ToString("u"))+$"; получено {stats.Received} Б; отправлено {stats.Sent} Б");}
-                    catch(Exception e){Console.WriteLine($"{id}: недоступен ({e.Message})");}
+                    var serverName=db.VpnServers().FirstOrDefault(s=>s.Id==id)?.Name??id;
+                    try
+                    {
+                        var result=await Query(db,cert,id,new("stats",requested.Id,requested.Cert));var stats=JsonSerializer.Deserialize<VpnStatistics>(result,App.Json)!;
+                        handshakeRows.Add([serverName,new(!stats.Exists?"профиль не создан":stats.Handshake==0?"рукопожатий не было":DateTimeOffset.FromUnixTimeSeconds(stats.Handshake).ToString("u"),stats.Connected==true?"green":"grey"),$"{stats.Received} Б",$"{stats.Sent} Б"]);
+                    }
+                    catch(Exception e){handshakeRows.Add([serverName,new("недоступен: "+e.Message,"red"),"—","—"]);}
                 }
+                CliOutput.Table(["Сервер","Рукопожатие (UTC)","Принято","Отправлено"],handshakeRows);
                 break;
             default:throw new ArgumentException("Неверная команда. pnt vpn server install|list|remove; pnt vpn client create|list|show|allow|deny|revoke|handshake");
         }
@@ -124,12 +132,14 @@ static class VpnControl
             catch { }
             return (Id:id,Stats:stats);
         }));
+        var rows=new List<CliCell[]>();
         foreach(var client in clients)
         {
-            var state=client.Removed?"отключён  —":VpnConnections.Describe(reports.Where(r=>client.Servers.Contains(r.Id))
+            var state=client.Removed?(Status:"отключён",Mode:"—"):VpnConnections.Summary(reports.Where(r=>client.Servers.Contains(r.Id))
                 .Select(r=>r.Stats is null?null:r.Stats.GetValueOrDefault(client.Id)??new VpnStatistics(0,0,0,false,false)));
-            Console.WriteLine($"{client.Id}  {client.Name}  {(client.Removed?"отозван":"активен")}  {client.Servers.Length} серверов  {state}");
+            rows.Add([client.Id,client.Name,CliOutput.Status(client.Removed?"отозван":"активен"),client.Servers.Length.ToString(),CliOutput.Status(state.Status),CliOutput.Mode(state.Mode)]);
         }
+        CliOutput.Table(["ID","Имя","Доступ","Серверов","Состояние","Подключение"],rows);
     }
     static async Task ReconcileRemote(Store db,X509Certificate2 cert,string id)
     {

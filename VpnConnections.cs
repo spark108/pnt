@@ -17,7 +17,7 @@ static class VpnConnections
         var relay = connected && relays.Any(p => p.Key.Node == node && p.Key.Client == client && Environment.TickCount64 - p.Value <= 180_000);
         return stats with { Connected = connected, Mode = connected ? relay ? "relay" : "direct" : null };
     }
-    internal static string Describe(IEnumerable<VpnStatistics?> reports)
+    internal static (string Status,string Mode) Summary(IEnumerable<VpnStatistics?> reports)
     {
         var samples = reports.ToArray();
         var connected = samples.Where(s => s?.Connected == true).ToArray();
@@ -25,8 +25,8 @@ static class VpnConnections
         {
             var modes = connected.Select(s => s!.Mode).Distinct().ToArray();
             var mode = modes.Contains("relay") && modes.Contains("direct") ? "прямое, транспорт" : modes.Contains("relay") ? "транспорт" : "прямое";
-            return "подключён  " + mode;
+            return ("подключён",mode);
         }
-        return samples.Any(s => s is null || s.Connected is null) ? "неизвестно  —" : "отключён  —";
+        return (samples.Any(s => s is null || s.Connected is null) ? "неизвестно" : "отключён","—");
     }
 }

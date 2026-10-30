@@ -70,4 +70,26 @@ try
     Require(await CommandLine.Run(["vpn", "client"], _ => { throw new Exception("Group executed a command"); }) == 0, "Bare groups must show help");
 }
 finally { Console.SetOut(originalOutput); }
-Console.WriteLine($"PASS: {count} help pages, argument validation, option ordering, aliases, remote command passthrough.");
+using(var plain = new StringWriter())
+{
+    CliOutput.Table(["Имя","Статус"],[["узел[red]",CliOutput.Status("подключён")]],plain);
+    Require(plain.ToString().Contains("Имя\tСтатус")&&plain.ToString().Contains("узел[red]\tподключён"),"Plain table must preserve literal text and column delimiters");
+    Require(!plain.ToString().Contains('\u001b'),"Redirected table emitted terminal escapes");
+}
+Require(CliOutput.Clean("\u001b[31mname\u001b[0m\nnext\tx")=="name next x","Terminal controls in table data were not sanitized");
+using(var colored = new StringWriter())
+{
+    var console=Spectre.Console.AnsiConsole.Create(new Spectre.Console.AnsiConsoleSettings
+    {
+        Out=new Spectre.Console.AnsiConsoleOutput(colored),Ansi=Spectre.Console.AnsiSupport.Yes,
+        ColorSystem=Spectre.Console.ColorSystemSupport.TrueColor,Interactive=Spectre.Console.InteractionSupport.No
+    });
+    console.Profile.Width=80;console.Profile.Capabilities.Unicode=true;
+    CliOutput.Render(console,["Имя","Состояние","Подключение"],[["узел[red]literal[/]",CliOutput.Status("подключён"),CliOutput.Mode("транспорт")]]);
+    Require(colored.ToString().Contains("[red]literal[/]"),"User data was interpreted as console markup");
+    Require(colored.ToString().Contains('\u001b')&&colored.ToString().Contains('╭'),"Interactive table did not render colors and borders");
+    console.Profile.Width=28;
+    CliOutput.Render(console,["Имя","Статус"],[["节点 с длинным именем",CliOutput.Status("неизвестно")]]);
+    CliOutput.Render(console,["Пустая таблица"],[]);
+}
+Console.WriteLine($"PASS: {count} help pages, argument validation, aliases, remote passthrough, color tables, literal data, narrow terminals and plain redirected output.");

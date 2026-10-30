@@ -61,7 +61,7 @@ static class App
             LocalAccess.Demand();
             return await CommandLine.Run(a, Execute);
         }
-        catch (Exception e) { Console.Error.WriteLine("pnt: " + e.GetBaseException().Message); return 1; }
+        catch (Exception e) { CliOutput.Error("pnt: " + e.GetBaseException().Message); return 1; }
     }
 
     static async Task<int> Execute(string[] a)
@@ -96,7 +96,8 @@ static class App
                     db.Set("bootstrap_host",bootstrapIp.ToString());db.Set("bootstrap_name",Environment.MachineName);
                     db.Set("bootstrap_ip",OwnIp);Console.WriteLine("Заявка будет отправлена службой PNT. На действующем узле: pnt cluster requests, затем pnt cluster accept <id>. ID этого узла: "+me);break;
                 case ["cluster", "requests"]:
-                    Active(db);foreach(var request in Enrollment.Requests(db).Where(r=>r.Status=="pending"))Console.WriteLine($"{request.Id} {request.Name} {request.ObservedIp} {request.Platform} сертификат {request.Cert}");break;
+                    Active(db);CliOutput.Table(["ID","Имя","IP","Платформа","Сертификат"],Enrollment.Requests(db).Where(r=>r.Status=="pending")
+                        .Select(r=>new CliCell[]{r.Id,r.Name,r.ObservedIp,r.Platform,r.Cert}));break;
                 case ["cluster", "accept", var requestId]: Enrollment.Approve(db,requestId);Console.WriteLine("Заявка подтверждена.");break;
                 case ["cluster", "reject", var requestId]: Enrollment.Reject(db,requestId);Console.WriteLine("Заявка отклонена.");break;
                 case ["create", "cluster", var key]:
@@ -142,7 +143,8 @@ static class App
                 case ["cluster", "status"]:
                     Active(db); Console.WriteLine($"Кластер: {db.Get("cluster")}\nУзел: {me}\nIP: {db.Self()!.Ip}\nУзлов: {db.Nodes().Count(x => !x.Removed)}"); break;
                 case ["cluster", "invites"]:
-                    foreach (var i in db.Invites()) Console.WriteLine($"{i.Id} {i.Ip} {DateTimeOffset.FromUnixTimeMilliseconds(i.Expires):u} {(i.Used ? "использовано" : "активно")}"); break;
+                    CliOutput.Table(["ID","IP","Действует до (UTC)","Статус"],db.Invites().Select(i=>new CliCell[]{i.Id,i.Ip,
+                        DateTimeOffset.FromUnixTimeMilliseconds(i.Expires).ToString("u"),new(i.Used?"использовано":i.Expires<Now?"истекло":"активно",i.Used||i.Expires<Now?"grey":"green")}));break;
                 case ["cluster", "invite", "revoke", var id]: db.Revoke(id); break;
                 case ["cluster", "update", "announce", var commit]:
                     Active(db);
@@ -181,7 +183,8 @@ static class App
                     db.Put(db.Self()! with { Name = name, Version = Now }); break;
                 case ["forward", "add", .. var options]: AddRule(db, options); break;
                 case ["forward", "list"]:
-                    foreach (var r in db.Rules().Where(x => !x.Removed)) Console.WriteLine($"{r.Id} tcp {r.In}:{r.InPort} via {r.Via ?? "auto"} -> {r.To}:{r.ToPort}"); break;
+                    CliOutput.Table(["ID","Протокол","Вход","Через","Выход"],db.Rules().Where(r=>!r.Removed)
+                        .Select(r=>new CliCell[]{r.Id,"TCP",$"{db.Resolve(r.In)?.Name??r.In}:{r.InPort}",r.Via is null?"auto":db.Resolve(r.Via)?.Name??r.Via,$"{db.Resolve(r.To)?.Name??r.To}:{r.ToPort}"}));break;
                 case ["forward", "show", var id]:
                     Console.WriteLine(JsonSerializer.Serialize(db.Rules().FirstOrDefault(x => x.Id == id) ?? throw new Exception("Правило не найдено."), Json)); break;
                 case ["forward", "remove", var id]:
@@ -191,7 +194,7 @@ static class App
             }
             return 0;
         }
-        catch (Exception e) { Console.Error.WriteLine("pnt: " + e.GetBaseException().Message); return 1; }
+        catch (Exception e) { CliOutput.Error("pnt: " + e.GetBaseException().Message); return 1; }
     }
 
     static void Active(Store db)
@@ -204,6 +207,7 @@ static class App
         Active(db);
         var source = fromNode is null ? db.Self()! : db.Resolve(fromNode) ?? throw new Exception("Узел для измерения пинга не найден.");
         if (fromNode is not null) Console.WriteLine($"Пинг от узла {source.Name} ({source.Id}), измерения за последние 30 секунд:");
+        var rows = new List<CliCell[]>();
         foreach (var node in db.Nodes())
         {
             var ping = source.Id == node.Id ? new PingReport(source.Id, node.Id, 0, Now, true, [source.Id])
@@ -213,8 +217,9 @@ static class App
                 : ping is not null ? $"{ping.Ms:0.0} ms" + (ping.Direct ? "" :
                     ping.Route is { Length: > 2 } route ? " через " + string.Join(" → ", route.Skip(1).SkipLast(1).Select(x => db.Nodes().FirstOrDefault(n => n.Id == x)?.Name ?? x)) : " через другой узел")
                 : "нет связи";
-            Console.WriteLine($"{node.Id}  {node.Name,-20} {node.Ip,-16} {status}{(node.BehindNat ? " [NAT]" : "")}");
+            rows.Add([node.Id,node.Name,node.Ip,new(status,node.Removed||ping is null&&status!="update"?"red":status=="update"?"yellow":"green"),new(node.BehindNat?"NAT":"—",node.BehindNat?"cyan":"grey")]);
         }
+        CliOutput.Table(["ID","Имя","IP","Пинг / статус","NAT"],rows);
     }
 
     static void PrintRoutes(Store db, string? destination)
@@ -222,15 +227,16 @@ static class App
         Active(db);
         var nodes = destination is null ? db.Nodes().Where(n => !n.Removed && n.Id != db.Get("self"))
             : new[] { db.Resolve(destination) ?? throw new Exception("Узел не найден.") };
+        var rows = new List<CliCell[]>();
         foreach (var node in nodes)
         {
-            Console.WriteLine($"{node.Name} ({node.Id}):");
             var routes = db.Routes(node.Id).OrderByDescending(r => r.Primary).ThenBy(r => r.Ms).ToArray();
-            if (routes.Length == 0) Console.WriteLine("  поиск маршрута...");
+            if (routes.Length == 0) rows.Add([node.Name,node.Id,CliOutput.Status("поиск"),"—","—"]);
             foreach (var route in routes)
-                Console.WriteLine($"  {(App.Now-route.Updated >= RouteCache.FreshFor ? "устарел" : route.Primary ? "основной" : "резервный")} {route.Ms:0.0} ms  " +
-                    string.Join(" → ", route.Path.Select(id => db.Resolve(id)?.Name ?? id)));
+                rows.Add([node.Name,node.Id,CliOutput.Status(App.Now-route.Updated >= RouteCache.FreshFor ? "устарел" : route.Primary ? "основной" : "резервный"),$"{route.Ms:0.0} ms",
+                    string.Join(" → ",route.Path.Select(id=>db.Resolve(id)?.Name??id))]);
         }
+        CliOutput.Table(["Узел","ID","Статус","Пинг","Маршрут"],rows);
     }
 
     static async Task SetMaintenance(Store db, X509Certificate2 cert, bool updating)

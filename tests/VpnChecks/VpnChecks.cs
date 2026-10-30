@@ -26,9 +26,9 @@ static class VpnChecks
         Assert(VpnConnections.Observe("server","client",sample,1181).Connected==false,"Stale handshake reported connected");
         Assert(VpnConnections.Observe("server","client",sample with{Handshake=0},1100).Connected==false,"No handshake reported connected");
         Assert(VpnConnections.Observe("server","client",sample with{Exists=false},1100).Connected==false,"Missing peer reported connected");
-        Assert(VpnConnections.Describe([direct,null]).StartsWith("подключён"),"Unreachable server hid a connected session");
-        Assert(VpnConnections.Describe([null]).StartsWith("неизвестно"),"Unreachable server was reported disconnected");
-        Assert(VpnConnections.Describe([direct with{Connected=false,Mode=null}]).StartsWith("отключён"),"Disconnected status missing");
+        Assert(VpnConnections.Summary([direct,null]).Status=="подключён","Unreachable server hid a connected session");
+        Assert(VpnConnections.Summary([null]).Status=="неизвестно","Unreachable server was reported disconnected");
+        Assert(VpnConnections.Summary([direct with{Connected=false,Mode=null}]).Status=="отключён","Disconnected status missing");
         var configuration=new VpnServerConfiguration(new string('a',24),"native","awg0","/etc/amnezia/amneziawg/awg0.conf",true,true,"","10.8.0.1/24",51820,null);
         Assert(VpnServerInstaller.Choose([],new StringReader(""),TextWriter.Null)=="new","Empty inventory did not select a new installation");
         Assert(VpnServerInstaller.Choose([configuration],new StringReader("1\n"),TextWriter.Null)==configuration.Id,"Existing configuration selection failed");
