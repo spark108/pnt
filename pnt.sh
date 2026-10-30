@@ -119,14 +119,18 @@ install_local() {
     printf '✓ Служба установлена и запущена\n' >> "$PROGRESS"
 }
 
-update_local() {
+refresh_update_sources() {
     require_command git
-    require_command dotnet
     [ -f "$BIN" ] || die 'PNT is not installed.'
     [ -f "$UNIT" ] || die 'pnt.service is missing.'
     checkout=$(as_invoker git -C "$SCRIPT_DIR" rev-parse --show-toplevel) || die 'Git checkout is required.'
     [ "$checkout" = "$SCRIPT_DIR" ] || die 'Run pnt.sh from the checkout root.'
     branch=$(as_invoker git -C "$SCRIPT_DIR" symbolic-ref --quiet --short HEAD) || die 'A Git branch is required.'
+    as_invoker git -C "$SCRIPT_DIR" remote set-url origin "$REPOSITORY"
+    as_invoker git -C "$SCRIPT_DIR" pull --ff-only origin "$branch"
+}
+
+update_local() {
     BACKUP_BIN=$(mktemp "$INSTALL_DIR/.pnt-old.XXXXXX")
     cp -p "$BIN" "$BACKUP_BIN"
     cp -p "$UNIT" "$TEMP_DIR/pnt.service.old"
@@ -144,8 +148,6 @@ update_local() {
     systemctl stop pnt.service
     STOPPED=1
     printf '✓ Служба остановлена\n' >> "$PROGRESS"
-    as_invoker git -C "$SCRIPT_DIR" remote set-url origin "$REPOSITORY"
-    step 'Исходники обновлены из GitHub' as_invoker git -C "$SCRIPT_DIR" pull --ff-only origin "$branch"
     step 'Зависимости Debian и QUIC установлены' install_dependencies
     if [ "$(invoker)" != root ]; then chown "$(invoker)" "$TEMP_DIR"; fi
     step 'Бинарник собран' as_invoker dotnet publish "$SCRIPT_DIR/pnt.csproj" -c Release \
@@ -250,6 +252,7 @@ worker() {
     ACTION=$1
     OP_ID=$2
     EVENT_ID=${3:-}
+    CURRENT_WORKER=${4:-}
     SSH_SOCKET=''
     REMOTE_HOST=''
     if [ "$ACTION" = remote ]; then REMOTE_HOST=$3; SSH_SOCKET=$4; EVENT_ID=''; fi
@@ -258,10 +261,9 @@ worker() {
     PROGRESS=$OPERATIONS/$OP_ID.progress
     RESULT=$OPERATIONS/$OP_ID.result
     LOG=$OPERATIONS/$OP_ID.log
-    rm -f "$RESULT"
-    : > "$PROGRESS"
+    if [ "$CURRENT_WORKER" != current ]; then rm -f "$RESULT"; : > "$PROGRESS"; fi
     exec >> "$LOG" 2>&1
-    TEMP_DIR=$(mktemp -d)
+    TEMP_DIR=''
     STAGED_BIN=''
     BACKUP_BIN=''
     SWAPPED=0
@@ -274,8 +276,19 @@ worker() {
     trap finish_worker EXIT
     trap 'exit 1' HUP INT TERM
     require_command flock
-    exec 9>/run/pnt-maintenance.lock
+    if [ "$CURRENT_WORKER" = current ]; then
+        [ "$ACTION" = update ] && [ "${PNT_UPDATE_HANDOFF:-}" = "$OP_ID" ] || die 'Invalid update handoff.'
+        unset PNT_UPDATE_HANDOFF
+    else
+        exec 9>/run/pnt-maintenance.lock
+    fi
     flock -n 9 || die 'Another PNT installation or update is already running.'
+    if [ "$ACTION" = update ] && [ "$CURRENT_WORKER" != current ]; then
+        step 'Исходники обновлены из GitHub' refresh_update_sources
+        export PNT_UPDATE_HANDOFF="$OP_ID"
+        exec /bin/sh "$SCRIPT_DIR/pnt.sh" _worker-current "$OP_ID" "$EVENT_ID"
+    fi
+    TEMP_DIR=$(mktemp -d)
     case "$ACTION" in
         install) install_local ;;
         update) update_local ;;
@@ -361,6 +374,7 @@ case "$command_name" in
         [ "$#" -eq 0 ] || die 'Use update or update --check.'
         launch_operation update ;;
     _worker) worker "$@" ;;
+    _worker-current) worker update "$1" "${2:-}" current ;;
     start) require_root; systemctl start pnt.service ;;
     stop) require_root; systemctl stop pnt.service ;;
     restart) require_root; systemctl restart pnt.service ;;

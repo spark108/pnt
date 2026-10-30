@@ -146,17 +146,10 @@ static class App
                 case ["cluster", "invite", "revoke", var id]: db.Revoke(id); break;
                 case ["cluster", "update", "announce", var commit]:
                     Active(db);
-                    if (commit.Length != 40 || !commit.All(Uri.IsHexDigit)) throw new Exception("Ожидается SHA-1 коммита Git.");
-                    var current = db.Update();
-                    if (current?.Commit != commit)
-                    {
-                        current = new UpdateNotice(Guid.NewGuid().ToString("N"), commit.ToLowerInvariant(), Now);
-                        db.PutUpdate(current);
-                    }
-                    db.Set("update_applied", current.Id);
+                    var current = db.AnnounceUpdate(commit);
                     Console.WriteLine($"Обновление {current.Commit} объявлено кластеру."); break;
                 case ["cluster", "update", "applied", var updateId]:
-                    if (db.Update()?.Id != updateId) throw new Exception("Событие обновления не найдено.");
+                    if (updateId.Length != 32 || !updateId.All(Uri.IsHexDigit)) throw new Exception("Некорректный ID события обновления.");
                     db.Set("update_applied", updateId);
                     Console.WriteLine("Обновление узла подтверждено."); break;
                 case ["cluster", "maintenance", "start"]:

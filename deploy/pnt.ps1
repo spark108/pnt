@@ -2,7 +2,9 @@
     [ValidateSet('install','update','repair','start','stop','restart','status')][string]$Action='status',
     [switch]$Worker,
     [string]$Operation,
-    [string]$EventId
+    [string]$EventId,
+    [switch]$SourcesReady,
+    [IO.FileStream]$UpdateLock
 )
 $ErrorActionPreference='Stop'
 [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
@@ -29,6 +31,14 @@ function Cluster-Available {
     finally{$ErrorActionPreference=$previous}
 }
 function Stage([string]$Message){[IO.File]::AppendAllText($progress,"✓ $Message`n",[Text.UTF8Encoding]::new($false))}
+function Ensure-Git([string]$Workspace){
+    if(Get-Command git -ErrorAction SilentlyContinue){return}
+    $release=Invoke-RestMethod 'https://api.github.com/repos/git-for-windows/git/releases/latest'
+    $asset=$release.assets | Where-Object name -Match '^MinGit-.*-64-bit.zip$' | Select-Object -First 1
+    if(-not $asset){throw 'Cannot find MinGit x64 asset.'}
+    $archive=Join-Path $Workspace 'git.zip';Invoke-WebRequest -UseBasicParsing $asset.browser_download_url -OutFile $archive
+    Expand-Archive $archive -DestinationPath (Join-Path $tools 'git') -Force
+}
 function Move-Managed([string]$From,[string]$To){
     $base=[IO.Path]::GetFullPath($root).TrimEnd('\')+'\'
     $fromPath=[IO.Path]::GetFullPath($From);$toPath=[IO.Path]::GetFullPath($To)
@@ -87,9 +97,25 @@ try {
     $progress=Join-Path $operations "$Operation.progress";$result=Join-Path $operations "$Operation.result"
     $lock=$null;$temp=$null;$backup=$null;$stopped=$false;$maintenance=$false;$success=$false;$createdService=$false;$installedApp=$false
     try{
-        $lock=[IO.File]::Open((Join-Path $root 'maintenance.lock'),[IO.FileMode]::OpenOrCreate,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)
+        if($SourcesReady){
+            if($Action -ne 'update' -or -not $UpdateLock -or $UpdateLock.Name -ne (Join-Path $root 'maintenance.lock')){throw 'Invalid update handoff.'}
+            $lock=$UpdateLock
+        }else{$lock=[IO.File]::Open((Join-Path $root 'maintenance.lock'),[IO.FileMode]::OpenOrCreate,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)}
         if($Action -eq 'install' -and (Test-Path $exe)){throw 'PNT is installed; use update.'}
         if($Action -eq 'update' -and -not (Test-Path $exe)){throw 'Install PNT first.'}
+        [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12
+        $tools=Join-Path $root 'tools';New-Item -ItemType Directory -Force $tools | Out-Null
+        $env:PATH=(Join-Path $tools 'git\cmd')+';'+(Join-Path $tools 'dotnet')+';'+$env:PATH
+        $temp=Join-Path $root ('build-'+[guid]::NewGuid().ToString('N'));New-Item -ItemType Directory $temp | Out-Null
+        Ensure-Git $temp
+        if($Action -eq 'update' -and -not $SourcesReady){
+            Native git -Arguments @('-C',$source,'remote','set-url','origin',$repository)
+            $branch=& git -C $source symbolic-ref --short HEAD;if($LASTEXITCODE -ne 0){throw 'A source branch is required.'}
+            $env:GIT_TERMINAL_PROMPT='0';Native git -Arguments @('-C',$source,'pull','--ff-only','origin',$branch);Stage 'Sources updated from GitHub'
+            & (Join-Path $source 'deploy\pnt.ps1') -Action update -Worker -Operation $Operation -EventId $EventId -SourcesReady -UpdateLock $lock
+            if(-not (Test-Path $result)){throw 'Updated worker exited without a result.'}
+            $code=[int]([IO.File]::ReadAllText($result));$success=($code -eq 0);exit $code
+        }
         if($Action -eq 'update'){
             Repair-PntAccess -DataPath (Join-Path $root 'data');Stage 'Data permissions repaired'
             if(Cluster-Available){
@@ -99,17 +125,6 @@ try {
             $service=Get-Service PNT -ErrorAction SilentlyContinue
             if($service -and $service.Status -ne 'Stopped'){Stop-Service PNT -ErrorAction Stop}
             $stopped=[bool]$service;Stage 'Service stopped'
-        }
-        [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12
-        $tools=Join-Path $root 'tools';New-Item -ItemType Directory -Force $tools | Out-Null
-        $env:PATH=(Join-Path $tools 'git\cmd')+';'+(Join-Path $tools 'dotnet')+';'+$env:PATH
-        $temp=Join-Path $root ('build-'+[guid]::NewGuid().ToString('N'));New-Item -ItemType Directory $temp | Out-Null
-        if(-not (Get-Command git -ErrorAction SilentlyContinue)){
-            $release=Invoke-RestMethod 'https://api.github.com/repos/git-for-windows/git/releases/latest'
-            $asset=$release.assets | Where-Object name -Match '^MinGit-.*-64-bit.zip$' | Select-Object -First 1
-            if(-not $asset){throw 'Cannot find MinGit x64 asset.'}
-            $archive=Join-Path $temp 'git.zip';Invoke-WebRequest -UseBasicParsing $asset.browser_download_url -OutFile $archive
-            Expand-Archive $archive -DestinationPath (Join-Path $tools 'git') -Force
         }
         $sdks=if(Get-Command dotnet -ErrorAction SilentlyContinue){& dotnet --list-sdks}else{''}
         if(-not ($sdks | Select-String '^10\.')){
@@ -122,11 +137,6 @@ try {
             $source=Join-Path $root 'source'
             if(-not (Test-Path $source)){Native git -Arguments @('clone',$repository,$source)}
             elseif(-not (Test-Path (Join-Path $source '.git'))){throw 'The PNT source directory exists but is not a Git checkout.'}
-        }
-        if($Action -eq 'update'){
-            Native git -Arguments @('-C',$source,'remote','set-url','origin',$repository)
-            $branch=& git -C $source symbolic-ref --short HEAD;if($LASTEXITCODE -ne 0){throw 'A source branch is required.'}
-            $env:GIT_TERMINAL_PROMPT='0';Native git -Arguments @('-C',$source,'pull','--ff-only','origin',$branch);Stage 'Sources updated from GitHub'
         }
         if(-not (Test-Path (Join-Path $source 'pnt.csproj'))){throw 'Run install from the source checkout.'}
         $rid=if($env:PROCESSOR_ARCHITECTURE -eq 'ARM64'){'win-arm64'}else{'win-x64'}

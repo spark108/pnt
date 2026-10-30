@@ -96,9 +96,29 @@ sealed class Store : IDisposable
     public void PutUpdate(UpdateNotice notice)
     {
         if (notice.Id.Length != 32 || !notice.Id.All(Uri.IsHexDigit) || notice.Commit.Length != 40 || !notice.Commit.All(Uri.IsHexDigit)) return;
-        var old = Update();
+        using var c = Open(); using var tx = c.BeginTransaction(deferred: false);
+        using var read = c.CreateCommand(); read.Transaction = tx;
+        read.CommandText = "SELECT v FROM meta WHERE k='update_notice'";
+        var json = read.ExecuteScalar() as string;
+        var old = json is null ? null : JsonSerializer.Deserialize<UpdateNotice>(json, App.Json);
         if (old is not null && (old.Version > notice.Version || old.Version == notice.Version && string.CompareOrdinal(old.Id, notice.Id) >= 0)) return;
-        Set("update_notice", JsonSerializer.Serialize(notice, App.Json));
+        using var write = c.CreateCommand(); write.Transaction = tx;
+        write.CommandText = "INSERT INTO meta(k,v) VALUES('update_notice',$notice) ON CONFLICT(k) DO UPDATE SET v=excluded.v";
+        write.Parameters.AddWithValue("$notice", JsonSerializer.Serialize(notice, App.Json)); write.ExecuteNonQuery(); tx.Commit();
+    }
+    public UpdateNotice AnnounceUpdate(string commit)
+    {
+        if (commit.Length != 40 || !commit.All(Uri.IsHexDigit)) throw new ArgumentException("Ожидается SHA-1 коммита Git.");
+        using var c = Open(); using var tx = c.BeginTransaction(deferred: false);
+        using var read = c.CreateCommand(); read.Transaction = tx;
+        read.CommandText = "SELECT v FROM meta WHERE k='update_notice'";
+        var json = read.ExecuteScalar() as string;
+        var old = json is null ? null : JsonSerializer.Deserialize<UpdateNotice>(json, App.Json);
+        var notice = new UpdateNotice(Guid.NewGuid().ToString("N"), commit.ToLowerInvariant(), Math.Max(App.Now, (old?.Version ?? 0) + 1));
+        using var write = c.CreateCommand(); write.Transaction = tx;
+        write.CommandText = "INSERT INTO meta(k,v) VALUES('update_notice',$notice),('update_applied',$id) ON CONFLICT(k) DO UPDATE SET v=excluded.v";
+        write.Parameters.AddWithValue("$notice", JsonSerializer.Serialize(notice, App.Json)); write.Parameters.AddWithValue("$id", notice.Id);
+        write.ExecuteNonQuery(); tx.Commit(); return notice;
     }
     public WebConfig? Web()
     {
