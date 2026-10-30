@@ -45,12 +45,53 @@ class ServerChecks(unittest.TestCase):
         self.assertFalse(item["supported"])
         self.assertNotIn(KEY, json.dumps(item))
 
+    def test_wireguard_directory_requires_amnezia_parameters(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            wireguard = root / "wireguard"
+            amnezia = root / "amnezia" / "amneziawg"
+            wireguard.mkdir()
+            amnezia.mkdir(parents=True)
+            (wireguard / "wg0.conf").write_text(CONFIG)
+            (wireguard / "wg1.conf").write_text(CONFIG + "# Jc = 4\n[Peer]\n# H1 = 123\n")
+            (wireguard / "awg0.conf").write_text(CONFIG + "Jc = 4\n")
+            (amnezia / "awg1.conf").write_text(CONFIG)
+            with patch.object(server, "CONFIG_DIRS", [wireguard, amnezia]), patch.object(server.shutil, "which", return_value=None):
+                configs = server.inventory()
+            self.assertEqual({c["interface"] for c in configs}, {"awg0", "awg1"})
+            self.assertTrue(all(c["supported"] for c in configs))
+
     def test_network_allocation_avoids_routes_and_other_awg_configs(self):
         routes = [{"dst": "default"}, {"dst": "10.77.0.0/24"}]
         network = server.free_network(routes, [{"address": "10.77.1.1/24"}])
         self.assertEqual(str(network), "10.77.2.0/24")
         network = server.free_network([{"dst": "10.0.0.0/8"}], [])
         self.assertEqual(str(network), "172.27.0.0/24")
+
+    def test_only_wireguard_without_awg_leaves_inventory_empty(self):
+        with tempfile.TemporaryDirectory() as directory:
+            wireguard = Path(directory) / "wireguard"
+            amnezia = Path(directory) / "amnezia" / "amneziawg"
+            wireguard.mkdir()
+            config = wireguard / "wg0.conf"
+            config.write_text(CONFIG)
+            with patch.object(server, "CONFIG_DIRS", [amnezia, wireguard]), patch.object(server.shutil, "which", return_value=None), patch.object(server, "run") as command:
+                self.assertEqual(server.inventory(), [])
+            command.assert_not_called()
+            self.assertEqual(config.read_text(), CONFIG)
+            self.assertFalse(amnezia.exists())
+
+    def test_missing_awg_tools_are_installed_before_configuration(self):
+        commands = []
+        def run(args, *_, **kwargs):
+            commands.append(args)
+            return types.SimpleNamespace(returncode=0) if kwargs.get("check") is False else ""
+        with patch.object(server.shutil, "which", lambda name: "/usr/sbin/modprobe" if name == "modprobe" else None), patch.object(server, "run", run), patch.object(server, "checkout") as checkout, patch.object(server, "stage"):
+            server.install_tools()
+        self.assertTrue(any(args[:3] == ["apt-get", "install", "-y"] and "build-essential" in args for args in commands))
+        checkout.assert_called_once()
+        self.assertEqual(checkout.call_args.args[0], "https://github.com/amnezia-vpn/amneziawg-tools.git")
+        self.assertTrue(any(args[0] == "make" and "install" in args and "WITH_WGQUICK=yes" in args for args in commands))
 
     def test_new_config_does_not_overwrite_existing(self):
         with tempfile.TemporaryDirectory() as directory:

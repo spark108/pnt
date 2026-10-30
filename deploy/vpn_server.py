@@ -78,7 +78,10 @@ def inventory():
             if not IFACE.fullmatch(path.stem) or path.resolve() in seen:
                 continue
             seen.add(path.resolve())
-            result.append(provider("native", path.stem, path, path.read_text(), path.stem in active))
+            text = path.read_text()
+            if directory.name == "wireguard" and not any(re.fullmatch(r"Jc|Jmin|Jmax|S[1-4]|H[1-4]|I[1-5]", key) for key in values(text)):
+                continue
+            result.append(provider("native", path.stem, path, text, path.stem in active))
     if shutil.which("docker"):
         containers = run(["docker", "ps", "-a", "--format", "{{.Names}}"], check=False)
         if containers.returncode == 0:
