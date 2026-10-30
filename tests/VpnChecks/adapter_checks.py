@@ -109,6 +109,14 @@ class AdapterChecks(unittest.TestCase):
     def test_selected_docker_with_multiple_containers(self):
         self.check_backend("docker", True)
 
+    def test_wireguard_binary_is_not_used_when_awg_is_missing(self):
+        with tempfile.TemporaryDirectory() as root, patch.dict(os.environ, PNT_VPN_DATA=root), patch.object(adapter.shutil, "which", lambda name: "/usr/bin/wg" if name == "wg" else None), patch.object(adapter, "run") as command:
+            binding = {"id": "c" * 24, "kind": "native", "interface": "awg0", "config": "/etc/amnezia/amneziawg/awg0.conf"}
+            (Path(root) / "selected-server.json").write_text(json.dumps(binding))
+            with self.assertRaisesRegex(RuntimeError, "awg not found"):
+                adapter.execute({"action": "probe"})
+            command.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

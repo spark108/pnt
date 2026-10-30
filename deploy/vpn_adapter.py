@@ -64,14 +64,18 @@ def execute(request):
     def docker(args, data=None):
         return run((["docker", "exec", "-i", container] if container else []) + args, data)
 
-    binary = "awg" if docker(["sh", "-c", "command -v awg || command -v wg"]).endswith("awg") else "wg"
+    binary = "awg"
+    if not container and not native_binary:
+        raise RuntimeError("AmneziaWG is not installed: awg not found")
     config_path = binding["config"] if binding is not None else "/opt/amnezia/awg/awg0.conf"
     if not container and binding is None:
-        config_paths = [Path(directory) / (iface + ".conf") for directory in ("/etc/amnezia/amneziawg", "/etc/amneziawg", "/etc/wireguard", "/opt/amnezia/awg")]
+        config_paths = [Path(directory) / (iface + ".conf") for directory in ("/etc/amnezia/amneziawg", "/etc/amneziawg", "/opt/amnezia/awg")]
         existing = [path for path in config_paths if path.is_file()]
         if len(existing) != 1:
             raise RuntimeError("Cannot uniquely locate the native AmneziaWG interface configuration")
         config_path = str(existing[0])
+    if not container and Path(config_path).parent == Path("/etc/wireguard"):
+        raise RuntimeError("WireGuard configurations are not supported; select an AmneziaWG configuration")
     config = docker(["cat", config_path])
     interface = config.split("[Peer]", 1)[0]
     values = dict(re.findall(r"^\s*([A-Za-z0-9]+)\s*=\s*(.*?)\s*$", interface, re.M))

@@ -45,7 +45,9 @@ class ServerChecks(unittest.TestCase):
         self.assertFalse(item["supported"])
         self.assertNotIn(KEY, json.dumps(item))
 
-    def test_wireguard_directory_requires_amnezia_parameters(self):
+    def test_only_amnezia_directories_are_searched(self):
+        self.assertEqual([str(path).replace("\\", "/") for path in server.CONFIG_DIRS],
+                         ["/etc/amnezia/amneziawg", "/etc/amneziawg", "/opt/amnezia/awg"])
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             wireguard = root / "wireguard"
@@ -56,9 +58,9 @@ class ServerChecks(unittest.TestCase):
             (wireguard / "wg1.conf").write_text(CONFIG + "# Jc = 4\n[Peer]\n# H1 = 123\n")
             (wireguard / "awg0.conf").write_text(CONFIG + "Jc = 4\n")
             (amnezia / "awg1.conf").write_text(CONFIG)
-            with patch.object(server, "CONFIG_DIRS", [wireguard, amnezia]), patch.object(server.shutil, "which", return_value=None):
+            with patch.object(server, "CONFIG_DIRS", [amnezia]), patch.object(server.shutil, "which", return_value=None):
                 configs = server.inventory()
-            self.assertEqual({c["interface"] for c in configs}, {"awg0", "awg1"})
+            self.assertEqual({c["interface"] for c in configs}, {"awg1"})
             self.assertTrue(all(c["supported"] for c in configs))
 
     def test_network_allocation_avoids_routes_and_other_awg_configs(self):
@@ -75,7 +77,7 @@ class ServerChecks(unittest.TestCase):
             wireguard.mkdir()
             config = wireguard / "wg0.conf"
             config.write_text(CONFIG)
-            with patch.object(server, "CONFIG_DIRS", [amnezia, wireguard]), patch.object(server.shutil, "which", return_value=None), patch.object(server, "run") as command:
+            with patch.object(server, "CONFIG_DIRS", [amnezia]), patch.object(server.shutil, "which", return_value=None), patch.object(server, "run") as command:
                 self.assertEqual(server.inventory(), [])
             command.assert_not_called()
             self.assertEqual(config.read_text(), CONFIG)
@@ -140,6 +142,21 @@ class ServerChecks(unittest.TestCase):
             configurations = server.docker_configurations("amnezia-awg")
         self.assertEqual(configurations, [("/opt/amnezia/awg/awg0.conf", CONFIG)])
         self.assertNotIn("start", calls[0])
+
+    def test_container_without_awg_is_not_treated_as_amnezia(self):
+        calls = []
+        def run(args, **kwargs):
+            calls.append(args)
+            if args[:2] == ["docker", "ps"]:
+                return types.SimpleNamespace(returncode=0, stdout="amnezia-awg")
+            if args[:2] == ["docker", "inspect"]:
+                return json.dumps([{"State": {"Running": True}}])
+            return types.SimpleNamespace(returncode=127, stdout="")
+        with patch.object(server, "CONFIG_DIRS", []), patch.object(server.shutil, "which", lambda name: "/usr/bin/docker" if name == "docker" else None), patch.object(server, "run", run), patch.object(server, "docker_configurations") as configurations:
+            self.assertEqual(server.inventory(), [])
+            configurations.assert_not_called()
+        self.assertIn(["docker", "exec", "amnezia-awg", "awg", "show", "interfaces"], calls)
+        self.assertFalse(any("wg" in args for args in calls))
 
     def test_nft_updates_only_owned_rules(self):
         binding = {"id": "a" * 24}

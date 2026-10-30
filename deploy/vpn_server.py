@@ -21,7 +21,7 @@ import urllib.request
 os.environ["PATH"] = "/usr/local/sbin:/usr/local/bin:" + os.environ.get("PATH", "/usr/sbin:/usr/bin:/sbin:/bin")
 
 
-CONFIG_DIRS = [Path(p) for p in ("/etc/amnezia/amneziawg", "/etc/amneziawg", "/etc/wireguard", "/opt/amnezia/awg")]
+CONFIG_DIRS = [Path(p) for p in ("/etc/amnezia/amneziawg", "/etc/amneziawg", "/opt/amnezia/awg")]
 IFACE = re.compile(r"[A-Za-z0-9_.-]{1,15}")
 IDENTITY = re.compile(r"[0-9a-f]{24}")
 CLIENT = re.compile(r"[0-9a-f]{16}")
@@ -79,8 +79,6 @@ def inventory():
                 continue
             seen.add(path.resolve())
             text = path.read_text()
-            if directory.name == "wireguard" and not any(re.fullmatch(r"Jc|Jmin|Jmax|S[1-4]|H[1-4]|I[1-5]", key) for key in values(text)):
-                continue
             result.append(provider("native", path.stem, path, text, path.stem in active))
     if shutil.which("docker"):
         containers = run(["docker", "ps", "-a", "--format", "{{.Names}}"], check=False)
@@ -91,7 +89,10 @@ def inventory():
                 status = json.loads(run(["docker", "inspect", name]))[0]
                 interfaces = []
                 if status["State"]["Running"]:
-                    interfaces = run(["docker", "exec", name, "sh", "-c", "awg show interfaces 2>/dev/null || wg show interfaces"]).split()
+                    runtime = run(["docker", "exec", name, "awg", "show", "interfaces"], check=False)
+                    if runtime.returncode:
+                        continue
+                    interfaces = runtime.stdout.split()
                 for path, text in docker_configurations(name):
                     iface = Path(path).stem
                     if IFACE.fullmatch(iface):
