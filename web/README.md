@@ -18,3 +18,24 @@ For browser checks, start the same command with `-- --serve`, then run
 via `NODE_PATH` and Google Chrome installed. The browser check blocks external
 requests to verify that the globe renders with local assets only. It uses isolated
 test identities, manual test coordinates, a random HTTPS port and temporary data.
+
+## Boundaries and place names
+
+`geography.json` is bundled separately and served through the authenticated
+`/assets/geography.json` endpoint. It contains country outlines and Russian
+country/city names from [Natural Earth v5.1.2](https://github.com/nvkelso/natural-earth-vector/tree/v5.1.2/geojson)
+(`ne_50m_admin_0_countries` and `ne_50m_populated_places`). Natural Earth data is
+[public domain](https://www.naturalearthdata.com/about/terms-of-use/).
+
+Rebuild with `python web/build_geography.py`. The builder keeps exterior country
+rings with coordinates rounded to 0.001 degree, country label locations and ranks,
+and populated places with at least 500,000 people or national-capital status.
+It prefers Russian names and falls back to the source name. Population is used
+only to rank map labels, not as current demographic information. The source
+GeoJSON is fetched from the pinned GitHub tag, with jsDelivr as a mirror fallback.
+
+The overlay works offline on both base maps, is enabled initially, and can be
+toggled with **Границы и названия**. Its browser preference is saved independently
+of imagery choice. Labels are filtered by zoom, globe occlusion and screen
+collisions, with node and RTT labels taking priority. The overlay uses a separate
+Cesium data source so live node updates do not remove country boundaries.

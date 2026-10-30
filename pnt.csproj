@@ -15,6 +15,7 @@
     <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.13" />
     <EmbeddedResource Include="web/index.html" />
     <EmbeddedResource Include="web/cesium.zip" />
+    <EmbeddedResource Include="web/geography.json" />
     <EmbeddedResource Include="deploy/access.ps1" />
     <EmbeddedResource Include="deploy/vpn_adapter.py" />
     <EmbeddedResource Include="deploy/vpn_server.py" />

@@ -94,6 +94,9 @@ static class WebChecks
             Assert(state.GetProperty("nodes")[0].TryGetProperty("location",out _),"State omitted locations");
             Assert((await client.GetAsync("/assets/cesium/Cesium.js")).Content.Headers.ContentType?.MediaType=="text/javascript","Cesium asset unavailable");
             Assert((await client.GetAsync("/assets/cesium/Assets/Textures/NaturalEarthII/tilemapresource.xml")).IsSuccessStatusCode,"Offline base map missing");
+            var geography=await client.GetFromJsonAsync<JsonElement>("/assets/geography.json");
+            Assert(geography.GetProperty("countries").GetArrayLength()>=200&&geography.GetProperty("cities").GetArrayLength()>=500,"Bundled country/city overlay missing");
+            Assert(geography.GetProperty("countries").EnumerateArray().Any(c=>c.GetProperty("name").GetString()=="Россия"),"Russian country labels missing");
             Assert((await client.GetAsync("/api/imagery/nasa/9/0/0.jpg")).StatusCode==HttpStatusCode.BadRequest,"Tile endpoint did not validate coordinates");
             var endpoint="/api/nodes/bbbbbbbbbbbbbbbb/location";
             Assert((await client.PutAsJsonAsync(endpoint,new{latitude=90,longitude=180})).StatusCode==HttpStatusCode.Forbidden,"Location CSRF bypassed");

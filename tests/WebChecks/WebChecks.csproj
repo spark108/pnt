@@ -4,6 +4,7 @@
     <Compile Include="../../*.cs"/><Compile Include="WebChecks.cs"/>
     <EmbeddedResource Include="../../web/index.html" Link="web/index.html" />
     <EmbeddedResource Include="../../web/cesium.zip" Link="web/cesium.zip" />
+    <EmbeddedResource Include="../../web/geography.json" Link="web/geography.json" />
     <FrameworkReference Include="Microsoft.AspNetCore.App"/>
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.14"/>
     <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.13"/>

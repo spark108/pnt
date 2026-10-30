@@ -85,6 +85,7 @@ sealed class WebPanel(Store db, X509Certificate2 cert,int listenPort=8016)
         var html = reader.ReadToEnd();
         server.MapGet("/", () => Results.Content(html, "text/html; charset=utf-8"));
         server.MapGet("/assets/cesium/{**path}",WebAssets.Cesium);
+        server.MapGet("/assets/geography.json",WebAssets.Geography);
         server.MapGet("/api/imagery/nasa/{z:int}/{y:int}/{x:int}.jpg",imagery.Tile);
         server.MapGet("/api/state", () => Results.Json(State()));
         server.MapGet("/api/events",async (HttpContext context)=>

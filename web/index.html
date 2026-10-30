@@ -22,7 +22,7 @@ label{display:block;font-size:12px;color:#a6b5d0;margin:14px 0 6px}select,input{
 #node-menu{position:fixed;z-index:10;min-width:180px;padding:6px;background:#18233a;border:1px solid #526482;border-radius:10px;box-shadow:0 8px 30px #0008}#node-menu button{display:block;width:100%;text-align:left;border:0;background:transparent;color:#e9eefb;padding:10px;font:inherit;cursor:pointer;border-radius:6px}#node-menu button:hover,#node-menu button:focus{background:#254a69}.node:focus circle{stroke:#fff;stroke-width:4}dialog{width:min(620px,calc(100% - 32px));max-height:85vh;overflow:auto;padding:24px;border:1px solid #526482;border-radius:16px;background:#111a2d;color:#e9eefb}dialog::backdrop{background:#02050ebd}dialog h2{margin-bottom:16px}dialog dl{display:grid;grid-template-columns:100px minmax(0,1fr);gap:12px}dialog dt{color:#a6b5d0}dialog dd{margin:0;overflow-wrap:anywhere}.dialog-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:20px}#property-routes{padding-left:20px;overflow-wrap:anywhere}#property-routes li{padding:7px 0}.node-tools{margin-top:12px}
 </style>
 <style>
-body{overflow:hidden}#graph{position:fixed;inset:0;width:100vw;height:100dvh;min-height:0;border-radius:0}#drawer-toggle{position:fixed;left:16px;top:16px;z-index:25;width:46px;height:46px;padding:0;font-size:23px;background:#111a2ded;box-shadow:0 4px 20px #0005}.drawer{position:fixed;inset:0 auto 0 0;z-index:20;width:400px;max-width:calc(100vw - 24px);padding:78px 22px 24px;background:#111a2df5;border-right:1px solid #344563;box-shadow:8px 0 40px #0005;overflow-y:auto;transform:translateX(-100%);visibility:hidden;transition:transform .2s,visibility .2s}.drawer.open{transform:translateX(0);visibility:visible}.drawer-brand{position:absolute;top:20px;left:82px;font-size:24px;font-weight:800;letter-spacing:.1em}.drawer-brand span{color:#67e8c4}.drawer .tabs{margin-top:20px;flex-wrap:wrap}.drawer .card{border:0;box-shadow:none;background:transparent;border-radius:0}.drawer .panel-head{padding:12px 0}.drawer .panel-body{padding:14px 0}.drawer .forward-config{grid-template-columns:1fr}.drawer .forward{grid-template-columns:1fr}.drawer .arrow{transform:rotate(90deg);text-align:center}.drawer .forward-list{padding:12px 0}.drawer .node-tools{flex-wrap:wrap}#globe-status{padding:18px 0 0}#unlocated{padding:8px 0}.drawer .top{display:none}#node-menu{z-index:40}#node-notice{position:fixed;bottom:20px;left:76px;right:20px;margin:0;pointer-events:none;text-shadow:0 1px 4px #000;padding:0!important}#node-notice:empty{display:none}@media(prefers-reduced-motion:reduce){.drawer{transition:none}}
+body{overflow:hidden}#graph{position:fixed;inset:0;width:100vw;height:100dvh;min-height:0;border-radius:0}#drawer-toggle{position:fixed;left:16px;top:16px;z-index:25;width:46px;height:46px;padding:0;font-size:23px;background:#111a2ded;box-shadow:0 4px 20px #0005}.drawer{position:fixed;inset:0 auto 0 0;z-index:20;width:400px;max-width:calc(100vw - 24px);padding:78px 22px 24px;background:#111a2df5;border-right:1px solid #344563;box-shadow:8px 0 40px #0005;overflow-y:auto;transform:translateX(-100%);visibility:hidden;transition:transform .2s,visibility .2s}.drawer.open{transform:translateX(0);visibility:visible}.drawer-brand{position:absolute;top:20px;left:82px;font-size:24px;font-weight:800;letter-spacing:.1em}.drawer-brand span{color:#67e8c4}.drawer .tabs{margin-top:20px;flex-wrap:wrap}.drawer .card{border:0;box-shadow:none;background:transparent;border-radius:0}.drawer .panel-head{padding:12px 0}.drawer .panel-body{padding:14px 0}.drawer .forward-config{grid-template-columns:1fr}.drawer .forward{grid-template-columns:1fr}.drawer .arrow{transform:rotate(90deg);text-align:center}.drawer .forward-list{padding:12px 0}.drawer .node-tools{flex-wrap:wrap}#globe-status{padding:18px 0 0}#unlocated{padding:8px 0}.drawer .top{display:none}.map-overlay-toggle{display:flex;align-items:center;gap:9px;font-size:14px;color:#dce7fa}.map-overlay-toggle input{width:auto;accent-color:#67e8c4}#surface-status:empty,#geography-status:empty{display:none}#node-menu{z-index:40}#node-notice{position:fixed;bottom:20px;left:76px;right:20px;margin:0;pointer-events:none;text-shadow:0 1px 4px #000;padding:0!important}#node-notice:empty{display:none}@media(prefers-reduced-motion:reduce){.drawer{transition:none}}
 </style>
 </head>
 <body>
@@ -30,7 +30,7 @@ body{overflow:hidden}#graph{position:fixed;inset:0;width:100vw;height:100dvh;min
 <button id="drawer-toggle" class="button" aria-label="Открыть меню" aria-controls="drawer" aria-expanded="false">☰</button>
 <aside id="drawer" class="drawer" aria-label="Управление кластером" inert>
 <div class="drawer-brand">PNT <span>●</span></div><div class="small" id="summary"></div><p class="small" id="updated">Загрузка…</p>
-<label for="map-surface">Поверхность</label><select id="map-surface"><option value="nasa">NASA Blue Marble · подробно</option><option value="local">Встроенная карта · без интернета</option></select><p id="surface-status" class="small"></p>
+<label for="map-surface">Поверхность</label><select id="map-surface"><option value="nasa">NASA Blue Marble · подробно</option><option value="local">Встроенная карта · без интернета</option></select><p id="surface-status" class="small"></p><label class="map-overlay-toggle"><input id="map-geography" type="checkbox" checked> Границы и названия</label><p id="geography-status" class="small" role="status"></p>
 <div class="tabs"><button id="tab-graph" class="active">Маршруты</button><button id="tab-forward">Пробросы портов</button></div>
 <section id="section-graph"><div class="card"><div class="panel-head"><h2>Построить маршрут</h2></div><div class="panel-body">
 <label for="from">Сервер А</label><select id="from"></select>
@@ -71,6 +71,7 @@ const $=id=>document.getElementById(id);
 let state={nodes:[],pings:[],links:[],rules:[]},from='',to='',via=[],pickTarget=false;
 let receivedAt=Date.now(),viewer=null,firstView=true,satelliteLayer=null;
 const MIN_CAMERA_HEIGHT=250000;
+let geographicLayer=null,geographicLabels=[];try{$('map-geography').checked=localStorage.getItem('pnt.mapGeography')!=='off'}catch{}
 let surfaceChoice='nasa';try{surfaceChoice=localStorage.getItem('pnt.mapSurface')||'nasa'}catch{}
 $('map-surface').value=surfaceChoice==='local'?'local':'nasa';
 const now=()=>state.time?state.time+Date.now()-receivedAt:Date.now();
@@ -112,24 +113,42 @@ async function initGlobe(){try{
  viewer.canvas.addEventListener('contextmenu',event=>event.preventDefault());
  viewer.screenSpaceEventHandler.setInputAction(event=>{const id=idAt(event.position);if(id){const box=viewer.canvas.getBoundingClientRect();openNodeMenu({preventDefault(){},stopPropagation(){},clientX:box.left+event.position.x,clientY:box.top+event.position.y},id)}},Cesium.ScreenSpaceEventType.RIGHT_CLICK);
  const imagery=await Cesium.TileMapServiceImageryProvider.fromUrl('/assets/cesium/Assets/Textures/NaturalEarthII/',{maximumLevel:2});
- viewer.imageryLayers.addImageryProvider(imagery);applySurface();render();
+ viewer.imageryLayers.addImageryProvider(imagery);applySurface();loadGeography();render();
  }catch(e){$('globe-status').textContent='Глобус недоступен: '+e.message;$('globe-status').className='error';console.error(e)}}
 function applySurface(){
  if(!viewer)return;
  if(satelliteLayer){viewer.imageryLayers.remove(satelliteLayer,true);satelliteLayer=null}
  const detailed=$('map-surface').value==='nasa';
- $('surface-status').textContent=detailed?'Снимки NASA загружаются через сервер PNT. Приближение ограничено 250 км.':'Встроенная карта. Приближение ограничено 250 км.';
+ $('surface-status').textContent=detailed?'Загрузка снимков…':'';
  if(detailed){
   const provider=new Cesium.UrlTemplateImageryProvider({url:'/api/imagery/nasa/{z}/{y}/{x}.jpg',maximumLevel:8,enablePickFeatures:false,credit:'NASA GIBS · Blue Marble'});
   const layer=viewer.imageryLayers.addImageryProvider(provider);satelliteLayer=layer;
-  const fallback=error=>{if(error)error.retry=false;if(satelliteLayer!==layer)return;clearTimeout(timeout);satelliteLayer=null;setTimeout(()=>{if(viewer.imageryLayers.contains(layer))viewer.imageryLayers.remove(layer,true);viewer.scene.requestRender()},0);$('surface-status').textContent='NASA недоступен — используется встроенная карта. Приближение ограничено 250 км.'};
+  const fallback=error=>{if(error)error.retry=false;if(satelliteLayer!==layer)return;clearTimeout(timeout);satelliteLayer=null;setTimeout(()=>{if(viewer.imageryLayers.contains(layer))viewer.imageryLayers.remove(layer,true);viewer.scene.requestRender()},0);$('surface-status').textContent='NASA недоступен — используется встроенная карта.'};
   let failures=0;const timeout=setTimeout(()=>fallback(),20000),requestImage=provider.requestImage.bind(provider);
-  provider.requestImage=(...args)=>{const pending=requestImage(...args);if(pending)Promise.resolve(pending).then(()=>{clearTimeout(timeout);if(satelliteLayer===layer)$('surface-status').textContent='NASA Blue Marble · через PNT. Приближение ограничено 250 км.'},()=>{});return pending};
+  provider.requestImage=(...args)=>{const pending=requestImage(...args);if(pending)Promise.resolve(pending).then(()=>{clearTimeout(timeout);if(satelliteLayer===layer)$('surface-status').textContent=''},()=>{});return pending};
   provider.errorEvent.addEventListener(error=>{if(satelliteLayer!==layer)return;error.retry=(error.timesRetried??0)<1;if(++failures>=4)fallback(error)});
  }
  viewer.scene.requestRender();
 }
 $('map-surface').onchange=()=>{try{localStorage.setItem('pnt.mapSurface',$('map-surface').value)}catch{}applySurface()};
+async function loadGeography(){try{
+ const response=await fetch('/assets/geography.json');if(!response.ok)throw Error('HTTP '+response.status);const data=await response.json();
+ geographicLayer=new Cesium.CustomDataSource('geography');geographicLayer.show=$('map-geography').checked;
+ const labels=[];geographicLayer.entities.suspendEvents();
+ const text=(name,city)=>({text:name,font:(city?'11px':'bold 13px')+' sans-serif',fillColor:Cesium.Color.fromCssColorString(city?'#d1deea':'#f5ead2'),outlineColor:Cesium.Color.fromCssColorString('#101c28'),outlineWidth:3,style:Cesium.LabelStyle.FILL_AND_OUTLINE,pixelOffset:new Cesium.Cartesian2(0,city?-13:0)});
+ data.countries.forEach((country,index)=>{
+  country.borders.forEach((ring,i)=>geographicLayer.entities.add({id:`border:${index}:${i}`,polyline:{positions:Cesium.Cartesian3.fromDegreesArrayHeights(ring.flatMap(p=>[p[0],p[1],1000])),width:1,arcType:Cesium.ArcType.GEODESIC,material:Cesium.Color.fromCssColorString('#e8f2ff88')}}));
+  const entity=geographicLayer.entities.add({id:'country:'+index,position:Cesium.Cartesian3.fromDegrees(country.lon,country.lat,2500),label:text(country.name,false)});
+  labels.push({entity,city:false,rank:country.rank,maxHeight:country.rank<=2?30000000:country.rank<=4?14000000:5000000});
+ });
+ data.cities.forEach((city,index)=>{
+  const entity=geographicLayer.entities.add({id:'city:'+index,position:Cesium.Cartesian3.fromDegrees(city.lon,city.lat,2000),point:{pixelSize:city.capital?4:3,color:Cesium.Color.fromCssColorString('#d1deea'),outlineColor:Cesium.Color.fromCssColorString('#132337'),outlineWidth:1},label:text(city.name,true)});
+  labels.push({entity,city:true,rank:-city.population,maxHeight:city.population>=5000000?13000000:city.population>=1000000?6000000:2500000});
+ });
+ geographicLayer.entities.resumeEvents();geographicLabels=labels.sort((a,b)=>Number(a.city)-Number(b.city)||a.rank-b.rank);
+ await viewer.dataSources.add(geographicLayer);layoutLabels();
+ }catch(e){$('geography-status').textContent='Не удалось загрузить границы и названия.';console.error(e)}}
+$('map-geography').onchange=()=>{const enabled=$('map-geography').checked;try{localStorage.setItem('pnt.mapGeography',enabled?'on':'off')}catch{}if(geographicLayer)geographicLayer.show=enabled;layoutLabels()};
 function arc(a,b){const start=Cesium.Cartographic.fromDegrees(a.location.longitude,a.location.latitude),end=Cesium.Cartographic.fromDegrees(b.location.longitude,b.location.latitude);try{const geodesic=new Cesium.EllipsoidGeodesic(start,end),height=Math.max(60000,Math.min(1800000,geodesic.surfaceDistance*.15));return Array.from({length:49},(_,i)=>{const t=i/48,p=geodesic.surfaceDistance>1?geodesic.interpolateUsingFraction(t):start;return Cesium.Cartesian3.fromRadians(p.longitude,p.latitude,15000+Math.sin(Math.PI*t)*height)})}catch{return [position(a),position(b)]}}
 const geometryKeys=new Map();
 function render(){const graph=edges(),selected=from&&to?route(graph):null;
@@ -167,9 +186,15 @@ function layoutLabels(){
  if(!viewer)return;const occupied=[],time=viewer.clock.currentTime;
  const screen=entity=>Cesium.SceneTransforms.worldToWindowCoordinates(viewer.scene,entity.position.getValue(time));
  for(const entity of viewer.entities.values.filter(e=>e.polyline)){const p=screen(entity);if(p)occupied.push({x:p.x-35,y:p.y-20,w:70,h:24})}
- for(const entity of viewer.entities.values.filter(e=>e.id.startsWith('node:'))){const p=screen(entity);if(!p)continue;const text=entity.label.text.getValue(time),w=Math.min(250,text.length*7+16),h=24;let offset=-28;
+ for(const entity of viewer.entities.values.filter(e=>e.id.startsWith('node:'))){const p=screen(entity);if(!p)continue;occupied.push({x:p.x-10,y:p.y-10,w:20,h:20});const text=entity.label.text.getValue(time),w=Math.min(250,text.length*7+16),h=24;let offset=-28;
   for(const candidate of [-28,-56,28,-84,56,-112,84,-140,112]){const rect={x:p.x-w/2,y:p.y+candidate-h/2,w,h};if(!occupied.some(r=>rect.x<r.x+r.w+4&&rect.x+rect.w+4>r.x&&rect.y<r.y+r.h+4&&rect.y+rect.h+4>r.y)){offset=candidate;occupied.push(rect);break}}
   entity.label.pixelOffset=new Cesium.Cartesian2(0,offset);
+ }
+ if(geographicLayer?.show){const height=viewer.camera.positionCartographic.height,occluder=new Cesium.EllipsoidalOccluder(Cesium.Ellipsoid.WGS84,viewer.camera.positionWC);
+  for(const item of geographicLabels){const entity=item.entity,position=entity.position.getValue(time);entity.show=false;if(height>item.maxHeight||!occluder.isPointVisible(position))continue;const p=screen(entity);if(!p||p.x<0||p.y<0||p.x>viewer.canvas.clientWidth||p.y>viewer.canvas.clientHeight)continue;
+   const value=entity.label.text.getValue(time),w=Math.min(260,value.length*(item.city?6.5:8)+10),h=item.city?17:21,rect={x:p.x-w/2,y:p.y-(item.city?13:0)-h/2,w,h};
+   if(occupied.some(r=>rect.x<r.x+r.w+5&&rect.x+rect.w+5>r.x&&rect.y<r.y+r.h+4&&rect.y+rect.h+4>r.y))continue;entity.show=true;occupied.push(rect);
+  }
  }
  viewer.scene.requestRender();
 }
@@ -206,7 +231,7 @@ function applyState(data){state=data;receivedAt=Date.now();controls();render();f
 async function refresh(){try{const response=await fetch('/api/state',{cache:'no-store'});if(!response.ok)throw Error(`HTTP ${response.status}`);applyState(await response.json())}catch(e){$('updated').textContent='Нет связи с панелью';console.error(e)}}
 $('from').onchange=e=>{from=e.target.value;pickTarget=false;controls();render()};$('to').onchange=e=>{to=e.target.value;pickTarget=false;controls();render()};$('add-transit').onclick=()=>{const id=$('transit').value;if(id&&!via.includes(id)&&id!==from&&id!==to){via.push(id);controls();render()}};
 for(const tab of ['graph','forward'])$('tab-'+tab).onclick=()=>{for(const t of ['graph','forward']){$('tab-'+t).classList.toggle('active',t===tab);$('section-'+t).classList.toggle('hidden',t!==tab)}if(tab==='graph')render()};
-window.addEventListener('resize',()=>{if(viewer)viewer.resize()});initGlobe();refresh();
+window.addEventListener('resize',()=>{if(viewer)requestAnimationFrame(()=>{viewer.resize();layoutLabels()})});initGlobe();refresh();
 const events=new EventSource('/api/events');events.onmessage=event=>{try{applyState(JSON.parse(event.data))}catch(e){console.error(e)}};events.onerror=()=>{$('updated').textContent='Соединение прервано · переподключение…'};
 setInterval(()=>{render();if($('properties-dialog').open)updateProperties()},2000);
 </script>

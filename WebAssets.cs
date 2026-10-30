@@ -6,6 +6,17 @@ namespace Pnt;
 
 static class WebAssets
 {
+    static readonly Lazy<byte[]> geography=new(()=>
+    {
+        var assembly=Assembly.GetExecutingAssembly();
+        var resource=assembly.GetManifestResourceNames().Single(n=>n.EndsWith(".web.geography.json",StringComparison.OrdinalIgnoreCase));
+        using var input=assembly.GetManifestResourceStream(resource)!;using var output=new MemoryStream();input.CopyTo(output);return output.ToArray();
+    });
+    public static IResult Geography(HttpContext context)
+    {
+        context.Response.Headers.CacheControl="private, max-age=86400";
+        return Results.Bytes(geography.Value,"application/json; charset=utf-8");
+    }
     static readonly Lazy<Dictionary<string,byte[]>> files=new(()=>
     {
         var assembly=Assembly.GetExecutingAssembly();
