@@ -3,6 +3,7 @@ using System.Net;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
+using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
@@ -12,13 +13,17 @@ namespace Pnt;
 
 record RenameNode(string? Name);
 
-sealed class WebPanel(Store db, X509Certificate2 cert)
+sealed class WebPanel(Store db, X509Certificate2 cert,int listenPort=8016)
 {
     public const int Port = 8016;
+    internal int ListeningPort {get;private set;}
     readonly SemaphoreSlim gate = new(1, 1);
     readonly Dictionary<string, (int Failures, long Until)> attempts = new();
     readonly string csrfToken = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
     readonly SemaphoreSlim forwardChanges = new(1,1);
+    readonly GeoLocations geolocations=new(db);
+    Task geoWork=Task.CompletedTask;
+    CancellationTokenSource? geoStop;
     WebApplication? app;
     X509Certificate2? webCertificate;
 
@@ -30,6 +35,7 @@ sealed class WebPanel(Store db, X509Certificate2 cert)
             var enabled = db.Web()?.Enabled == true && db.Get("left") != "1" && db.Self()?.Removed != true;
             if (enabled && app is null) await Start();
             if (!enabled && app is not null) await StopCore();
+            if(enabled&&geoWork.IsCompleted&&geoStop is not null)geoWork=geolocations.Refresh(geoStop.Token);
         }
         finally { gate.Release(); }
     }
@@ -45,7 +51,7 @@ sealed class WebPanel(Store db, X509Certificate2 cert)
     {
         var builder = WebApplication.CreateBuilder(new WebApplicationOptions { Args = [] });
         var webCert = LoadWebCertificate();
-        builder.WebHost.ConfigureKestrel(options => { options.Limits.MaxRequestBodySize=16*1024; options.ListenAnyIP(Port, endpoint => endpoint.UseHttps(webCert)); });
+        builder.WebHost.ConfigureKestrel(options => { options.Limits.MaxRequestBodySize=16*1024; options.ListenAnyIP(listenPort, endpoint => endpoint.UseHttps(webCert)); });
         var server = builder.Build();
         server.Use(async (context, next) =>
         {
@@ -76,17 +82,44 @@ sealed class WebPanel(Store db, X509Certificate2 cert)
         using var reader = new StreamReader(stream);
         var html = reader.ReadToEnd();
         server.MapGet("/", () => Results.Content(html, "text/html; charset=utf-8"));
-        server.MapGet("/api/state", () => Results.Json(new
+        server.MapGet("/assets/cesium/{**path}",WebAssets.Cesium);
+        server.MapGet("/api/state", () => Results.Json(State()));
+        server.MapGet("/api/events",async (HttpContext context)=>
         {
-            self = db.Get("self"),
-            csrfToken,
-            nodes = db.Nodes().Where(x => !x.Removed).Select(x => new { x.Id, x.Name, x.Ip, x.Updating, x.UpdatingSince, x.BehindNat, x.Platform }),
-            pings = db.Pings(),
-            links = db.Links().Where(p => p.Updated > App.Now - 30_000),
-            routes = db.Nodes().Where(x => !x.Removed).SelectMany(x => db.Routes(x.Id)),
-            rules = db.Rules().Where(x => !x.Removed),
-            time = App.Now
-        }));
+            using var stop=CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted,server.Lifetime.ApplicationStopping);
+            var token=stop.Token;
+            var access=db.Web();
+            context.Response.ContentType="text/event-stream";
+            context.Response.Headers["X-Accel-Buffering"]="no";
+            try
+            {
+                while(!token.IsCancellationRequested&&db.Web() is {Enabled:true} current&&current.Id==access?.Id&&current.Version==access.Version)
+                {
+                    await context.Response.WriteAsync("data: "+JsonSerializer.Serialize(State(),App.Json)+"\n\n",token);
+                    await context.Response.Body.FlushAsync(token);
+                    await Task.Delay(2000,token);
+                }
+            }
+            catch(OperationCanceledException)when(token.IsCancellationRequested){}
+        });
+        server.MapPut("/api/nodes/{id}/location",async (string id,SetNodeLocation input,HttpContext context)=>
+        {
+            NodeLocation? location=null;
+            if(!input.Automatic)
+            {
+                if(input.Latitude is not double lat||input.Longitude is not double lon||!GeoLocations.Valid(location=new(lat,lon,true,Updated:App.Now)))
+                    return Results.BadRequest(new{error="Широта: от −90 до 90, долгота: от −180 до 180."});
+            }
+            await forwardChanges.WaitAsync(context.RequestAborted);
+            try
+            {
+                var node=db.Resolve(id);
+                if(node is null)return Results.NotFound(new{error="Узел не найден."});
+                db.Put(node with{Location=location,Version=Math.Max(App.Now,node.Version+1)});
+                return Results.Ok(new{id,location});
+            }
+            finally{forwardChanges.Release();}
+        });
         server.MapPut("/api/nodes/{id}/name", async (string id,RenameNode input,HttpContext context) =>
         {
             var name=input.Name?.Trim();
@@ -133,12 +166,22 @@ sealed class WebPanel(Store db, X509Certificate2 cert)
         {
             await server.StartAsync();
             app = server;
+            ListeningPort=new Uri(server.Urls.First()).Port;
+            geoStop=new();
             webCertificate = webCert;
-            Firewall.Open(Port);
-            Console.WriteLine($"pnt: web listening on HTTPS {Port}");
+            Firewall.Open(ListeningPort);
+            Console.WriteLine($"pnt: web listening on HTTPS {ListeningPort}");
         }
         catch { await server.DisposeAsync(); webCert.Dispose(); throw; }
     }
+
+    object State()=>new
+    {
+        self=db.Get("self"),csrfToken,
+        nodes=db.Nodes().Where(x=>!x.Removed).Select(x=>new{x.Id,x.Name,x.Ip,x.Updating,x.UpdatingSince,x.BehindNat,x.Platform,location=geolocations.Get(x)}),
+        pings=db.Pings(),links=db.Links().Where(p=>p.Updated>App.Now-30_000),
+        routes=db.Nodes().Where(x=>!x.Removed).SelectMany(x=>db.Routes(x.Id)),rules=db.Rules().Where(x=>!x.Removed),time=App.Now
+    };
 
     X509Certificate2 LoadWebCertificate()
     {
@@ -204,13 +247,14 @@ sealed class WebPanel(Store db, X509Certificate2 cert)
     async Task StopCore()
     {
         if (app is null) return;
+        geoStop?.Cancel();await geoWork;geoStop?.Dispose();geoStop=null;
         var old = app;
         app = null;
         await old.StopAsync();
         await old.DisposeAsync();
         webCertificate?.Dispose();
         webCertificate = null;
-        Firewall.Close(Port);
+        Firewall.Close(ListeningPort);
         Console.WriteLine("pnt: web stopped");
     }
 }

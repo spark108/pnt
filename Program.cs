@@ -11,7 +11,7 @@ using Microsoft.Data.Sqlite;
 namespace Pnt;
 
 record Node(string Id, string Name, string Ip, string Cert, long Version, bool Removed = false,
-    bool Updating = false, long UpdatingSince = 0, bool BehindNat = false, string Platform = "linux");
+    bool Updating = false, long UpdatingSince = 0, bool BehindNat = false, string Platform = "linux", NodeLocation? Location = null);
 record JoinRequest(string Id, string Name, string Ip, string ObservedIp, string Cert, string Platform, long Created, string Status = "pending", bool BehindNat = false);
 record Rule(string Id, string In, int InPort, string? Via, string To, int ToPort, long Version, bool Removed = false,
     string InAddress = "0.0.0.0", string? InInterface = null, string? OutAddress = null, string? OutInterface = null);

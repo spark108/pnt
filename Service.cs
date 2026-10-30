@@ -242,7 +242,7 @@ sealed class Service(Store db, X509Certificate2 cert,int controlPort=442)
             var old = db.Nodes().FirstOrDefault(x => x.Id == n.Id);
             // A member's certificate is immutable, including across gossip updates.
             if (old != null && old.Cert != n.Cert) continue;
-            if (n.Ip.Length > 64 || n.Name.Length > 64) continue;
+            if (n.Ip.Length > 64 || n.Name.Length > 64 || n.Location is {} location&&!GeoLocations.Valid(location)) continue;
             db.Put(n);
         }
         foreach (var r in m.Rules ?? []) db.Put(r);
