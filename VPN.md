@@ -35,6 +35,10 @@ The exported profile contains a private client identity and trusted bootstrap no
 
 Handshakes are read from AmneziaWG itself, matched using the PNT-managed VPN public key. The output distinguishes a missing profile, no successful handshake, and an unavailable server. Counters are from the VPN server's perspective.
 
+`pnt vpn client list` adds connection status and mode after the existing access state and server count: `подключён  прямое`, `подключён  транспорт`, or `отключён  —`. If a client is connected to different servers by both modes, both are listed. The command requests a batch of managed-peer statistics from each relevant server in parallel, with a 12-second overall deadline. An unavailable server produces `неизвестно` unless another server confirms an active connection. Update the administrator CLI and VPN servers to use this status API.
+
+A peer is considered connected when AmneziaWG reports a handshake within the last 180 seconds. AmneziaWG has no immediate disconnect event, so a disconnected client may retain this status until the handshake expires. Transport mode is based on traffic forwarded through an open PNT exit session; opening an idle standby relay does not count as transport traffic. The status is observed from the exit servers and does not require a client application update.
+
 Removing a server or denying/revoking a client triggers peer removal on the target. Each registered node also reconciles its local PNT-managed peers in the background. Offline targets report pending removal; previously issued direct VPN configurations cannot be considered invalidated until the target applies peer removal. A revoked PNT identity cannot fetch new configurations or open new PNT transport sessions.
 
 ## Windows client

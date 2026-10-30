@@ -20,7 +20,7 @@ def execute(request):
     root = Path(os.environ["PNT_VPN_DATA"])
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
     action = request["action"]
-    if action not in ("probe", "ensure", "stats", "reconcile"):
+    if action not in ("probe", "ensure", "stats", "clients", "reconcile"):
         raise ValueError("Unknown adapter action")
     client = request.get("client")
     if client is not None and not re.fullmatch("[0-9a-f]{16}", client):
@@ -126,13 +126,16 @@ def execute(request):
                 write_config(config)
                 entry.unlink()
             return {}
-        if action == "stats":
-            if not path.exists():
-                return {"handshake": 0, "received": 0, "sent": 0, "exists": False}
-            public = json.loads(path.read_text())["public"]
-            rows = docker([binary, "show", iface, "dump"]).splitlines()[1:]
-            row = next((line.split("\t") for line in rows if line.split("\t")[0] == public), None)
-            return {"handshake": int(row[4]) if row else 0, "received": int(row[5]) if row else 0, "sent": int(row[6]) if row else 0, "exists": row is not None}
+        if action in ("stats", "clients"):
+            paths = client_entries() if action == "clients" else [path] if path.exists() else []
+            rows = {row[0]: row for line in docker([binary, "show", iface, "dump"]).splitlines()[1:] if (row := line.split("\t")) and len(row) >= 7} if paths else {}
+            def statistics(entry):
+                public = json.loads(entry.read_text())["public"]
+                row = rows.get(public)
+                return {"handshake": int(row[4]) if row else 0, "received": int(row[5]) if row else 0, "sent": int(row[6]) if row else 0, "exists": row is not None}
+            if action == "clients":
+                return {entry.stem: statistics(entry) for entry in paths}
+            return statistics(path) if paths else {"handshake": 0, "received": 0, "sent": 0, "exists": False}
         if path.exists():
             profile = json.loads(path.read_text())
             if ipaddress.ip_address(profile["address"]) not in address.network:

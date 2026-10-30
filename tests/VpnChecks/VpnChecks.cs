@@ -11,6 +11,24 @@ static class VpnChecks
     static void Assert(bool value,string message){if(!value)throw new Exception(message);}
     public static async Task Main()
     {
+        var sample=new VpnStatistics(1000,10,20,true);
+        var direct=VpnConnections.Observe("server","client",sample,1100);
+        Assert(direct.Connected==true&&direct.Mode=="direct","Fresh direct handshake missing");
+        using(var relay=new VpnConnections.Relay("server","client"))
+        {
+            Assert(VpnConnections.Observe("server","client",sample,1100).Mode=="direct","Idle standby was counted as transport");
+            relay.Touch();
+            Assert(VpnConnections.Observe("server","client",sample,1100).Mode=="relay","Active relay missing");
+            Assert(VpnConnections.Observe("other","client",sample,1100).Mode=="direct","Relay activity leaked between servers");
+            Assert(VpnConnections.Observe("server","other",sample,1100).Mode=="direct","Relay activity leaked between clients");
+        }
+        Assert(VpnConnections.Observe("server","client",sample,1100).Mode=="direct","Closed relay retained transport state");
+        Assert(VpnConnections.Observe("server","client",sample,1181).Connected==false,"Stale handshake reported connected");
+        Assert(VpnConnections.Observe("server","client",sample with{Handshake=0},1100).Connected==false,"No handshake reported connected");
+        Assert(VpnConnections.Observe("server","client",sample with{Exists=false},1100).Connected==false,"Missing peer reported connected");
+        Assert(VpnConnections.Describe([direct,null]).StartsWith("подключён"),"Unreachable server hid a connected session");
+        Assert(VpnConnections.Describe([null]).StartsWith("неизвестно"),"Unreachable server was reported disconnected");
+        Assert(VpnConnections.Describe([direct with{Connected=false,Mode=null}]).StartsWith("отключён"),"Disconnected status missing");
         var configuration=new VpnServerConfiguration(new string('a',24),"native","awg0","/etc/amnezia/amneziawg/awg0.conf",true,true,"","10.8.0.1/24",51820,null);
         Assert(VpnServerInstaller.Choose([],new StringReader(""),TextWriter.Null)=="new","Empty inventory did not select a new installation");
         Assert(VpnServerInstaller.Choose([configuration],new StringReader("1\n"),TextWriter.Null)==configuration.Id,"Existing configuration selection failed");
@@ -51,6 +69,7 @@ static class VpnChecks
             Assert((await Request(new Message("exec",profile.ClientId,Target:self,Command:"echo forbidden"))).Type=="error","Client obtained member privileges");
             Assert((await Request(new Message("vpn-client",profile.ClientId,Name:"exec",Target:self))).Type=="error","Client API accepted exec");
             Assert((await Request(new Message("vpn-client",profile.ClientId,Name:"inventory",Target:self))).Type=="error","Unprivileged VPN client obtained installation inventory");
+            Assert((await Request(new Message("vpn-client",profile.ClientId,Name:"clients",Target:self))).Type=="error","Unprivileged VPN client obtained other clients' statistics");
             var client=db.VpnClients().Single();db.PutVpn(client with{Servers=[],Version=client.Version+1});
             VpnControl.Merge(db,new Message("sync",VpnClients:[client with{Cert=new string('0',64),Version=client.Version+10}]));
             Assert(db.VpnClients().Single().Cert==client.Cert,"Client certificate changed through replication");

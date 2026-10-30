@@ -14,7 +14,7 @@ record VpnClient(string Id,string Name,string Cert,string[] Servers,long Version
 record VpnProfile(int Format,string Cluster,string ClientId,string Identity,Node[] Entrypoints,VpnServer[] Servers,string Issuer,string Signature);
 record VpnOperation(string Action,string? Client=null,string? Fingerprint=null);
 record VpnConfiguration(string Config,string Host,int Port,string LocalHost,int LocalPort);
-record VpnStatistics(long Handshake,long Received,long Sent,bool Exists);
+record VpnStatistics(long Handshake,long Received,long Sent,bool Exists,bool? Connected=null,string? Mode=null);
 
 static class VpnControl
 {
@@ -81,7 +81,7 @@ static class VpnControl
                 }
                 break;
             case ["client","list"]:
-                foreach(var c in db.VpnClients())Console.WriteLine($"{c.Id}  {c.Name}  {(c.Removed?"отозван":"активен")}  {c.Servers.Length} серверов");break;
+                await ListClients(db,cert);break;
             case ["client","show",var name]:Console.WriteLine(JsonSerializer.Serialize(FindClient(db,name),App.Json));break;
             case ["client",var action,var name,var node] when action is "allow" or "deny":
                 var client=FindClient(db,name);if(client.Removed)throw new ArgumentException("Клиент отозван.");
@@ -105,6 +105,32 @@ static class VpnControl
             default:throw new ArgumentException("Неверная команда. pnt vpn server install|list|remove; pnt vpn client create|list|show|allow|deny|revoke|handshake");
         }
     }
+    static async Task ListClients(Store db,X509Certificate2 cert)
+    {
+        var clients=db.VpnClients();
+        var servers=clients.Where(c=>!c.Removed).SelectMany(c=>c.Servers).Distinct()
+            .Where(id=>db.VpnServers().Any(s=>s.Id==id&&!s.Removed)&&db.Resolve(id)!=null).ToArray();
+        using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(12));
+        using var gate=new SemaphoreSlim(8);
+        var reports=await Task.WhenAll(servers.Select(async id=>
+        {
+            Dictionary<string,VpnStatistics>? stats=null;
+            try
+            {
+                await gate.WaitAsync(timeout.Token);
+                try { stats=JsonSerializer.Deserialize<Dictionary<string,VpnStatistics>>(await Query(db,cert,id,new("clients"),timeout.Token),App.Json); }
+                finally { gate.Release(); }
+            }
+            catch { }
+            return (Id:id,Stats:stats);
+        }));
+        foreach(var client in clients)
+        {
+            var state=client.Removed?"отключён  —":VpnConnections.Describe(reports.Where(r=>client.Servers.Contains(r.Id))
+                .Select(r=>r.Stats is null?null:r.Stats.GetValueOrDefault(client.Id)??new VpnStatistics(0,0,0,false,false)));
+            Console.WriteLine($"{client.Id}  {client.Name}  {(client.Removed?"отозван":"активен")}  {client.Servers.Length} серверов  {state}");
+        }
+    }
     static async Task ReconcileRemote(Store db,X509Certificate2 cert,string id)
     {
         try{await Query(db,cert,id,new("reconcile"));}
@@ -123,8 +149,8 @@ static class VpnControl
     {
         using var timeout=CancellationTokenSource.CreateLinkedTokenSource(token);timeout.CancelAfter(TimeSpan.FromSeconds(45));
         using var peer=await new RouteTransport(db,cert).Connect(target,cancellation:timeout.Token);
-        var task=await RouteTransport.SendTask(peer,new Message("vpn-admin",Certificate.Id(cert),Target:target,VpnPayload:JsonSerializer.Serialize(operation,App.Json),VpnServers:db.VpnServers().ToArray(),VpnClients:db.VpnClients().ToArray()));
-        var reply=await RouteTransport.ReadResult(peer,task.RequestId,TimeSpan.FromSeconds(40));
+        var task=await RouteTransport.SendTask(peer,new Message("vpn-admin",Certificate.Id(cert),Target:target,VpnPayload:JsonSerializer.Serialize(operation,App.Json),VpnServers:db.VpnServers().ToArray(),VpnClients:db.VpnClients().ToArray())).WaitAsync(timeout.Token);
+        var reply=await RouteTransport.ReadResult(peer,task.RequestId,TimeSpan.FromSeconds(40),timeout.Token);
         if(reply.Type!="vpn-result")throw new IOException(reply.Error??"VPN-сервис не ответил.");
         return reply.VpnPayload??"{}";
     }
@@ -143,14 +169,17 @@ static class VpnControl
             {
                 var config=await Prepare(db,operation,token);
                 await Peer.Send(stream,new Message("vpn-result",VpnPayload:"{}",RequestId:request.RequestId));
-                await VpnDatagrams.Exit(stream,config.LocalHost,config.LocalPort,()=>Allowed(db,operation),token);return;
+                using var relay=new VpnConnections.Relay(Certificate.Id(cert),operation.Client!);
+                await VpnDatagrams.Exit(stream,config.LocalHost,config.LocalPort,()=>Allowed(db,operation),token,relay.Touch);return;
             }
             var output=operation.Action switch
             {
                 "inventory"=>await VpnServerInstaller.Inventory(token),
                 "probe"=>await VpnAdapter.Run("probe",null,[],token),
                 "ensure"=>JsonSerializer.Serialize(await Prepare(db,operation,token),App.Json),
-                "stats"=>await VpnAdapter.Run("stats",operation.Client,[],token),
+                "stats"=>JsonSerializer.Serialize(VpnConnections.Observe(Certificate.Id(cert),operation.Client!,JsonSerializer.Deserialize<VpnStatistics>(await VpnAdapter.Run("stats",operation.Client,[],token),App.Json)!,DateTimeOffset.UtcNow.ToUnixTimeSeconds()),App.Json),
+                "clients"=>JsonSerializer.Serialize((JsonSerializer.Deserialize<Dictionary<string,VpnStatistics>>(await VpnAdapter.Run("clients",null,[],token),App.Json)??[])
+                    .ToDictionary(p=>p.Key,p=>VpnConnections.Observe(Certificate.Id(cert),p.Key,p.Value,DateTimeOffset.UtcNow.ToUnixTimeSeconds())),App.Json),
                 "reconcile"=>await VpnAdapter.Run("reconcile",null,AllowedIds(db),token),
                 _=>throw new ArgumentException("Неизвестная операция VPN.")
             };
@@ -251,12 +280,12 @@ static class VpnDatagrams
         var tasks=new[]{Copy(input,output),Copy(output,input)};
         try{await await Task.WhenAny(tasks);}finally{stop.Cancel();try{await Task.WhenAll(tasks);}catch{}}
     }
-    public static async Task Exit(Stream stream,string host,int port,Func<bool> allowed,CancellationToken token)
+    public static async Task Exit(Stream stream,string host,int port,Func<bool> allowed,CancellationToken token,Action? activity=null)
     {
         allowed=CachedPermission(allowed);
         using var udp=new UdpClient();udp.Connect(host,port);
         using var stop=CancellationTokenSource.CreateLinkedTokenSource(token);var t=stop.Token;
-        async Task Send(){while(!t.IsCancellationRequested){var data=await Read(stream,t);if(!allowed())throw new UnauthorizedAccessException("VPN-доступ отозван.");await udp.SendAsync(data,t);}}
+        async Task Send(){while(!t.IsCancellationRequested){var data=await Read(stream,t);if(!allowed())throw new UnauthorizedAccessException("VPN-доступ отозван.");await udp.SendAsync(data,t);activity?.Invoke();}}
         async Task Receive(){while(!t.IsCancellationRequested){var packet=await udp.ReceiveAsync(t);if(!allowed())throw new UnauthorizedAccessException("VPN-доступ отозван.");await Write(stream,packet.Buffer,t);}}
         var tasks=new[]{Send(),Receive()};try{await await Task.WhenAny(tasks);}finally{stop.Cancel();try{await Task.WhenAll(tasks);}catch{}}
     }

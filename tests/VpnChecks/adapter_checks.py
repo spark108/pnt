@@ -90,12 +90,17 @@ class AdapterChecks(unittest.TestCase):
             self.assertEqual(stats, {"handshake": 12345, "received": 100, "sent": 200, "exists": True})
             second = adapter.execute({"action": "ensure", "client": "b" * 16})
             self.assertIn("10.8.0.4/32", second["config"])
+            clients = adapter.execute({"action": "clients"})
+            self.assertEqual(set(clients), {"a" * 16, "b" * 16})
+            self.assertEqual(clients["a" * 16], stats)
+            self.assertTrue(clients["b" * 16]["exists"])
             adapter.execute({"action": "reconcile", "allowed": ["b" * 16]})
             self.assertNotIn(key(21), config)
             self.assertIn(key(22), config)
             self.assertIn(key(2), config)
             self.assertFalse((state / ("a" * 16 + ".json")).exists())
             self.assertFalse(adapter.execute({"action": "stats", "client": "a" * 16})["exists"])
+            self.assertEqual(set(adapter.execute({"action": "clients"})), {"b" * 16})
 
     def test_native(self):
         self.check_backend("native")
