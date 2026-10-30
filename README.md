@@ -345,3 +345,5 @@ pnt vpn server remove <node>
 Update regression checks: `dotnet run --project tests/UpdateChecks -c Release`; on Linux run `python3 tests/UpdateChecks/worker_checks.py` as root in a test environment; on Windows run `powershell -NoProfile -File tests/UpdateChecks/windows_handoff.ps1`. The worker checks use temporary source/install directories and stub Git, build and service commands.
 
 Глобус освещается по текущему положению Солнца: ночная сторона затемнена. Метки узлов расположены в 50 м над поверхностью с учётом подключённого рельефа. Узлы действующего VPN-каталога обозначены синими метками VPN, выбранные узлы — золотыми.
+
+В списке «Поверхность» можно выбрать встроенную карту, NASA или один из включённых датасетов Cesium ion (снимки либо 3D Tiles). Одновременно отображается только выбранная подложка; выбор сохраняется в браузере. Встроенная карта служит резервной для отсутствующих тайлов. Рельеф и векторные датасеты подключаются независимо. Ночное затемнение применяется также к 3D-подложкам, включая материалы без собственного освещения.

@@ -74,7 +74,7 @@ let receivedAt=Date.now(),viewer=null,firstView=true,satelliteLayer=null;
 let ionRevision=null,ionGeneration=0;const ionLayers=new Map();
 let geographicLayer=null,geographicLabels=[];try{$('map-geography').checked=localStorage.getItem('pnt.mapGeography')!=='off'}catch{}
 let surfaceChoice='nasa';try{surfaceChoice=localStorage.getItem('pnt.mapSurface')||'nasa'}catch{}
-$('map-surface').value=surfaceChoice==='local'?'local':'nasa';
+$('map-surface').value=['local','nasa'].includes(surfaceChoice)?surfaceChoice:'local';
 const now=()=>state.time?state.time+Date.now()-receivedAt:Date.now();
 const node=id=>state.nodes.find(n=>n.id===id),name=id=>node(id)?.name||id;
 const label=id=>{const n=node(id);return n?`${n.name} (${n.ip})`:id};
@@ -123,11 +123,32 @@ async function initGlobe(){try{
  const imagery=await Cesium.TileMapServiceImageryProvider.fromUrl('/assets/cesium/Assets/Textures/NaturalEarthII/',{maximumLevel:2});
  viewer.imageryLayers.addImageryProvider(imagery);applySurface();loadGeography();syncCesium();render();
  }catch(e){$('globe-status').textContent='Глобус недоступен: '+e.message;$('globe-status').className='error';console.error(e)}}
+function surfaceOptions(){
+ const select=$('map-surface'),choice=surfaceChoice;select.querySelectorAll('[data-ion]').forEach(option=>option.remove());
+ for(const asset of (state.cesium?.configured?state.cesium.assets:[]).filter(a=>a.enabled&&['IMAGERY','3DTILES'].includes(a.type))){const entry=document.createElement('option');entry.value='cesium:'+asset.id;entry.textContent='Cesium · '+asset.name;entry.dataset.ion='true';select.append(entry)}
+ select.value=[...select.options].some(o=>o.value===choice)?choice:'local';
+}
+function surfaceVisibility(){
+ if(!viewer)return;const choice=$('map-surface').value;
+ for(const [id,item] of ionLayers)if(item.object&&['imagery','tiles'].includes(item.kind))item.object.show=choice==='cesium:'+id;
+ if(choice.startsWith('cesium:')){const item=ionLayers.get(Number(choice.slice(7)));$('surface-status').textContent=item?.error?'Cesium недоступен — используется встроенная карта.':item?.object?'':'Загрузка Cesium…'}
+ viewer.scene.requestRender();
+}
+function nightShader(){return new Cesium.CustomShader({lightingModel:Cesium.LightingModel.UNLIT,fragmentShaderText:`
+ void fragmentMain(FragmentInput fsInput, inout czm_modelMaterial material) {
+  vec3 worldPosition = (czm_inverseView * vec4(fsInput.attributes.positionEC, 1.0)).xyz;
+  vec3 surfaceNormalEC = czm_viewRotation * normalize(worldPosition);
+  float daylight = smoothstep(-0.12, 0.15, dot(surfaceNormalEC, czm_sunDirectionEC));
+  float illumination = mix(0.12, 1.0, daylight);
+  material.diffuse *= illumination;
+  material.emissive *= illumination;
+ }
+ `})}
 function applySurface(){
  if(!viewer)return;
  if(satelliteLayer){viewer.imageryLayers.remove(satelliteLayer,true);satelliteLayer=null}
- const detailed=$('map-surface').value==='nasa';
- $('surface-status').textContent='';
+ surfaceVisibility();const detailed=$('map-surface').value==='nasa';
+ if(!$('map-surface').value.startsWith('cesium:'))$('surface-status').textContent='';
  if(detailed){
   const provider=new Cesium.UrlTemplateImageryProvider({url:'/api/imagery/nasa/{z}/{y}/{x}.jpg',maximumLevel:8,enablePickFeatures:false,credit:'NASA GIBS · Blue Marble'});
   const layer=viewer.imageryLayers.addImageryProvider(provider,1);satelliteLayer=layer;
@@ -138,7 +159,7 @@ function applySurface(){
  }
  viewer.scene.requestRender();
 }
-$('map-surface').onchange=()=>{try{localStorage.setItem('pnt.mapSurface',$('map-surface').value)}catch{}applySurface()};
+$('map-surface').onchange=()=>{surfaceChoice=$('map-surface').value;try{localStorage.setItem('pnt.mapSurface',surfaceChoice)}catch{}applySurface()};
 function ionList(){
  const root=$('cesium-assets');root.replaceChildren();const config=state.cesium;
  if(!config?.assets?.length){root.textContent='Нет подключённых датасетов';return}
@@ -149,7 +170,7 @@ function ionList(){
 function releaseIon(item){
  if(!viewer||!item?.object)return;const object=item.object;
  if(item.kind==='imagery')viewer.imageryLayers.remove(object,true);
- else if(item.kind==='tiles'){if(!viewer.scene.primitives.remove(object)&&!object.isDestroyed())object.destroy()}
+ else if(item.kind==='tiles'){const shader=object.customShader;if(!viewer.scene.primitives.remove(object)&&!object.isDestroyed())object.destroy();if(shader&&!shader.isDestroyed())shader.destroy()}
  else if(item.kind==='data')viewer.dataSources.remove(object,true);
  else if(item.kind==='terrain'&&viewer.terrainProvider===object)viewer.terrainProvider=new Cesium.EllipsoidTerrainProvider();
  for(const credit of item.credits||[])viewer.creditDisplay.removeStaticCredit(credit);
@@ -157,7 +178,7 @@ function releaseIon(item){
 function syncCesium(){
  if(!viewer)return;const config=state.cesium||{revision:'',configured:false,assets:[]};if(ionRevision===config.revision)return;ionRevision=config.revision;const generation=++ionGeneration;
  for(const item of ionLayers.values())releaseIon(item);ionLayers.clear();
- if(config.configured)for(const asset of config.assets.filter(a=>a.enabled)){const item={};ionLayers.set(asset.id,item);loadIon(asset,item,generation)}ionList();viewer.scene.requestRender();
+ if(config.configured)for(const asset of config.assets.filter(a=>a.enabled)){const item={};ionLayers.set(asset.id,item);loadIon(asset,item,generation)}surfaceOptions();applySurface();ionList();viewer.scene.requestRender();
 }
 async function loadIon(asset,item,generation){
  try{
@@ -166,21 +187,21 @@ async function loadIon(asset,item,generation){
   else {
    resource=await Cesium.IonResource.fromAssetId(asset.id,options);
    if(asset.type==='TERRAIN'){object=await Cesium.CesiumTerrainProvider.fromUrl(resource,{requestVertexNormals:true});kind='terrain'}
-   else if(asset.type==='3DTILES'){object=await Cesium.Cesium3DTileset.fromUrl(resource,{maximumScreenSpaceError:24});kind='tiles'}
+   else if(asset.type==='3DTILES'){object=await Cesium.Cesium3DTileset.fromUrl(resource,{maximumScreenSpaceError:24});object.customShader=nightShader();kind='tiles'}
    else if(asset.type==='GEOJSON'){object=await Cesium.GeoJsonDataSource.load(resource);kind='data'}
    else if(asset.type==='CZML'){object=await Cesium.CzmlDataSource.load(resource);kind='data'}
    else if(asset.type==='KML'){object=await Cesium.KmlDataSource.load(resource,{camera:viewer.camera,canvas:viewer.canvas});kind='data'}
    else throw Error('Unsupported asset type');
   }
-  if(generation!==ionGeneration){if(typeof object.destroy==='function'&&!object.isDestroyed?.())object.destroy();return}
+  if(generation!==ionGeneration){const shader=object.customShader;if(typeof object.destroy==='function'&&!object.isDestroyed?.())object.destroy();if(shader&&!shader.isDestroyed())shader.destroy();return}
   item.object=object;item.kind=kind;
-  if(kind==='imagery'){viewer.imageryLayers.add(object);for(const a of state.cesium.assets){const layer=ionLayers.get(a.id);if(layer?.kind==='imagery')viewer.imageryLayers.raiseToTop(layer.object)}}
-  else if(kind==='tiles')viewer.scene.primitives.add(object);
+  if(kind==='imagery'){object.show=$('map-surface').value==='cesium:'+asset.id;viewer.imageryLayers.add(object)}
+  else if(kind==='tiles'){object.show=$('map-surface').value==='cesium:'+asset.id;viewer.scene.primitives.add(object)}
   else if(kind==='terrain')viewer.terrainProvider=object;
   else {object.name=asset.name;await viewer.dataSources.add(object);if(generation!==ionGeneration){viewer.dataSources.remove(object,true);return}}
   if(resource?.credits){item.credits=resource.credits;for(const credit of item.credits)viewer.creditDisplay.addStaticCredit(credit)}
  }catch(e){if(generation!==ionGeneration)return;releaseIon(item);item.object=null;item.error=true;console.error('Cesium asset '+asset.id+': load failed')}
- if(generation===ionGeneration){ionList();viewer.scene.requestRender()}
+ if(generation===ionGeneration){surfaceVisibility();ionList();viewer.scene.requestRender()}
 }
 async function loadGeography(){try{
  const response=await fetch('/assets/geography.json');if(!response.ok)throw Error('HTTP '+response.status);const data=await response.json();
