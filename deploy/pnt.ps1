@@ -27,7 +27,7 @@ function Native([string]$File,[string[]]$Arguments){
 }
 function Cluster-Available {
     $previous=$ErrorActionPreference
-    try{$ErrorActionPreference='Continue';& $exe cluster status *> $null;return ($LASTEXITCODE -eq 0)}
+    try{$ErrorActionPreference='Continue';& $exe node status --require-cluster *> $null;return ($LASTEXITCODE -eq 0)}
     finally{$ErrorActionPreference=$previous}
 }
 function Stage([string]$Message){[IO.File]::AppendAllText($progress,"✓ $Message`n",[Text.UTF8Encoding]::new($false))}
@@ -119,7 +119,7 @@ try {
         if($Action -eq 'update'){
             Repair-PntAccess -DataPath (Join-Path $root 'data');Stage 'Data permissions repaired'
             if(Cluster-Available){
-                try{Native $exe -Arguments @('cluster','maintenance','start');$maintenance=$true;Stage 'Update status announced';Start-Sleep 8}
+                try{Native $exe -Arguments @('node','maintenance','start');$maintenance=$true;Stage 'Update status announced';Start-Sleep 8}
                 catch{Write-Output ('Update announcement unavailable: '+$_.Exception.Message)}
             }
             $service=Get-Service PNT -ErrorAction SilentlyContinue
@@ -154,10 +154,10 @@ try {
         Set-Service PNT -StartupType Automatic
         Native sc.exe -Arguments @('failure','PNT','reset=','86400','actions=','restart/5000/restart/10000/restart/30000')
         Start-Service PNT;Start-Sleep 2;if((Get-Service PNT).Status -ne 'Running'){throw 'Service failed to start.'};Stage 'Windows service started; pnt added to system PATH'
-        if($maintenance){Native $exe -Arguments @('cluster','maintenance','done');$maintenance=$false}
+        if($maintenance){Native $exe -Arguments @('node','maintenance','done');$maintenance=$false}
         if($Action -eq 'update'){
-            if($EventId){Native $exe -Arguments @('cluster','update','applied',$EventId)}else{
-                if(Cluster-Available){$commit=& git -C $source rev-parse HEAD;Native $exe -Arguments @('cluster','update','announce',$commit)}
+            if($EventId){Native $exe -Arguments @('node','update','applied',$EventId)}else{
+                if(Cluster-Available){$commit=& git -C $source rev-parse HEAD;Native $exe -Arguments @('node','update','announce',$commit)}
             }
         }
         $success=$true;Stage 'Operation completed'
@@ -171,7 +171,7 @@ try {
             }
             elseif($Action -eq 'install' -and $installedApp -and (Test-Path $app)){Move-Managed $app (Join-Path $root ('app-failed-'+$Operation))}
             if($stopped){Start-Service PNT -ErrorAction SilentlyContinue}
-            if($maintenance -and (Test-Path $exe)){try{Native $exe -Arguments @('cluster','maintenance','done')}catch{Write-Output $_.Exception.Message}}
+            if($maintenance -and (Test-Path $exe)){try{Native $exe -Arguments @('node','maintenance','done')}catch{Write-Output $_.Exception.Message}}
         }
         if($lock){$lock.Dispose()}
         Remove-Managed $temp

@@ -18,7 +18,7 @@ printf '/test/source\n' > "$test_dir/config/source-dir";chmod 600 "$test_dir/con
 export PNT_DATA_DIR="$test_dir/data" PNT_CONFIG_DIR="$test_dir/config" DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1
 export DOTNET_BUNDLE_EXTRACT_BASE_DIR="$test_dir/root-bundle"
 "$test_dir/pnt" _prepare-access
-"$test_dir/pnt" create cluster test >/dev/null
+"$test_dir/pnt" node init test >/dev/null
 chmod 600 "$test_dir/data/node.pfx" "$test_dir/data/pnt.db"
 "$test_dir/pnt" _prepare-access
 [ "$(stat -c %a "$test_dir/data")" = 2770 ]

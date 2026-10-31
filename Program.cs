@@ -103,7 +103,11 @@ static class App
                     else await new Service(db, cert).Run(); break;
                 case ["identity"]: Console.WriteLine(me); break;
                 case ["identity", "--fingerprint"]: Console.WriteLine(Certificate.Fingerprint(cert));break;
-                case ["connect", "status"]: Console.WriteLine($"Узел: {me}\nСервер: {db.Get("bootstrap_host")}\nСертификат сервера: {db.Get("bootstrap_pin:"+db.Get("bootstrap_host"))}\nКластер: {db.Get("cluster") ?? "ожидает подтверждения"}");break;
+                case ["node", "status"]:
+                    if(db.Get("cluster") is not null){Active(db);Console.WriteLine($"Кластер: {db.Get("cluster")}\nУзел: {me}\nIP: {db.Self()!.Ip}\nУзлов: {db.Nodes().Count(x=>!x.Removed)}");}
+                    else Console.WriteLine($"Узел: {me}\nСервер: {db.Get("bootstrap_host")}\nСертификат сервера: {db.Get("bootstrap_pin:"+db.Get("bootstrap_host"))}\nКластер: ожидает подтверждения");break;
+                case ["node", "status", "--require-cluster"]:
+                    Active(db);Console.WriteLine($"Кластер: {db.Get("cluster")}\nУзел: {me}\nIP: {db.Self()!.Ip}\nУзлов: {db.Nodes().Count(x=>!x.Removed)}");break;
                 case ["connect", "cluster", var host]:
                     if(db.Get("cluster") is not null) throw new Exception("Узел уже состоит в кластере.");
                     if(!IPAddress.TryParse(host,out var bootstrapIp) || bootstrapIp.AddressFamily!=AddressFamily.InterNetwork)throw new Exception("Укажите IPv4 действующего узла.");
@@ -144,6 +148,8 @@ static class App
                     Active(db);NodeManagement.Leave(db);Console.WriteLine("Выход зарегистрирован."); break;
                 case ["cluster", "nodes"]: PrintNodes(db, null); break;
                 case ["cluster", "nodes", var fromNode]: PrintNodes(db, fromNode); break;
+                case ["nodes", "--interactive"]: await WatchNodes(db,null);break;
+                case ["nodes", var fromNode, "--interactive"]: await WatchNodes(db,fromNode);break;
                 case ["nodes"]: PrintNodes(db, null); break;
                 case ["nodes", var fromNode]: PrintNodes(db, fromNode); break;
                 case ["routes"]: PrintRoutes(db, null); break;
@@ -217,24 +223,43 @@ static class App
         if (db.Get("cluster") == null || db.Get("left") == "1" || db.Self()?.Removed == true) throw new Exception("Узел не состоит в активном кластере.");
     }
 
-    static void PrintNodes(Store db, string? fromNode)
+    static readonly string[] NodeColumns=["ID","Имя","IP","Пинг / статус","NAT"];
+    static void PrintNodes(Store db,string? fromNode)
+    {
+        var rows=NodeRows(db,fromNode);
+        if(fromNode is not null)Console.WriteLine($"Пинг от узла {db.Resolve(fromNode)!.Name}, измерения за последние 30 секунд:");
+        CliOutput.Table(NodeColumns,rows);
+    }
+    static async Task WatchNodes(Store db,string? fromNode)
+    {
+        using var stop=new CancellationTokenSource();
+        ConsoleCancelEventHandler cancel=(_,e)=>{e.Cancel=true;stop.Cancel();};
+        Console.CancelKeyPress+=cancel;
+        try
+        {
+            if(!Console.IsOutputRedirected)Console.WriteLine("Обновление каждую секунду · Ctrl+C — выход"+(fromNode is null?"":" · пинг от "+CliOutput.Clean(fromNode)));
+            await CliOutput.LiveTable(NodeColumns,()=>NodeRows(db,fromNode),stop.Token);
+        }
+        finally{Console.CancelKeyPress-=cancel;}
+    }
+    static List<CliCell[]> NodeRows(Store db,string? fromNode)
     {
         Active(db);
-        var source = fromNode is null ? db.Self()! : db.Resolve(fromNode) ?? throw new Exception("Узел для измерения пинга не найден.");
-        if (fromNode is not null) Console.WriteLine($"Пинг от узла {source.Name} ({source.Id}), измерения за последние 30 секунд:");
+        var source=fromNode is null?db.Self()!:db.Resolve(fromNode)??throw new Exception("Узел для измерения пинга не найден.");
+        var nodes=db.Nodes();var pings=db.Pings();
         var rows = new List<CliCell[]>();
-        foreach (var node in db.Nodes())
+        foreach (var node in nodes)
         {
             var ping = source.Id == node.Id ? new PingReport(source.Id, node.Id, 0, Now, true, [source.Id])
-                : db.Pings().FirstOrDefault(x => x.Source == source.Id && x.Target == node.Id);
+                : pings.FirstOrDefault(x => x.Source == source.Id && x.Target == node.Id);
             var status = node.Removed ? "исключён"
                 : node.Updating && node.UpdatingSince > 0 && Now - node.UpdatingSince < 3600_000 ? "update"
                 : ping is not null ? $"{ping.Ms:0.0} ms" + (ping.Direct ? "" :
-                    ping.Route is { Length: > 2 } route ? " через " + string.Join(" → ", route.Skip(1).SkipLast(1).Select(x => db.Nodes().FirstOrDefault(n => n.Id == x)?.Name ?? x)) : " через другой узел")
+                    ping.Route is { Length: > 2 } route ? " через " + string.Join(" → ", route.Skip(1).SkipLast(1).Select(x => nodes.FirstOrDefault(n => n.Id == x)?.Name ?? x)) : " через другой узел")
                 : long.TryParse(db.Get("peer_sync_seen:"+node.Id),out var seen)&&Now-seen<30_000?"нет замера":"нет связи";
             rows.Add([node.Id,node.Name,new(node.Ip,node.BehindNat?"grey":null),new(status,node.Removed||status=="нет связи"?"red":status is "update" or "нет замера"?"yellow":"green"),new(node.BehindNat?"NAT":"—",node.BehindNat?"cyan":"grey")]);
         }
-        CliOutput.Table(["ID","Имя","IP","Пинг / статус","NAT"],rows);
+        return rows;
     }
 
     static void PrintRoutes(Store db, string? destination)

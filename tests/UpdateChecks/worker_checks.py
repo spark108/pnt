@@ -41,7 +41,7 @@ class WorkerChecks(unittest.TestCase):
             (root / "pnt.service").write_text("old-unit")
             app = root / "app"
             app.mkdir()
-            binary = '#!/bin/sh\necho "pnt $*" >> "$TRACE"\n[ "$*" != "cluster status" ]\n'
+            binary = '#!/bin/sh\necho "pnt $*" >> "$TRACE"\n[ "$*" != "node status --require-cluster" ]\n'
             (app / "pnt").write_text(binary)
             (app / "pnt").chmod(0o755)
             stubs = {
@@ -82,7 +82,7 @@ class WorkerChecks(unittest.TestCase):
                 self.assertEqual(result.returncode, 0)
                 self.assertLess(events.index("pull"), events.index("systemctl stop pnt.service"))
                 self.assertLess(events.index("new-dependencies"), events.index("build"))
-                self.assertIn("pnt cluster update applied " + "a" * 32, events)
+                self.assertIn("pnt node update applied " + "a" * 32, events)
                 self.assertNotIn("announce", "\n".join(events))
                 self.assertIn("# rebuilt", (app / "pnt").read_text())
                 self.assertEqual((root / "pnt.service").read_text(), "updated-unit")

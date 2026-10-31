@@ -56,12 +56,41 @@ static class CliOutput
         });
         Render(console, columns, data);
     }
-    internal static void Render(IAnsiConsole console, string[] columns, IEnumerable<CliCell[]> rows)
+    internal static async Task LiveTable(string[] columns,Func<IEnumerable<CliCell[]>> rows,CancellationToken cancellation,IAnsiConsole? console=null)
+    {
+        Initialize();
+        if(console is null)
+        {
+            if(Console.IsOutputRedirected||Environment.GetEnvironmentVariable("TERM")=="dumb")
+                throw new ArgumentException("Для --interactive нужен терминал без перенаправления вывода.");
+            console=AnsiConsole.Create(new AnsiConsoleSettings{Out=new AnsiConsoleOutput(Console.Out),Ansi=AnsiSupport.Detect,
+                ColorSystem=Environment.GetEnvironmentVariable("NO_COLOR") is null?ColorSystemSupport.Detect:ColorSystemSupport.NoColors,Interactive=InteractionSupport.Yes});
+        }
+        try
+        {
+            await console.Live(BuildTable(columns,rows())).AutoClear(false).StartAsync(async context=>
+            {
+                context.Refresh();
+                while(!cancellation.IsCancellationRequested)
+                {
+                    await Task.Delay(1000,cancellation);
+                    context.UpdateTarget(BuildTable(columns,rows()));
+                    context.Refresh();
+                }
+            });
+        }
+        catch(OperationCanceledException) when(cancellation.IsCancellationRequested){}
+    }
+    internal static void Render(IAnsiConsole console, string[] columns, IEnumerable<CliCell[]> rows)=>console.Write(BuildTable(columns,rows));
+    static Table BuildTable(string[] columns,IEnumerable<CliCell[]> rows)
     {
         var table = new Table().Border(TableBorder.Rounded).BorderStyle(Style.Parse("grey"));
         foreach (var column in columns) table.AddColumn(new TableColumn(new Text(Clean(column), Style.Parse("bold"))));
         foreach (var row in rows)
+        {
+            if(row.Length!=columns.Length)throw new ArgumentException("Incorrect table column count.");
             table.AddRow(row.Select(cell => (IRenderable)new Text(Clean(cell.Value), Style.Parse(cell.Style ?? "default"))).ToArray());
-        console.Write(table);
+        }
+        return table;
     }
 }

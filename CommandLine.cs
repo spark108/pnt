@@ -52,7 +52,7 @@ static class CommandLine
             var named = (options ?? []).Select(o => new Option<string>(o.Name)
                 { Description = o.Description, Required = o.Required }).ToArray();
             var switches = (flags ?? []).Select(f => new Option<bool>(f)
-                { Description = f switch { "--fingerprint" => "Показать отпечаток сертификата.", "--check" => "Только проверить наличие новой версии без установки.", _ => "Интерактивный режим." } }).ToArray();
+                { Description = f switch { "--fingerprint" => "Показать отпечаток сертификата.", "--require-cluster" => "Вернуть ошибку, если узел не состоит в активном кластере.", "--check" => "Только проверить наличие новой версии без установки.", "--interactive" when path=="node list" => "Обновлять таблицу на месте до Ctrl+C.", _ => "Интерактивный режим." } }).ToArray();
             foreach (var argument in arguments) command.Arguments.Add(argument);
             foreach (var option in named) command.Options.Add(option);
             foreach (var flag in switches) command.Options.Add(flag);
@@ -74,10 +74,10 @@ static class CommandLine
         Group("node invite", "Приглашения в кластер.");
         Leaf("node init", "Создать новый кластер с общим ключом.", [("key", "Общий ключ кластера.")], dispatch:"create cluster", hidden:clustered);
         Leaf("node join", "Отправить заявку на вступление в кластер.", [("ip", "IPv4 действующего узла.")], dispatch:"connect cluster", hidden:clustered);
-        Leaf("node status", "Показать состояние узла и подключения.", dispatch:clustered?"cluster status":"connect status");
+        Leaf("node status", "Показать состояние узла и подключения.", flags:["--require-cluster"]);
         Leaf("node identity", "Показать уникальный ID текущего узла.", flags:["--fingerprint"], dispatch:"identity");
         Leaf("node name", "Изменить имя текущего узла.", [("name", "Новое имя.")], dispatch:"name", hidden:!clustered);
-        Leaf("node list", "Показать узлы, пинг и транспортные маршруты.", [("from?", "ID или имя узла, от лица которого показать пинг.")], dispatch:"nodes", hidden:!clustered);
+        Leaf("node list", "Показать узлы, пинг и транспортные маршруты.", [("from?", "ID или имя узла, от лица которого показать пинг.")], flags:["--interactive"], dispatch:"nodes", hidden:!clustered);
         Leaf("node routes", "Показать основные и резервные маршруты.", [("node?", "ID, имя или IP конечного узла.")], dispatch:"routes", hidden:!clustered);
         Leaf("node requests", "Показать ожидающие заявки на вступление.", dispatch:"cluster requests", hidden:!clustered);
         Leaf("node accept", "Принять заявку нового узла.", [("id", "ID заявки.")], dispatch:"cluster accept", hidden:!clustered);
@@ -89,13 +89,12 @@ static class CommandLine
         Leaf("node invite accept", "Вступить в кластер по приглашению.", [("invite", "Ключ приглашения.")], dispatch:"accept cluster", hidden:clustered);
         Leaf("node invite list", "Показать выданные приглашения.", dispatch:"cluster invites", hidden:!clustered);
         Leaf("node invite revoke", "Отозвать приглашение.", [("id", "ID приглашения.")], dispatch:"cluster invite revoke", hidden:!clustered);
-        Group("create", "Создание ресурсов PNT.");
-        Group("accept", "Принятие приглашений.");
-        Group("connect", "Заявка на присоединение к кластеру.");
-        Group("cluster", "Управление узлами и состоянием кластера.");
-        Group("cluster invite", "Управление приглашениями.");
-        Group("cluster update", "События обновления кластера.");
-        Group("cluster maintenance", "Статус обслуживания текущего узла.");
+        Group("node update", "Служебные события обновления кластера.");
+        Group("node maintenance", "Статус обслуживания текущего узла.");
+        Leaf("node update announce", "Объявить коммит обновления.", [("commit", "SHA-1 коммита.")], dispatch:"cluster update announce");
+        Leaf("node update applied", "Подтвердить применение обновления.", [("id", "ID события.")], dispatch:"cluster update applied");
+        Leaf("node maintenance start", "Объявить обслуживание.", dispatch:"cluster maintenance start");
+        Leaf("node maintenance done", "Завершить обслуживание.", dispatch:"cluster maintenance done");
         Group("forward", "Проброс TCP-портов через сеть PNT.");
         Group("web", "Веб-интерфейс всех узлов кластера.");
         Group("cesium", "Датасеты Cesium ion на глобусе.");
@@ -109,32 +108,10 @@ static class CommandLine
         Group("vpn", "VPN-серверы и доступ клиентов.");
         Group("vpn server", "Установка и управление VPN-серверами.");
         Group("vpn client", "Управление VPN-клиентами и их правами.");
-        Leaf("create cluster", "Создать кластер с общим ключом.", [("key", "Общий ключ кластера.")]);
-        Leaf("accept cluster", "Принять приглашение в кластер.", [("invite", "Ключ приглашения.")]);
-        Leaf("connect cluster", "Отправить заявку действующему узлу.", [("ip", "IPv4 действующего узла.")]);
-        Leaf("connect status", "Показать состояние заявки на присоединение.");
-        Leaf("identity", "Показать уникальный ID текущего узла.", flags: ["--fingerprint"]);
-        Leaf("name", "Изменить отображаемое имя текущего узла. Имя с пробелами заключите в кавычки.", [("name", "Новое имя узла.")]);
-        Leaf("nodes", "Показать узлы, пинг и промежуточные серверы.", [("from?", "ID или имя узла, от лица которого показать измерения.")]);
-        Leaf("routes", "Показать основные и резервные маршруты.", [("node?", "ID, имя или IP конечного узла.")]);
         Leaf("ping", "Измерить пинг до внешнего адреса со всех доступных узлов.", [("host", "IPv4 или домен назначения.")]);
         Leaf("install", "Установить PNT локально или на удалённом сервере.", options: [("-r", "SSH-адрес удалённого сервера, например root@192.0.2.1.", false)]);
         Leaf("update", "Обновить PNT и объявить обновление кластеру.", flags: ["--check"]);
         Leaf("serve", "Запустить фоновую службу узла.");
-        Leaf("cluster add", "Создать приглашение для указанного IP.", [("ip", "IP приглашаемого узла.")]);
-        Leaf("cluster remove", "Исключить узел из кластера.", [("node", "ID, имя или IP узла.")]);
-        Leaf("cluster leave", "Выйти из кластера текущим узлом.");
-        Leaf("cluster nodes", "Показать узлы, пинг и маршруты.", [("from?", "Узел, от лица которого показать измерения.")]);
-        Leaf("cluster status", "Показать состояние текущего кластера.");
-        Leaf("cluster requests", "Показать ожидающие заявки новых узлов.");
-        Leaf("cluster accept", "Подтвердить заявку нового узла.", [("id", "ID заявки.")]);
-        Leaf("cluster reject", "Отклонить заявку нового узла.", [("id", "ID заявки.")]);
-        Leaf("cluster invites", "Показать выданные приглашения.");
-        Leaf("cluster invite revoke", "Отозвать приглашение.", [("id", "ID приглашения.")]);
-        Leaf("cluster update announce", "Объявить коммит обновления узлам.", [("commit", "Полный SHA-1 коммита Git.")]);
-        Leaf("cluster update applied", "Подтвердить применение обновления.", [("id", "ID события обновления.")]);
-        Leaf("cluster maintenance start", "Сообщить кластеру о начале обслуживания.");
-        Leaf("cluster maintenance done", "Сообщить кластеру о завершении обслуживания.");
         Leaf("web enable", "Включить веб-интерфейс на порту 8016. Пароль запрашивается отдельно.");
         Leaf("web disable", "Отключить веб-интерфейс и сбросить пароль.");
         Leaf("forward add", "Создать проброс TCP-порта.", options:
@@ -165,8 +142,6 @@ static class CommandLine
         shell.Options.Add(new Option<bool>("--interactive") { Description = "Интерактивный режим, если поддерживается узлом." });
         shell.SetAction((result, cancellation) => execute(["sh", .. result.Tokens.Select(t => t.Value).Skip(1)]));
         root.Subcommands.Add(shell);
-        // Keep old entry points for installed workers and mixed-version clusters.
-        foreach(var command in root.Subcommands.Where(c=>new[]{"create","accept","connect","cluster","identity","name","nodes","routes"}.Contains(c.Name)))command.Hidden=true;
         return root;
     }
 }

@@ -136,8 +136,8 @@ update_local() {
     cp -p "$UNIT" "$TEMP_DIR/pnt.service.old"
     OLD_ACTIVE=0
     if systemctl is-active --quiet pnt.service; then OLD_ACTIVE=1; fi
-    if "$BIN" cluster status >/dev/null 2>&1; then
-        if "$BIN" cluster maintenance start; then
+    if "$BIN" node status --require-cluster >/dev/null 2>&1; then
+        if "$BIN" node maintenance start; then
             MAINT_STARTED=1
             printf '✓ Статус update разослан узлам кластера\n' >> "$PROGRESS"
             sleep 8
@@ -167,14 +167,14 @@ update_local() {
     systemctl is-active --quiet pnt.service || die 'Updated service did not start.'
     printf '✓ Служба запущена с новой версией\n' >> "$PROGRESS"
     if [ "$MAINT_STARTED" -eq 1 ]; then
-        step 'Статус update снят' "$BIN" cluster maintenance done
+        step 'Статус update снят' "$BIN" node maintenance done
         MAINT_STARTED=0
     fi
     if [ -n "$EVENT_ID" ]; then
-        step 'Обновление узла подтверждено' "$BIN" cluster update applied "$EVENT_ID"
-    elif "$BIN" cluster status >/dev/null 2>&1; then
+        step 'Обновление узла подтверждено' "$BIN" node update applied "$EVENT_ID"
+    elif "$BIN" node status --require-cluster >/dev/null 2>&1; then
         commit=$(as_invoker git -C "$SCRIPT_DIR" rev-parse HEAD)
-        step 'Обновление объявлено кластеру' "$BIN" cluster update announce "$commit"
+        step 'Обновление объявлено кластеру' "$BIN" node update announce "$commit"
     fi
     UPDATE_OK=1
 }
@@ -186,28 +186,28 @@ install_remote() {
     SSH_SOCKET=$2
     remote_ip=${REMOTE_HOST#root@}
     step 'Связь с удалённым сервером установлена' remote_ssh true
-    if remote_ssh 'test -x /usr/local/bin/pnt && pnt cluster status >/dev/null 2>&1'; then
+    if remote_ssh 'test -x /usr/local/bin/pnt && pnt node status --require-cluster >/dev/null 2>&1'; then
         die 'The remote server already belongs to a cluster.'
     fi
     CURRENT_STAGE='PNT установлен на удалённом сервере'
     remote_ssh "set -e; export DEBIAN_FRONTEND=noninteractive; apt-get update; apt-get install -y git ca-certificates; touch /etc/default/pnt; sed -i '/^PNT_ADVERTISE_IP=/d' /etc/default/pnt; printf 'PNT_ADVERTISE_IP=%s\\n' '$remote_ip' >> /etc/default/pnt; if [ -d /root/pnt/.git ]; then git -C /root/pnt remote set-url origin $REPOSITORY; git -C /root/pnt pull --ff-only origin master; else git clone $REPOSITORY /root/pnt; fi; if [ -x /usr/local/bin/pnt ]; then /root/pnt/pnt.sh update; else /root/pnt/pnt.sh install; fi"
     printf '✓ %s\n' "$CURRENT_STAGE" >> "$PROGRESS"
     CURRENT_STAGE='Заявка нового узла отправлена'
-    entry_ip=$("$BIN" cluster status | sed -n 's/^IP: //p')
-    remote_id=$(remote_ssh 'pnt identity')
+    entry_ip=$("$BIN" node status --require-cluster | sed -n 's/^IP: //p')
+    remote_id=$(remote_ssh 'pnt node identity')
     printf '%s\n' "$remote_id" | grep -Eq '^[0-9a-f]{16}$' || die 'The remote node returned an invalid identity.'
-    remote_ssh "pnt connect cluster '$entry_ip'"
+    remote_ssh "pnt node join '$entry_ip'"
     printf '✓ %s\n' "$CURRENT_STAGE" >> "$PROGRESS"
     CURRENT_STAGE='Подключение нового узла подтверждено'
     attempts=0
-    until "$BIN" cluster requests | grep -q "^$remote_id "; do
+    until "$BIN" node requests | grep -q "^$remote_id "; do
         attempts=$((attempts + 1))
         [ "$attempts" -lt 30 ] || die 'The new node did not send its enrollment request.'
         sleep 1
     done
-    "$BIN" cluster accept "$remote_id"
+    "$BIN" node accept "$remote_id"
     attempts=0
-    until remote_ssh 'pnt cluster status >/dev/null 2>&1'; do
+    until remote_ssh 'pnt node status --require-cluster >/dev/null 2>&1'; do
         attempts=$((attempts + 1))
         [ "$attempts" -lt 30 ] || die 'The new node did not receive approval.'
         sleep 1
@@ -233,7 +233,7 @@ finish_worker() {
                 systemctl daemon-reload
             fi
             if [ "$STOPPED" -eq 1 ] && [ "$OLD_ACTIVE" -eq 1 ]; then systemctl start pnt.service; fi
-            if [ "$MAINT_STARTED" -eq 1 ]; then "$BIN" cluster maintenance done; fi
+            if [ "$MAINT_STARTED" -eq 1 ]; then "$BIN" node maintenance done; fi
         fi
         printf '✗ %s\n' "${CURRENT_STAGE:-Операция завершилась ошибкой}" >> "$PROGRESS"
     fi
@@ -352,7 +352,7 @@ start_remote_install() {
     set -- $ip
     IFS=$old_ifs
     for octet do [ "$octet" -le 255 ] || die 'Invalid IPv4 address.'; done
-    "$BIN" cluster status >/dev/null || die 'Create or join a cluster on this server first.'
+    "$BIN" node status --require-cluster >/dev/null || die 'Create or join a cluster on this server first.'
     install -d -m 700 /run/pnt
     socket=/run/pnt/ssh-$(date +%s)-$$.sock
     ssh -M -S "$socket" -o ControlPersist=3600 -fN "$host"
