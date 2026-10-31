@@ -1,0 +1,4 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable><EnableDefaultCompileItems>false</EnableDefaultCompileItems><StartupObject>Pnt.NodeChecks</StartupObject></PropertyGroup>
+  <ItemGroup><Compile Include="../../*.cs"/><Compile Include="NodeChecks.cs"/><EmbeddedResource Include="../../web/index.html" Link="web/index.html"/><FrameworkReference Include="Microsoft.AspNetCore.App"/><PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.14"/><PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.13"/><PackageReference Include="System.ServiceProcess.ServiceController" Version="10.0.0"/><PackageReference Include="System.CommandLine" Version="2.0.0"/></ItemGroup>
+</Project>

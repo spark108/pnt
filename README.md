@@ -10,7 +10,7 @@ The CLI uses System.CommandLine. Every group and subcommand has its own help pag
 
 ```sh
 pnt --help
-pnt cluster
+pnt node
 pnt vpn client --help
 pnt vpn client create --help
 pnt help forward add
@@ -77,7 +77,7 @@ sudo ./pnt.sh install -r root@192.0.2.20
 
 `install` and `update` run in a separate systemd unit and print a checkmark when each stage finishes. Closing the terminal does not cancel the worker. `./pnt.sh status` shows the service and the latest operation. `update` first fast-forwards the local checkout from the public GitHub repository while the service is still running. The worker reloads the updated installer, preserving its operation, log and maintenance lock. The new installer announces maintenance, stops the service, installs all declared dependencies, builds, installs the binary and unit, and starts the service. A failed pull leaves the service running; a later failure restores the previous binary/unit and restarts a previously running service.
 
-Before stopping the service for an update, the node announces its `update` status over the cluster transport. `pnt cluster nodes` shows `update` in place of that node's ping, including when viewing pings from another node. The status travels through normal cluster synchronization, then clears after the service starts or the update rolls back. A stale status expires from the display after one hour. Existing nodes need this version once before they can announce their own update status.
+Before stopping the service for an update, the node announces its `update` status over the cluster transport. `pnt node list` shows `update` in place of that node's ping, including when viewing pings from another node. The status travels through normal cluster synchronization, then clears after the service starts or the update rolls back. A stale status expires from the display after one hour. Existing nodes need this version once before they can announce their own update status.
 
 After each successful manual update on a cluster member, it creates a fresh event and announces the Git commit to peers over the cluster transport, even if that commit was already installed. This lets all nodes reapply dependencies and installer changes. Automatically updated members acknowledge that event without creating another one, preventing an update loop. An acknowledgement of an older event leaves a newer received event pending. Each connected member runs its own update in a separate systemd unit and relays the notice through normal cluster synchronization. A node that is offline updates after reconnecting. All existing nodes must first receive a version with this feature once by running `./pnt.sh update` locally.
 
@@ -120,42 +120,41 @@ Windows ACL regression check (uses a temporary SQLite database and the current u
 On a server that already has a cluster:
 
 ```sh
-pnt create cluster '<key>'
+pnt node init '<key>'
 ```
 
 On the new server, with its PNT service running:
 
 ```sh
-pnt identity
-pnt identity --fingerprint
-pnt connect cluster <reachable-existing-node-IPv4>
-pnt connect status
+pnt node identity
+pnt node identity --fingerprint
+pnt node join <reachable-existing-node-IPv4>
+pnt node status
 ```
 
 On the existing server:
 
 ```sh
-pnt cluster requests
-pnt cluster accept <new-node-id>
-# Or: pnt cluster reject <new-node-id>
+pnt node requests
+pnt node accept <new-node-id>
+# Or: pnt node reject <new-node-id>
 ```
 
-Compare the requesting identity and certificate before approval. The bootstrap server certificate uses trust on first use: the new node pins the certificate it initially receives and exposes it in `pnt connect status`; compare it with the trusted server identity/certificate through a trusted channel. Inactive requests expire from the pending list after ten minutes. There is no automatic membership approval.
+Compare the requesting identity and certificate before approval. The bootstrap server certificate uses trust on first use: the new node pins the certificate it initially receives and exposes it in `pnt node status`; compare it with the trusted server identity/certificate through a trusted channel. Inactive requests expire from the pending list after ten minutes. There is no automatic membership approval.
 
 The new node opens the connection, receives approval on that connection, and upgrades it into a persistent bidirectional encrypted channel. Existing nodes can then initiate logical requests toward the NAT node over that already open channel. The NAT node does not need an inbound port mapping. On disconnect/restart it reconnects outbound to known peers, keeping the bootstrap address as a reconnect seed. At least one known member must be reachable outbound; there is no UDP hole punching or public rendezvous server.
 
 Confirmed direct channels have priority over relay paths even when a relay path has lower measured latency. Among relayed alternatives, paths using fewer NAT transit nodes are preferred; latency and stability break ties. Existing members can keep their identities and establish the new outbound channels after upgrading. The older invitation commands remain available for compatibility.
 
 ```sh
-sudo pnt create cluster '37004389'
-sudo pnt cluster add 192.0.2.20
+sudo pnt node init '37004389'
+sudo pnt node invite create 192.0.2.20
 # Run the invitation printed above on 192.0.2.20:
-sudo pnt accept cluster '<invite_key>'
-sudo pnt name 'edge-1'
-sudo pnt cluster nodes
-sudo pnt cluster nodes 93a3655e61179794  # Ping measured by this node to every cluster member
-sudo pnt nodes                          # Short form
-sudo pnt cluster status
+sudo pnt node invite accept '<invite_key>'
+sudo pnt node name 'edge-1'
+sudo pnt node list
+sudo pnt node list 93a3655e61179794  # Ping measured by this node to every cluster member
+sudo pnt node status
 ```
 
 The invited machine must be able to reach the inviting machine on TCP 442. An invitation lasts one hour, is bound to the recipient IP, and can be used once. To connect a machine through a relay, issue the invitation from a cluster member that it can reach directly. After joining, state synchronization and forwarding can traverse another known node if direct access fails.
@@ -246,23 +245,23 @@ Ingress is bound to the chosen local address. Exit connections use the chosen so
 ## Membership and status
 
 ```sh
-sudo pnt cluster nodes
-sudo pnt cluster invites
-sudo pnt cluster invite revoke <id>
-sudo pnt cluster remove <node-id-or-ip>
-sudo pnt cluster leave
+sudo pnt node list
+sudo pnt node invite list
+sudo pnt node invite revoke <id>
+sudo pnt node remove <node-id-or-ip>
+sudo pnt node leave
 journalctl -u pnt -f
 ```
 
-Nodes exchange their membership, forwarding records, and ping measurements every five seconds. `pnt cluster nodes [node-id]` and `pnt nodes [node-id]` show measurements made by the specified node; values older than 30 seconds appear as `нет связи` (or `нет замера` when synchronization still succeeds locally). When a direct connection fails, the node tries reachable cluster peers as relays, preferring the route with the lowest known direct-link latency. The measured response time is shown as `28.3 ms через gateway` (or multiple relay names). Records with newer timestamps replace older ones. `cluster remove` creates a removal record; peers reject that certificate after receiving it. `cluster leave` publishes the local node's own removal. A disconnected peer can retain stale membership until it reconnects or receives an update through another peer.
+Nodes exchange their membership, forwarding records, and ping measurements every five seconds. `pnt node list [node-id]` shows measurements made by the specified node; values older than 30 seconds appear as `нет связи` (or `нет замера` when synchronization still succeeds locally). When a direct connection fails, the node tries reachable cluster peers as relays, preferring the route with the lowest known direct-link latency. The measured response time is shown as `28.3 ms через gateway` (or multiple relay names). Records with newer timestamps replace older ones. `node remove` creates a removal record; peers reject that certificate after receiving it. `node leave` publishes the local node's own removal. A disconnected peer can retain stale membership until it reconnects or receives an update through another peer.
 
 Internal ping uses 16-byte nonce/echo requests inside the authenticated PNT transport on port 442, through the selected route. Channel establishment, route confirmation, synchronization and database operations are excluded from the timer. The displayed RTT is the median of three short exchanges; background route comparisons use one exchange per candidate. Relay time is included. ICMP is not needed for these measurements (the separate `pnt ping <external-address>` command still uses external ping). Update all cluster nodes to support the short-probe protocol; an older endpoint cannot provide this measurement.
 
 ## Background routes and persistent connections
 
 ```sh
-sudo pnt routes                 # Main and backup paths from this server
-sudo pnt routes <node-id>       # Paths to a particular member
+sudo pnt node routes                 # Main and backup paths from this server
+sudo pnt node routes <node-id>       # Paths to a particular member
 ```
 
 The daemon checks direct neighbors roughly every five seconds and independently searches for alternatives to every node every 20–30 seconds with randomized scheduling. Searches continue while the main path is healthy. Each SQLite database stores up to four verified routes per destination, including latency, last verification, success/failure counters, and the main route. Routes expire after 60 seconds without verification. A stable alternative becomes the main path after three successful search rounds if it is at least 20% faster; failure of the current path allows immediate use of a backup.
@@ -338,7 +337,7 @@ pnt vpn server remove <node>
 
 После успешной установки и проверки выбранной конфигурации узел автоматически регистрируется в VPN-каталоге. Для уже зарегистрированного узла сохраняется прежнее имя для клиентов; для нового используется имя узла. Выбор конфигурации сохраняется локально, поэтому работа нескольких интерфейсов/контейнеров не делает привязку неоднозначной. Профили PNT разных конфигураций хранятся раздельно; отзыв доступа обрабатывает все ранее привязанные конфигурации.
 
-`server rename` изменяет только имя VPN-сервера, отображаемое у клиентов. Оно синхронизируется по кластеру; ID, права и конфигурации подключения сохраняются. Само имя узла кластера меняется отдельно командой `pnt name <имя>`.
+`server rename` изменяет только имя VPN-сервера, отображаемое у клиентов. Оно синхронизируется по кластеру; ID, права и конфигурации подключения сохраняются. Само имя узла кластера меняется отдельно командой `pnt node name <имя>`.
 
 `server remove` убирает узел из VPN-каталога и отзывает обслуживаемые PNT профили. Он не удаляет AmneziaWG и чужие конфигурации/профили. Старые команды `pnt vpn add server`, `pnt vpn servers` и `pnt vpn remove` заменены новой группой `vpn server`.
 
@@ -347,3 +346,7 @@ Update regression checks: `dotnet run --project tests/UpdateChecks -c Release`; 
 Глобус освещается по текущему положению Солнца: ночная сторона затемнена. Метки узлов расположены в 50 м над поверхностью с учётом подключённого рельефа. Узлы действующего VPN-каталога обозначены синими метками VPN, выбранные узлы — золотыми.
 
 В списке «Поверхность» можно выбрать встроенную карту, NASA или один из включённых датасетов Cesium ion (снимки либо 3D Tiles). Одновременно отображается только выбранная подложка; выбор сохраняется в браузере. Встроенная карта служит резервной для отсутствующих тайлов. Рельеф и векторные датасеты подключаются независимо. Ночное затемнение применяется также к 3D-подложкам, включая материалы без собственного освещения.
+
+Управление узлами объединено в `pnt node`. `pnt node --help` показывает команды для текущего состояния: до вступления доступны `init <key>`, `join <IPv4>`, `status`, `identity` и `invite accept <token>`; после вступления `init`, `join` и принятие приглашения скрываются. Для участника доступны `list [from]`, `requests`, `accept <id>`, `reject <id>`, `remove <node>`, `kick <node>`, `leave`, `name <name>`, `routes [node]`, `status`, `identity`, а также `invite create/list/revoke`. Отдельная справка: `pnt node accept --help`. `leave` регистрирует выход из кластера, а не останавливает службу. Старые команды скрыты из справки и сохранены для совместимости с установленными скриптами.
+
+`pnt node kick <node>` отправляет выбранному узлу запрос добровольного выхода по подтверждённому маршруту. Узел сохраняет собственный выход и возвращает подтверждение; после этого управляющий узел распространяет запись об удалении кластеру. Недоступный узел автоматически не исключается: для принудительного исключения используйте `pnt node remove <node>`. При потере подтверждения задача не повторяется — проверьте `pnt node list`. Все узлы маршрута должны поддерживать новую команду.

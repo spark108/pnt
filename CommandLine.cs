@@ -4,14 +4,14 @@ namespace Pnt;
 
 static class CommandLine
 {
-    public static Task<int> Run(string[] args, Func<string[], Task<int>> execute)
+    public static Task<int> Run(string[] args, Func<string[], Task<int>> execute, bool clustered = false)
     {
         if (args is ["sh", var target, .. var tail] && target is not ("--help" or "-h" or "-?" or "help") && tail.Length > 0)
         {
             if (tail is ["--interactive"]) throw new ArgumentException("После --interactive укажите команду.");
             return execute(args);
         }
-        var root = Build(execute);
+        var root = Build(execute, clustered);
         if (args is ["help", .. var path]) args = [.. path, "--help"];
         if (args.Length == 0) args = ["--help"];
         var current = (Command)root;
@@ -26,7 +26,7 @@ static class CommandLine
         return root.Parse(args).InvokeAsync(new InvocationConfiguration { EnableDefaultExceptionHandler = false });
     }
 
-    internal static RootCommand Build(Func<string[], Task<int>> execute)
+    internal static RootCommand Build(Func<string[], Task<int>> execute, bool clustered = false)
     {
         var root = new RootCommand("PNT — управление децентрализованной сетью серверов.");
         var groups = new Dictionary<string, Command> { [""] = root };
@@ -39,7 +39,7 @@ static class CommandLine
             groups[path] = command;
         }
         void Leaf(string path, string description, (string Name, string Description)[]? parameters = null,
-            (string Name, string Description, bool Required)[]? options = null, string[]? flags = null)
+            (string Name, string Description, bool Required)[]? options = null, string[]? flags = null, string? dispatch = null, bool hidden = false)
         {
             var split = path.LastIndexOf(' ');
             var parent = split < 0 ? "" : path[..split];
@@ -58,7 +58,7 @@ static class CommandLine
             foreach (var flag in switches) command.Options.Add(flag);
             command.SetAction(async (result, cancellation) =>
             {
-                var values = path.Split(' ').ToList();
+                var values = (dispatch ?? path).Split(' ').ToList();
                 foreach (var argument in arguments)
                     if (result.GetValue(argument) is { } value) values.Add(value);
                 foreach (var option in named)
@@ -67,8 +67,28 @@ static class CommandLine
                     if (result.GetValue(flag)) values.Add(flag.Name);
                 return await execute(values.ToArray());
             });
+            command.Hidden = hidden;
             groups[parent].Subcommands.Add(command);
         }
+        Group("node", "Узлы, подключение и управление кластером.");
+        Group("node invite", "Приглашения в кластер.");
+        Leaf("node init", "Создать новый кластер с общим ключом.", [("key", "Общий ключ кластера.")], dispatch:"create cluster", hidden:clustered);
+        Leaf("node join", "Отправить заявку на вступление в кластер.", [("ip", "IPv4 действующего узла.")], dispatch:"connect cluster", hidden:clustered);
+        Leaf("node status", "Показать состояние узла и подключения.", dispatch:clustered?"cluster status":"connect status");
+        Leaf("node identity", "Показать уникальный ID текущего узла.", flags:["--fingerprint"], dispatch:"identity");
+        Leaf("node name", "Изменить имя текущего узла.", [("name", "Новое имя.")], dispatch:"name", hidden:!clustered);
+        Leaf("node list", "Показать узлы, пинг и транспортные маршруты.", [("from?", "ID или имя узла, от лица которого показать пинг.")], dispatch:"nodes", hidden:!clustered);
+        Leaf("node routes", "Показать основные и резервные маршруты.", [("node?", "ID, имя или IP конечного узла.")], dispatch:"routes", hidden:!clustered);
+        Leaf("node requests", "Показать ожидающие заявки на вступление.", dispatch:"cluster requests", hidden:!clustered);
+        Leaf("node accept", "Принять заявку нового узла.", [("id", "ID заявки.")], dispatch:"cluster accept", hidden:!clustered);
+        Leaf("node reject", "Отклонить заявку нового узла.", [("id", "ID заявки.")], dispatch:"cluster reject", hidden:!clustered);
+        Leaf("node kick", "Попросить узел добровольно выйти и сообщить об этом кластеру.", [("node", "ID, имя или IP узла.")], hidden:!clustered);
+        Leaf("node remove", "Исключить другой узел из кластера.", [("node", "ID, имя или IP узла.")], dispatch:"cluster remove", hidden:!clustered);
+        Leaf("node leave", "Отключить текущий узел от кластера.", dispatch:"cluster leave", hidden:!clustered);
+        Leaf("node invite create", "Создать приглашение для IP.", [("ip", "IPv4 приглашаемого узла.")], dispatch:"cluster add", hidden:!clustered);
+        Leaf("node invite accept", "Вступить в кластер по приглашению.", [("invite", "Ключ приглашения.")], dispatch:"accept cluster", hidden:clustered);
+        Leaf("node invite list", "Показать выданные приглашения.", dispatch:"cluster invites", hidden:!clustered);
+        Leaf("node invite revoke", "Отозвать приглашение.", [("id", "ID приглашения.")], dispatch:"cluster invite revoke", hidden:!clustered);
         Group("create", "Создание ресурсов PNT.");
         Group("accept", "Принятие приглашений.");
         Group("connect", "Заявка на присоединение к кластеру.");
@@ -145,6 +165,8 @@ static class CommandLine
         shell.Options.Add(new Option<bool>("--interactive") { Description = "Интерактивный режим, если поддерживается узлом." });
         shell.SetAction((result, cancellation) => execute(["sh", .. result.Tokens.Select(t => t.Value).Skip(1)]));
         root.Subcommands.Add(shell);
+        // Keep old entry points for installed workers and mixed-version clusters.
+        foreach(var command in root.Subcommands.Where(c=>new[]{"create","accept","connect","cluster","identity","name","nodes","routes"}.Contains(c.Name)))command.Hidden=true;
         return root;
     }
 }

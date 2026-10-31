@@ -72,7 +72,9 @@ static class EnrollmentChecks
             Assert(chosen.Single(r=>r.Primary).Path.Length==2,"Direct route did not get priority");
             var natRoutes=RouteCache.Apply([],bid,[(new[]{aid,"nat",bid},1.0),(new[]{aid,"normal",bid},100.0)],n=>n=="nat");
             Assert(natRoutes.Single(r=>r.Primary).Path[1]=="normal","NAT transit did not get lower priority");
-            Console.WriteLine("PASS: explicit approval, NAT reverse RPC, command execution, one outbound connection, reconnect, route priorities");
+            await NodeManagement.Kick(serverDb,a,bid);
+            Assert(natDb.Get("left")=="1"&&natDb.Self()!.Removed&&serverDb.Nodes().Single(n=>n.Id==bid).Removed,"Routed kick did not leave and remove the NAT member");
+            Console.WriteLine("PASS: routed voluntary kick, explicit approval, NAT reverse RPC, command execution, one outbound connection, reconnect, route priorities");
         }
         finally{stop.Cancel();MultiplexPool.CloseLocal(aid);MultiplexPool.CloseLocal(bid);listener.Stop();}
     }

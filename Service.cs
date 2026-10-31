@@ -164,6 +164,10 @@ sealed class Service(Store db, X509Certificate2 cert,int controlPort=442)
                 }
                 else await RelayRequest(stream, request);
                 break;
+            case "node-leave":
+                if(request.Target!=id){await Peer.Send(stream,new Message("error",Error:"Неверный узел назначения.",RequestId:request.RequestId));break;}
+                var departed=NodeManagement.Leave(db);
+                await Peer.Send(stream,new Message("node-left",id,Target:id,Nodes:[departed],RequestId:request.RequestId));break;
             case "interfaces":
                 if (request.Target == id)
                     await Peer.Send(stream,new Message("interfaces",id,Interfaces:Forwarding.Interfaces(),RequestId:request.RequestId));
@@ -201,7 +205,7 @@ sealed class Service(Store db, X509Certificate2 cert,int controlPort=442)
         var task = await Peer.Read(incoming).WaitAsync(TimeSpan.FromSeconds(20));
         if (task is null) return;
         if (task.RequestId != request.RequestId || task.Id != path[0] || task.Deadline <= App.Now ||
-            task.Type is not ("sync" or "probe" or "exec" or "ping-external" or "tcp-check" or "interfaces" or "tunnel" or "vpn-admin" or "latency-open"))
+            task.Type is not ("sync" or "probe" or "exec" or "ping-external" or "tcp-check" or "interfaces" or "tunnel" or "vpn-admin" or "latency-open" or "node-leave"))
         {
             await Peer.Send(incoming, new Message("error", Error: "Запрос просрочен или не соответствует маршруту.", RequestId: task.RequestId)); return;
         }

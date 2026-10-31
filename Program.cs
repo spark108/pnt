@@ -60,7 +60,19 @@ static class App
         {
             if (a.Length > 0 && a[0] is "_vpn-client" or "_prepare-access" or "_vpn-server-setup") return await Execute(a);
             LocalAccess.Demand();
-            return await CommandLine.Run(a, Execute);
+            var clustered = false;
+            if(a.Length==0 || a[0] is "node" or "help" or "--help" or "-h" or "-?")
+            {
+                var path=Path.Combine(Dir,"pnt.db");
+                if(File.Exists(path))
+                {
+                    using var connection=new SqliteConnection(new SqliteConnectionStringBuilder{DataSource=path,Mode=SqliteOpenMode.ReadOnly,Pooling=false}.ToString());
+                    connection.Open();using var command=connection.CreateCommand();
+                    command.CommandText="SELECT v FROM meta WHERE k='cluster'";
+                    clustered=command.ExecuteScalar() is string;
+                }
+            }
+            return await CommandLine.Run(a, Execute, clustered);
         }
         catch (Exception e) { CliOutput.Error("pnt: " + e.GetBaseException().Message); return 1; }
     }
@@ -96,7 +108,7 @@ static class App
                     if(db.Get("cluster") is not null) throw new Exception("Узел уже состоит в кластере.");
                     if(!IPAddress.TryParse(host,out var bootstrapIp) || bootstrapIp.AddressFamily!=AddressFamily.InterNetwork)throw new Exception("Укажите IPv4 действующего узла.");
                     db.Set("bootstrap_host",bootstrapIp.ToString());db.Set("bootstrap_name",Environment.MachineName);
-                    db.Set("bootstrap_ip",OwnIp);Console.WriteLine("Заявка будет отправлена службой PNT. На действующем узле: pnt cluster requests, затем pnt cluster accept <id>. ID этого узла: "+me);break;
+                    db.Set("bootstrap_ip",OwnIp);Console.WriteLine("Заявка будет отправлена службой PNT. На действующем узле: pnt node requests, затем pnt node accept <id>. ID этого узла: "+me);break;
                 case ["cluster", "requests"]:
                     Active(db);CliOutput.Table(["ID","Имя","IP","Платформа","Сертификат"],Enrollment.Requests(db).Where(r=>r.Status=="pending")
                         .Select(r=>new CliCell[]{r.Id,r.Name,r.ObservedIp,r.Platform,r.Cert}));break;
@@ -123,12 +135,13 @@ static class App
                 case ["cluster", "remove", var node]:
                     Active(db);
                     var removed = db.Resolve(node) ?? throw new Exception("Узел не найден.");
-                    if (removed.Id == me) throw new Exception("Используйте cluster leave.");
+                    if (removed.Id == me) throw new Exception("Используйте pnt node leave.");
                     db.Put(removed with { Removed = true, Version = Now });
                     Console.WriteLine("Узел исключён."); break;
+                case ["node", "kick", var targetNode]:
+                    Active(db);await NodeManagement.Kick(db,cert,targetNode);break;
                 case ["cluster", "leave"]:
-                    Active(db); db.Put(db.Self()! with { Removed = true, Version = Now });
-                    db.Set("left", "1"); Console.WriteLine("Выход зарегистрирован."); break;
+                    Active(db);NodeManagement.Leave(db);Console.WriteLine("Выход зарегистрирован."); break;
                 case ["cluster", "nodes"]: PrintNodes(db, null); break;
                 case ["cluster", "nodes", var fromNode]: PrintNodes(db, fromNode); break;
                 case ["nodes"]: PrintNodes(db, null); break;
@@ -268,7 +281,7 @@ static class App
         return password.ToString();
     }
 
-    static async Task<string> Broadcast(Store db, X509Certificate2 cert)
+    internal static async Task<string> Broadcast(Store db, X509Certificate2 cert)
     {
         var self = db.Self()!;
         var message = new Message("sync", self.Id, Nodes: db.Nodes().ToArray(),

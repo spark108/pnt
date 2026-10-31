@@ -27,7 +27,32 @@ async Task<(int Code, string Output)> Invoke(params string[] args)
 }
 
 var rootHelp = await Invoke("--help");
-Require(rootHelp.Code == 0 && rootHelp.Output.Contains("cluster") && !rootHelp.Output.Contains("--servers"), "Root help must list only its commands");
+Require(rootHelp.Code == 0 && rootHelp.Output.Contains("node") && !rootHelp.Output.Contains("--servers"), "Root help must list only its commands");
+var nodeHelp=await Invoke("node","--help");
+Require(nodeHelp.Output.Contains("init")&&nodeHelp.Output.Contains("join")&&!nodeHelp.Output.Contains("requests"),"New node help shows member-only commands");
+await Invoke("node","init","short-key");Require(executed!.SequenceEqual(new[]{"create","cluster","short-key"}),"Node init dispatch failed");
+await Invoke("node","join","192.0.2.1");Require(executed!.SequenceEqual(new[]{"connect","cluster","192.0.2.1"}),"Node join dispatch failed");
+await Invoke("node","status");Require(executed!.SequenceEqual(new[]{"connect","status"}),"Unjoined node status failed");
+await Invoke("node","invite","accept","token");Require(executed!.SequenceEqual(new[]{"accept","cluster","token"}),"Invite acceptance dispatch failed");
+Require((await Invoke("node","init")).Code!=0&&executed is null,"Init accepted a missing key");
+var freshRoot=root;
+root=CommandLine.Build(args=>{executed=args;return Task.FromResult(17);},clustered:true);
+nodeHelp=await Invoke("node","--help");
+Require(!nodeHelp.Output.Contains("init")&&!nodeHelp.Output.Contains("join")&&nodeHelp.Output.Contains("accept")&&nodeHelp.Output.Contains("list"),"Member node help must hide init/join");
+Require(root.Subcommands.Where(c=>new[]{"create","accept","connect","cluster","nodes","name","identity","routes"}.Contains(c.Name)).All(c=>c.Hidden),"Legacy entry points leaked into help");
+var inviteHelp=await Invoke("node","invite","--help");Require(!inviteHelp.Output.Contains("accept")&&inviteHelp.Output.Contains("create"),"Member help offered joining by invite");
+foreach(var (input,expected) in new (string[],string[])[]{
+ (["node","list"],["nodes"]),(["node","list","other"],["nodes","other"]),
+ (["node","accept","id"],["cluster","accept","id"]),(["node","reject","id"],["cluster","reject","id"]),
+ (["node","requests"],["cluster","requests"]),(["node","leave"],["cluster","leave"]),
+ (["node","kick","other"],["node","kick","other"]),
+ (["node","remove","other"],["cluster","remove","other"]),(["node","name","Node Name"],["name","Node Name"]),
+ (["node","status"],["cluster","status"]),(["node","identity","--fingerprint"],["identity","--fingerprint"]),
+ (["node","routes","other"],["routes","other"]),(["node","invite","create","192.0.2.2"],["cluster","add","192.0.2.2"]),
+ (["node","invite","revoke","id"],["cluster","invite","revoke","id"]),(["node","invite","list"],["cluster","invites"])
+}){await Invoke(input);Require(executed!.SequenceEqual(expected),"Node dispatch failed: "+string.Join(' ',input));}
+Require((await Invoke("node","accept")).Code!=0&&executed is null,"Accept permitted a missing ID");
+root=freshRoot;
 var vpnHelp = await Invoke("vpn", "--help");
 Require(vpnHelp.Code == 0 && vpnHelp.Output.Contains("client") && !vpnHelp.Output.Contains("--servers"), "VPN help must not flatten client commands");
 var clientHelp = await Invoke("vpn", "client", "--help");
