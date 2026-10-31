@@ -24,8 +24,8 @@ Usage: sudo ./pnt.sh <command>
   restart                 Restart pnt.service
   status                  Show service and recent operation status
 
-Install and update run in a background systemd unit. Completed stages are
-shown here; closing the terminal does not stop the operation.
+Install and update run in a background systemd unit. Live logs and a fixed
+progress footer are shown here; closing the terminal does not stop the operation.
 Repository: https://github.com/spark108/pnt.git
 EOF
 }
@@ -45,8 +45,18 @@ runtime_id() {
     esac
 }
 
-step() {
+begin_stage() {
     CURRENT_STAGE=$1
+    completed=$(wc -l < "$PROGRESS")
+    case "$ACTION" in install) total=4 ;; remote) total=4 ;; *) total=8 ;; esac
+    percent=$((completed * 95 / total));[ "$percent" -le 95 ] || percent=95
+    printf '%s\n%s\n' "$percent" "$CURRENT_STAGE" > "$STATE.tmp"
+    mv -f "$STATE.tmp" "$STATE"
+    printf '\n--- %s ---\n' "$CURRENT_STAGE"
+}
+
+step() {
+    begin_stage "$1"
     shift
     "$@"
     printf '✓ %s\n' "$CURRENT_STAGE" >> "$PROGRESS"
@@ -106,6 +116,7 @@ install_local() {
     step 'Бинарник собран' publish_source
     install -d -m 755 "$INSTALL_DIR"
     install -d -m 700 /var/lib/pnt
+    begin_stage 'Установка бинарника и службы'
     INSTALLED=1
     install -m 755 "$TEMP_DIR/build/pnt" "$BIN"
     ln -sfn "$BIN" "$LINK"
@@ -145,6 +156,7 @@ update_local() {
             printf '%s\n' 'Текущий бинарник ещё не поддерживает статус update; он появится после этого обновления.'
         fi
     fi
+    begin_stage 'Остановка службы'
     systemctl stop pnt.service
     STOPPED=1
     printf '✓ Служба остановлена\n' >> "$PROGRESS"
@@ -161,6 +173,7 @@ update_local() {
     install -m 644 "$SCRIPT_DIR/deploy/pnt.service" "$UNIT"
     save_source_dir
     step 'Группа pnt и права доступа настроены' configure_access
+    begin_stage 'Запуск обновлённой службы'
     systemctl daemon-reload
     systemctl start pnt.service
     sleep 2
@@ -189,16 +202,16 @@ install_remote() {
     if remote_ssh 'test -x /usr/local/bin/pnt && pnt node status --require-cluster >/dev/null 2>&1'; then
         die 'The remote server already belongs to a cluster.'
     fi
-    CURRENT_STAGE='PNT установлен на удалённом сервере'
+    begin_stage 'PNT установлен на удалённом сервере'
     remote_ssh "set -e; export DEBIAN_FRONTEND=noninteractive; apt-get update; apt-get install -y git ca-certificates; touch /etc/default/pnt; sed -i '/^PNT_ADVERTISE_IP=/d' /etc/default/pnt; printf 'PNT_ADVERTISE_IP=%s\\n' '$remote_ip' >> /etc/default/pnt; if [ -d /root/pnt/.git ]; then git -C /root/pnt remote set-url origin $REPOSITORY; git -C /root/pnt pull --ff-only origin master; else git clone $REPOSITORY /root/pnt; fi; if [ -x /usr/local/bin/pnt ]; then /root/pnt/pnt.sh update; else /root/pnt/pnt.sh install; fi"
     printf '✓ %s\n' "$CURRENT_STAGE" >> "$PROGRESS"
-    CURRENT_STAGE='Заявка нового узла отправлена'
+    begin_stage 'Заявка нового узла отправлена'
     entry_ip=$("$BIN" node status --require-cluster | sed -n 's/^IP: //p')
     remote_id=$(remote_ssh 'pnt node identity')
     printf '%s\n' "$remote_id" | grep -Eq '^[0-9a-f]{16}$' || die 'The remote node returned an invalid identity.'
     remote_ssh "pnt node join '$entry_ip'"
     printf '✓ %s\n' "$CURRENT_STAGE" >> "$PROGRESS"
-    CURRENT_STAGE='Подключение нового узла подтверждено'
+    begin_stage 'Подключение нового узла подтверждено'
     attempts=0
     until "$BIN" node requests | grep -q "^$remote_id "; do
         attempts=$((attempts + 1))
@@ -243,6 +256,7 @@ finish_worker() {
     [ -z "$STAGED_BIN" ] || rm -f "$STAGED_BIN"
     [ -z "$BACKUP_BIN" ] || rm -f "$BACKUP_BIN"
     [ -z "$TEMP_DIR" ] || rm -rf "$TEMP_DIR"
+    if [ "$code" -eq 0 ]; then printf '100\nГотово\n' > "$STATE.tmp";mv -f "$STATE.tmp" "$STATE";fi
     printf '%s\n' "$code" > "$RESULT"
     exit "$code"
 }
@@ -261,6 +275,7 @@ worker() {
     PROGRESS=$OPERATIONS/$OP_ID.progress
     RESULT=$OPERATIONS/$OP_ID.result
     LOG=$OPERATIONS/$OP_ID.log
+    STATE=$OPERATIONS/$OP_ID.stage
     if [ "$CURRENT_WORKER" != current ]; then rm -f "$RESULT"; : > "$PROGRESS"; fi
     exec >> "$LOG" 2>&1
     TEMP_DIR=''
@@ -272,7 +287,7 @@ worker() {
     UPDATE_OK=0
     MAINT_STARTED=0
     INSTALLED=0
-    CURRENT_STAGE='Подготовка'
+    begin_stage 'Подготовка'
     trap finish_worker EXIT
     trap 'exit 1' HUP INT TERM
     require_command flock
@@ -299,29 +314,43 @@ worker() {
 
 watch_operation() {
     op_id=$1
-    progress_file=$OPERATIONS/$op_id.progress
     result_file=$OPERATIONS/$op_id.result
     log_file=$OPERATIONS/$op_id.log
-    shown=0
+    stage_file=$OPERATIONS/$op_id.stage
+    . "$SCRIPT_DIR/deploy/operation-ui.sh"
+    pnt_ui_start
+    shown_bytes=0;last_stage='';stage='Подготовка';percent=0
     while :; do
-        if [ -f "$progress_file" ]; then
-            lines=$(wc -l < "$progress_file")
-            if [ "$lines" -gt "$shown" ]; then
-                sed -n "$((shown + 1)),${lines}p" "$progress_file"
-                shown=$lines
+        if [ -f "$log_file" ]; then
+            bytes=$(wc -c < "$log_file")
+            if [ "$bytes" -gt "$shown_bytes" ]; then
+                # Strip terminal controls produced by subprocesses; the viewer owns cursor positioning.
+                count=$((bytes - shown_bytes))
+                tail -c +"$((shown_bytes + 1))" "$log_file" | head -c "$count" | LC_ALL=C sed -E 's/\x1B\[[0-?]*[ -/]*[@-~]//g'
+                shown_bytes=$bytes
             fi
         fi
+        if [ -f "$stage_file" ]; then
+            percent=$(sed -n '1p' "$stage_file");stage=$(sed -n '2p' "$stage_file")
+            case "$percent" in ''|*[!0-9]*) percent=0 ;; esac
+        fi
+        pnt_ui_footer "$percent" "$stage"
+        if [ "$PNT_TUI" -eq 0 ] && [ "$stage" != "$last_stage" ]; then printf '\n--- %s ---\n' "$stage";last_stage=$stage;fi
         if [ -f "$result_file" ]; then
+            # Result is written only after the worker has flushed its output; drain the last chunk.
+            bytes=$(wc -c < "$log_file")
+            if [ "$bytes" -gt "$shown_bytes" ]; then tail -c +"$((shown_bytes + 1))" "$log_file";fi
             result=$(cat "$result_file")
-            if [ "$result" -ne 0 ]; then tail -n 15 "$log_file" >&2; fi
+            pnt_ui_stop
+            printf 'PNT: результат %s. Журнал: %s\n' "$result" "$log_file"
             return "$result"
         fi
         if ! systemctl is-active --quiet "pnt-operation-$op_id"; then
-            printf '✗ Фоновый процесс завершился без результата\n' >&2
-            tail -n 15 "$log_file" >&2
+            pnt_ui_stop
+            printf 'Фоновый процесс завершился без результата. Журнал: %s\n' "$log_file" >&2
             return 1
         fi
-        sleep 1
+        sleep 0.2
     done
 }
 

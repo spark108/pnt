@@ -40,6 +40,7 @@ function git {
 }
 function Native($File,$Arguments){& $File @Arguments;if($LASTEXITCODE -ne 0){throw 'Git failed.'}}
 function Stage($Message){}
+function Begin-Stage($Message,$Percent){}
 try{
 '@
     $ending=@'

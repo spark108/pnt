@@ -21,7 +21,7 @@ $repository='https://github.com/spark108/pnt.git'
 function Native([string]$File,[string[]]$Arguments){
     # Windows PowerShell treats native stderr as ErrorRecord, even for successful Git commands.
     $previous=$ErrorActionPreference
-    try{$ErrorActionPreference='Continue';& $File @Arguments;$code=$LASTEXITCODE}
+    try{$ErrorActionPreference='Continue';& $File @Arguments 2>&1 | ForEach-Object {[Console]::Out.WriteLine($_.ToString())};$code=$LASTEXITCODE}
     finally{$ErrorActionPreference=$previous}
     if($code -ne 0){throw "$File failed with exit code $code"}
 }
@@ -30,7 +30,11 @@ function Cluster-Available {
     try{$ErrorActionPreference='Continue';& $exe node status --require-cluster *> $null;return ($LASTEXITCODE -eq 0)}
     finally{$ErrorActionPreference=$previous}
 }
-function Stage([string]$Message){[IO.File]::AppendAllText($progress,"✓ $Message`n",[Text.UTF8Encoding]::new($false))}
+function Begin-Stage([string]$Message,[int]$Percent){
+    [IO.File]::WriteAllText($state,"$Percent`n$Message`n",[Text.UTF8Encoding]::new($false))
+    Write-Output ("--- $Message ---")
+}
+function Stage([string]$Message){Write-Output ("OK: $Message");[IO.File]::AppendAllText($progress,"✓ $Message`n",[Text.UTF8Encoding]::new($false))}
 function Ensure-Git([string]$Workspace){
     if(Get-Command git -ErrorAction SilentlyContinue){return}
     $release=Invoke-RestMethod 'https://api.github.com/repos/git-for-windows/git/releases/latest'
@@ -82,19 +86,14 @@ try {
         if($EventId){if($EventId -notmatch '^[0-9a-fA-F]{32}$'){throw 'Invalid update event'};$arguments+=" -EventId $EventId"}
         $child=Start-Process powershell.exe -ArgumentList $arguments -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $operations "$Operation.log") -RedirectStandardError (Join-Path $operations "$Operation.err")
         Write-Output "Background operation: $Action"
-        $progress=Join-Path $operations "$Operation.progress";$result=Join-Path $operations "$Operation.result";$shown=0
-        while(-not (Test-Path $result)){
-            if(Test-Path $progress){$lines=@(Get-Content $progress -Encoding UTF8);if($lines.Count -gt $shown){$lines[$shown..($lines.Count-1)];$shown=$lines.Count}}
-            if($child.HasExited -and -not (Test-Path $result)){throw 'Background worker exited without a result.'}
-            Start-Sleep -Milliseconds 500
-        }
-        if(Test-Path $progress){$lines=@(Get-Content $progress -Encoding UTF8);if($lines.Count -gt $shown){$lines[$shown..($lines.Count-1)]}}
-        $child.WaitForExit()
-        $code=[int]([IO.File]::ReadAllText($result))
-        if($code -ne 0){Get-Content (Join-Path $operations "$Operation.err") -Encoding UTF8 -Tail 20;Get-Content (Join-Path $operations "$Operation.log") -Encoding UTF8 -Tail 20};exit $code
+        . (Join-Path $PSScriptRoot 'operation-ui.ps1')
+        $code=Watch-PntOperation -Directory $operations -Operation $Operation -Process $child
+        Write-Output ("PNT operation result: $code")
+        exit $code
     }
     if($Operation -notmatch '^[0-9a-fA-F]{32}$'){throw 'Invalid operation ID'}
     $progress=Join-Path $operations "$Operation.progress";$result=Join-Path $operations "$Operation.result"
+    $state=Join-Path $operations "$Operation.stage"
     $lock=$null;$temp=$null;$backup=$null;$stopped=$false;$maintenance=$false;$success=$false;$createdService=$false;$installedApp=$false
     try{
         if($SourcesReady){
@@ -107,8 +106,10 @@ try {
         $tools=Join-Path $root 'tools';New-Item -ItemType Directory -Force $tools | Out-Null
         $env:PATH=(Join-Path $tools 'git\cmd')+';'+(Join-Path $tools 'dotnet')+';'+$env:PATH
         $temp=Join-Path $root ('build-'+[guid]::NewGuid().ToString('N'));New-Item -ItemType Directory $temp | Out-Null
+        if(-not $SourcesReady){Begin-Stage 'Preparing Git' 0}
         Ensure-Git $temp
         if($Action -eq 'update' -and -not $SourcesReady){
+            Begin-Stage 'Updating sources from GitHub' 5
             Native git -Arguments @('-C',$source,'remote','set-url','origin',$repository)
             $branch=& git -C $source symbolic-ref --short HEAD;if($LASTEXITCODE -ne 0){throw 'A source branch is required.'}
             $env:GIT_TERMINAL_PROMPT='0';Native git -Arguments @('-C',$source,'pull','--ff-only','origin',$branch);Stage 'Sources updated from GitHub'
@@ -117,15 +118,19 @@ try {
             $code=[int]([IO.File]::ReadAllText($result));$success=($code -eq 0);exit $code
         }
         if($Action -eq 'update'){
+            Begin-Stage 'Repairing data permissions' 15
             Repair-PntAccess -DataPath (Join-Path $root 'data');Stage 'Data permissions repaired'
             if(Cluster-Available){
+                Begin-Stage 'Announcing maintenance' 20
                 try{Native $exe -Arguments @('node','maintenance','start');$maintenance=$true;Stage 'Update status announced';Start-Sleep 8}
                 catch{Write-Output ('Update announcement unavailable: '+$_.Exception.Message)}
             }
+            Begin-Stage 'Stopping Windows service' 25
             $service=Get-Service PNT -ErrorAction SilentlyContinue
             if($service -and $service.Status -ne 'Stopped'){Stop-Service PNT -ErrorAction Stop}
             $stopped=[bool]$service;Stage 'Service stopped'
         }
+        Begin-Stage 'Installing Git and .NET dependencies' 30
         $sdks=if(Get-Command dotnet -ErrorAction SilentlyContinue){& dotnet --list-sdks}else{''}
         if(-not ($sdks | Select-String '^10\.')){
             $installer=Join-Path $temp 'dotnet-install.ps1';Invoke-WebRequest -UseBasicParsing 'https://dot.net/v1/dotnet-install.ps1' -OutFile $installer
@@ -134,13 +139,16 @@ try {
         }
         Stage 'Git and .NET dependencies ready'
         if($Action -eq 'install' -and -not (Test-Path (Join-Path $source '.git'))){
+            Begin-Stage 'Cloning sources from GitHub' 45
             $source=Join-Path $root 'source'
             if(-not (Test-Path $source)){Native git -Arguments @('clone',$repository,$source)}
             elseif(-not (Test-Path (Join-Path $source '.git'))){throw 'The PNT source directory exists but is not a Git checkout.'}
         }
         if(-not (Test-Path (Join-Path $source 'pnt.csproj'))){throw 'Run install from the source checkout.'}
         $rid=if($env:PROCESSOR_ARCHITECTURE -eq 'ARM64'){'win-arm64'}else{'win-x64'}
+        Begin-Stage 'Building PNT' 55
         $build=Join-Path $temp 'publish';Native dotnet -Arguments @('publish',(Join-Path $source 'pnt.csproj'),'-c','Release','-r',$rid,'--self-contained','true','-p:PublishSingleFile=true','-o',$build);Stage 'Binary built'
+        Begin-Stage 'Installing binary and configuring permissions' 80
         $data=Join-Path $root 'data';New-Item -ItemType Directory -Force $data,$config,(Join-Path $root 'bin') | Out-Null
         Repair-PntAccess -DataPath $data
         if(Test-Path $app){$backup=Join-Path $root ('app-backup-'+$Operation);Move-Managed $app $backup}
@@ -153,6 +161,7 @@ try {
         if(-not (Get-Service PNT -ErrorAction SilentlyContinue)){New-Service -Name PNT -DisplayName 'PNT cluster node' -BinaryPathName ('"'+$exe+'" serve') -StartupType Automatic | Out-Null;$createdService=$true}
         Set-Service PNT -StartupType Automatic
         Native sc.exe -Arguments @('failure','PNT','reset=','86400','actions=','restart/5000/restart/10000/restart/30000')
+        Begin-Stage 'Starting Windows service' 95
         Start-Service PNT;Start-Sleep 2;if((Get-Service PNT).Status -ne 'Running'){throw 'Service failed to start.'};Stage 'Windows service started; pnt added to system PATH'
         if($maintenance){Native $exe -Arguments @('node','maintenance','done');$maintenance=$false}
         if($Action -eq 'update'){
@@ -160,7 +169,7 @@ try {
                 if(Cluster-Available){$commit=& git -C $source rev-parse HEAD;Native $exe -Arguments @('node','update','announce',$commit)}
             }
         }
-        $success=$true;Stage 'Operation completed'
+        $success=$true;Begin-Stage 'Operation completed' 100;Stage 'Operation completed'
     }finally{
         if(-not $success){
             if($createdService){Stop-Service PNT -ErrorAction SilentlyContinue;& sc.exe delete PNT | Out-Null}
