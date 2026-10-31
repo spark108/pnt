@@ -39,6 +39,13 @@ static class VpnControl
         if(db.Self() is null||db.Get("left")=="1")throw new Exception("Сначала присоединитесь к кластеру.");
         switch(args)
         {
+            case ["status",var targetName]:
+                await ServerStatus(db,cert,FindNode(db,targetName));break;
+            case [var action,..var targetNames] when action is "start" or "stop" or "restart" && targetNames.Length<=1:
+                var controlled=targetNames.Length==0?db.Self()!:FindNode(db,targetNames[0]);
+                if(controlled.Platform=="windows")throw new PlatformNotSupportedException("Сервер AmneziaWG поддерживается на Debian Linux.");
+                await Query(db,cert,controlled.Id,new(action));
+                Console.WriteLine("AmneziaWG на "+controlled.Name+": "+(action=="stop"?"остановлен":action=="restart"?"перезапущен":"запущен"));break;
             case ["server","install",var nodeName]:
                 var registeredNode=FindNode(db,nodeName);
                 if(registeredNode.Platform=="windows")throw new PlatformNotSupportedException("Сервер AmneziaWG устанавливается на Debian Linux.");
@@ -116,8 +123,36 @@ static class VpnControl
                 }
                 CliOutput.Table(["Сервер","Рукопожатие (UTC)","Принято","Отправлено"],handshakeRows);
                 break;
-            default:throw new ArgumentException("Неверная команда. pnt vpn server install|rename|list|remove; pnt vpn client create|list|show|allow|deny|revoke|handshake");
+            default:throw new ArgumentException("Неверная команда. pnt vpn status|start|stop|restart; pnt vpn server install|rename|list|remove; pnt vpn client create|list|show|allow|deny|revoke|handshake");
         }
+    }
+    static async Task ServerStatus(Store db,X509Certificate2 cert,Node target)
+    {
+        if(target.Platform=="windows")throw new PlatformNotSupportedException("Сервер AmneziaWG поддерживается на Debian Linux.");
+        var configs=JsonSerializer.Deserialize<VpnServerConfiguration[]>(await Query(db,cert,target.Id,new("inventory")),App.Json)??[];
+        Dictionary<string,VpnStatistics>? clients=null;string? error=null;
+        if(configs.Any(c=>c.Supported&&c.Active))
+        {
+            try{clients=JsonSerializer.Deserialize<Dictionary<string,VpnStatistics>>(await Query(db,cert,target.Id,new("clients")),App.Json);}
+            catch(Exception e){error=e.Message;}
+        }
+        PrintServerStatus(db,target,configs,clients,error);
+    }
+    internal static void PrintServerStatus(Store db,Node target,VpnServerConfiguration[] configs,Dictionary<string,VpnStatistics>? clients,string? error)
+    {
+        var registered=db.VpnServers().FirstOrDefault(s=>s.Id==target.Id&&!s.Removed);
+        CliOutput.Table(["Параметр","Значение"],[
+            ["Узел",target.Name+" ("+target.Id+")"],["IP",target.Ip],
+            ["VPN-каталог",new(registered is null?"не разрешён":registered.Name,registered is null?"yellow":"green")],
+            ["Клиентов с доступом",db.VpnClients().Count(c=>!c.Removed&&c.Servers.Contains(target.Id)).ToString()]]);
+        if(configs.Length==0){Console.WriteLine("Конфигурации AmneziaWG не найдены.");return;}
+        CliOutput.Table(["Интерфейс","Тип","Конфигурация / контейнер","Адрес","UDP","Состояние","Выбран PNT"],configs.Select(c=>new CliCell[]{
+            c.Interface,c.Kind,c.Container??c.Config,c.Address,c.Port.ToString(),
+            new(!c.Supported?"недоступен: "+c.Reason:c.Active?"запущен":"остановлен",!c.Supported?"red":c.Active?"green":"yellow"),c.Selected?"да":"—"}));
+        if(clients is not null)
+            CliOutput.Table(["Профилей","Подключено","Прямое","Транспорт"],[[clients.Count.ToString(),clients.Values.Count(c=>c.Connected==true).ToString(),
+                clients.Values.Count(c=>c.Connected==true&&c.Mode=="direct").ToString(),clients.Values.Count(c=>c.Connected==true&&c.Mode=="relay").ToString()]]);
+        else Console.WriteLine(error is not null?"Статистика клиентов недоступна: "+error:"Статистика клиентов недоступна: нет активной конфигурации.");
     }
     static async Task ListClients(Store db,X509Certificate2 cert)
     {
@@ -174,10 +209,10 @@ static class VpnControl
     }
     public static async Task<string> Query(Store db,X509Certificate2 cert,string target,VpnOperation operation,CancellationToken token=default)
     {
-        using var timeout=CancellationTokenSource.CreateLinkedTokenSource(token);timeout.CancelAfter(TimeSpan.FromSeconds(45));
+        using var timeout=CancellationTokenSource.CreateLinkedTokenSource(token);timeout.CancelAfter(TimeSpan.FromSeconds(operation.Action is "start" or "stop" or "restart"?180:45));
         using var peer=await new RouteTransport(db,cert).Connect(target,cancellation:timeout.Token);
         var task=await RouteTransport.SendTask(peer,new Message("vpn-admin",Certificate.Id(cert),Target:target,VpnPayload:JsonSerializer.Serialize(operation,App.Json),VpnServers:db.VpnServers().ToArray(),VpnClients:db.VpnClients().ToArray())).WaitAsync(timeout.Token);
-        var reply=await RouteTransport.ReadResult(peer,task.RequestId,TimeSpan.FromSeconds(40),timeout.Token);
+        var reply=await RouteTransport.ReadResult(peer,task.RequestId,TimeSpan.FromSeconds(operation.Action is "start" or "stop" or "restart"?175:40),timeout.Token);
         if(reply.Type!="vpn-result")throw new IOException(reply.Error??"VPN-сервис не ответил.");
         return reply.VpnPayload??"{}";
     }
@@ -201,6 +236,7 @@ static class VpnControl
             }
             var output=operation.Action switch
             {
+                "start" or "stop" or "restart"=>await VpnServerInstaller.Control(operation.Action,token),
                 "inventory"=>await VpnServerInstaller.Inventory(token),
                 "probe"=>await VpnAdapter.Run("probe",null,[],token),
                 "ensure"=>JsonSerializer.Serialize(await Prepare(db,operation,token),App.Json),

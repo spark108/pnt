@@ -49,6 +49,20 @@ static class VpnChecks
         using var db=new Store(Path.Combine(directory,"pnt.db"));var self=Certificate.Id(cert);
         db.Set("self",self);db.Set("cluster","test-cluster");db.Put(new Node(self,"local","127.0.0.1",Certificate.Fingerprint(cert),App.Now));
         db.PutVpn(new VpnServer(self,"Test VPN",App.Now));
+        var originalOutput=Console.Out;
+        try
+        {
+            using var report=new StringWriter();Console.SetOut(report);
+            VpnControl.PrintServerStatus(db,db.Self()!,[configuration with{Selected=true}],new(){["direct"]=direct,["relay"]=direct with{Mode="relay"}},null);
+            Assert(report.ToString().Contains("awg0")&&report.ToString().Contains("51820")&&report.ToString().Contains("2\t2\t1\t1"),"Status omitted selected configuration or connection modes");
+            report.GetStringBuilder().Clear();
+            VpnControl.PrintServerStatus(db,db.Self()!,[configuration with{Active=false,Selected=true}],null,null);
+            Assert(report.ToString().Contains("остановлен")&&report.ToString().Contains("Статистика клиентов недоступна"),"Stopped server was reported as healthy with zero clients");
+            report.GetStringBuilder().Clear();
+            VpnControl.PrintServerStatus(db,db.Self()!,[configuration],null,"status-timeout");
+            Assert(report.ToString().Contains("status-timeout"),"Statistics failure was hidden");
+        }
+        finally{Console.SetOut(originalOutput);}
         var registered=db.VpnServers().Single();
         db.PutVpn(registered with{Removed=true,Version=registered.Version+1});
         db.PutVpn(registered with{Version=registered.Version+2});

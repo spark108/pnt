@@ -84,6 +84,14 @@ await Walk(root, []);
 Require((await Invoke("vpn", "client", "create", "test")).Code != 0 && executed is null, "Missing options must not reach storage");
 Require((await Invoke("forward", "add", "--listen", "node:123", "--wrong", "x")).Code != 0 && executed is null, "Unknown options must be rejected");
 Require((await Invoke("cluster", "stats")).Code != 0 && executed is null, "Unknown subcommands must be rejected");
+await Invoke("vpn","status","exit-node");Require(executed!.SequenceEqual(new[]{"vpn","status","exit-node"}),"VPN status node binding failed");
+Require((await Invoke("vpn","status")).Code!=0&&executed is null,"VPN status accepted missing node");
+foreach(var action in new[]{"start","stop","restart"})
+{
+    await Invoke("vpn",action);Require(executed!.SequenceEqual(new[]{"vpn",action}),"Local VPN control failed");
+    await Invoke("vpn",action,"exit-node");Require(executed!.SequenceEqual(new[]{"vpn",action,"exit-node"}),"Remote VPN control failed");
+    Require((await Invoke("vpn",action,"one","two")).Code!=0&&executed is null,"VPN control accepted extra nodes");
+}
 await Invoke("vpn", "server", "install", "test-node");
 Require(executed!.SequenceEqual(new[] { "vpn", "server", "install", "test-node" }), "VPN installer dispatch failed");
 await Invoke("vpn", "server", "list");

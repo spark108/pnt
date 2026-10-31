@@ -15,7 +15,7 @@ import unittest
 from unittest.mock import patch
 
 if os.name == "nt":
-    sys.modules["fcntl"] = types.SimpleNamespace(flock=lambda *_: None, LOCK_EX=2)
+    sys.modules["fcntl"] = types.SimpleNamespace(flock=lambda *_: None, LOCK_EX=2, LOCK_NB=4)
 
 source = Path(__file__).resolve().parents[2] / "deploy" / "vpn_server.py"
 spec = importlib.util.spec_from_file_location("vpn_server", source)
@@ -26,6 +26,77 @@ CONFIG = "[Interface]\nPrivateKey = " + KEY + "\nAddress = 10.77.0.1/24\nListenP
 
 
 class ServerChecks(unittest.TestCase):
+    def test_control_requires_an_explicit_selection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(RuntimeError, "прикрепите"):
+                server.control(Path(directory), "stop")
+
+    def test_native_lifecycle_targets_only_selected_unit_and_preserves_binding(self):
+        for action in ("start", "stop", "restart"):
+            with self.subTest(action=action), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                item = server.provider("native", "awg0", "/etc/amnezia/amneziawg/awg0.conf", CONFIG, action != "start")
+                selected = root / "selected-server.json"
+                selected.write_text(json.dumps(item))
+                before = selected.read_bytes()
+                result = dict(item, active=action != "stop")
+                with patch.object(server, "inventory", side_effect=[[item], [result]]), patch.object(server, "verify_native_binding") as verify, patch.object(server, "native_owner", return_value="pnt-awg-awg0.service"), patch.object(server, "run") as run, patch.object(server, "forwarding") as forwarding, patch.object(server, "apply_firewall") as firewall:
+                    self.assertEqual(server.control(root, action)["active"], action != "stop")
+                    run.assert_called_once_with(["systemctl", action, "pnt-awg-awg0.service"], timeout=120)
+                    self.assertEqual(verify.called, item["active"])
+                    self.assertEqual(forwarding.called, action != "stop")
+                    self.assertEqual(firewall.called, action != "stop")
+                self.assertEqual(selected.read_bytes(), before)
+
+    def test_docker_lifecycle_targets_only_selected_container(self):
+        for action in ("start", "stop", "restart"):
+            with self.subTest(action=action), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                item = server.provider("docker", "awg0", "/opt/amnezia/awg/awg0.conf", CONFIG, action != "start", "amnezia-awg")
+                (root / "selected-server.json").write_text(json.dumps(item))
+                with patch.object(server, "inventory", side_effect=[[item], [dict(item, active=action != "stop")]]), patch.object(server, "run") as run, patch.object(server, "forwarding"), patch.object(server, "apply_firewall"):
+                    server.control(root, action)
+                    expected = ["docker", action] + (["--time", "20"] if action != "start" else []) + ["amnezia-awg"]
+                    run.assert_called_once_with(expected, timeout=120)
+
+    def test_native_unmanaged_restart_uses_exact_configuration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            item = server.provider("native", "awg1", "/etc/amneziawg/awg1.conf", CONFIG, True)
+            (root / "selected-server.json").write_text(json.dumps(item))
+            with patch.object(server, "inventory", side_effect=[[item], [item]]), patch.object(server, "verify_native_binding"), patch.object(server, "native_owner", return_value=None), patch.object(server.shutil, "which", return_value="/usr/local/bin/awg-quick"), patch.object(server, "run") as run, patch.object(server, "forwarding"), patch.object(server, "apply_firewall"):
+                server.control(root, "restart")
+                self.assertEqual([call.args[0] for call in run.call_args_list], [["/usr/local/bin/awg-quick", "down", item["config"]], ["/usr/local/bin/awg-quick", "up", item["config"]]])
+
+    def test_control_does_not_claim_success_for_failed_state_change(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            item = server.provider("docker", "awg0", "/opt/amnezia/awg/awg0.conf", CONFIG, True, "amnezia-awg")
+            (root / "selected-server.json").write_text(json.dumps(item))
+            with patch.object(server, "inventory", return_value=[item]), patch.object(server, "run"), self.assertRaisesRegex(RuntimeError, "не перешёл"):
+                server.control(root, "stop")
+
+    def test_managed_unit_for_another_configuration_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            item = server.provider("native", "awg0", "/etc/amneziawg/awg0.conf", CONFIG, True)
+            units = Path(directory)
+            (units / "pnt-awg-awg0.service").write_text("ExecStart=other-configuration")
+            with patch.object(server, "UNIT_DIR", units), self.assertRaisesRegex(RuntimeError, "другой конфигурации"):
+                server.native_owner(item)
+
+    def test_native_without_systemd_unit_can_use_awg_quick(self):
+        with tempfile.TemporaryDirectory() as directory:
+            item = server.provider("native", "awg0", "/etc/amneziawg/awg0.conf", CONFIG, False)
+            with patch.object(server, "UNIT_DIR", Path(directory)), patch.object(server, "run", return_value=types.SimpleNamespace(stdout="not-found", returncode=1)):
+                self.assertIsNone(server.native_owner(item))
+
+    def test_standard_unit_for_another_config_is_not_stopped(self):
+        with tempfile.TemporaryDirectory() as directory:
+            item = server.provider("native", "awg0", "/etc/amneziawg/awg0.conf", CONFIG, True)
+            replies = [types.SimpleNamespace(stdout="loaded", returncode=0), "/usr/bin/awg-quick up /different/awg0.conf"]
+            with patch.object(server, "UNIT_DIR", Path(directory)), patch.object(server, "run", side_effect=replies), self.assertRaisesRegex(RuntimeError, "другую конфигурацию"):
+                server.native_owner(item)
+
     def test_inventory_lists_multiple_configs_without_secrets(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)

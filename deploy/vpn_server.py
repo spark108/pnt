@@ -23,6 +23,7 @@ os.environ["PATH"] = "/usr/local/sbin:/usr/local/bin:" + os.environ.get("PATH", 
 
 
 CONFIG_DIRS = [Path(p) for p in ("/etc/amnezia/amneziawg", "/etc/amneziawg", "/opt/amnezia/awg")]
+UNIT_DIR = Path("/etc/systemd/system")
 IFACE = re.compile(r"[A-Za-z0-9_.-]{1,15}")
 IDENTITY = re.compile(r"[0-9a-f]{24}")
 CLIENT = re.compile(r"[0-9a-f]{16}")
@@ -380,6 +381,19 @@ def configure_firewall(binding):
         raise RuntimeError("Не найден nftables или iptables")
 
 
+def verify_native_binding(selected):
+    text = Path(selected["config"]).read_text()
+    public = run([shutil.which("awg"), "pubkey"], values(text)["PrivateKey"].strip() + "\n")
+    actual = run([shutil.which("awg"), "show", selected["interface"], "public-key"])
+    if public != actual:
+        raise RuntimeError("Имя интерфейса занято другой конфигурацией; существующий интерфейс не изменён")
+    addresses = json.loads(run(["ip", "-j", "-4", "address", "show", "dev", selected["interface"]]))
+    expected = ipaddress.ip_interface(selected["address"])
+    if not any(a.get("local") == str(expected.ip) and a.get("prefixlen") == expected.network.prefixlen
+               for item in addresses for a in item.get("addr_info", [])):
+        raise RuntimeError("Адрес активного интерфейса не совпадает с конфигурацией; существующий интерфейс не изменён")
+
+
 def setup(root, choice, source):
     if os.geteuid() != 0 or not Path("/etc/debian_version").exists():
         raise RuntimeError("Установка поддерживается от root на Debian Linux")
@@ -392,16 +406,7 @@ def setup(root, choice, source):
         fcntl.flock(lock, fcntl.LOCK_EX)
         preserve_legacy(root)
         if selected is not None and selected["kind"] == "native" and selected["active"]:
-            text = Path(selected["config"]).read_text()
-            public = run([shutil.which("awg"), "pubkey"], values(text)["PrivateKey"].strip() + "\n")
-            actual = run([shutil.which("awg"), "show", selected["interface"], "public-key"])
-            if public != actual:
-                raise RuntimeError("Имя интерфейса занято другой конфигурацией; существующий интерфейс не изменён")
-            addresses = json.loads(run(["ip", "-j", "-4", "address", "show", "dev", selected["interface"]]))
-            expected = ipaddress.ip_interface(selected["address"])
-            if not any(a.get("local") == str(expected.ip) and a.get("prefixlen") == expected.network.prefixlen
-                       for item in addresses for a in item.get("addr_info", [])):
-                raise RuntimeError("Адрес активного интерфейса не совпадает с конфигурацией; существующий интерфейс не изменён")
+            verify_native_binding(selected)
         install_tools(selected is None or selected["kind"] == "native")
         if selected is None:
             selected = create_configuration(inventory())
@@ -445,6 +450,65 @@ def setup(root, choice, source):
         return selected
 
 
+def native_owner(selected):
+    iface = selected["interface"]
+    managed = UNIT_DIR / ("pnt-awg-" + iface + ".service")
+    if managed.is_file():
+        if selected["id"] not in managed.read_text():
+            raise RuntimeError("Служба интерфейса привязана к другой конфигурации")
+        return managed.name
+    standard = "awg-quick@" + iface + ".service"
+    state = run(["systemctl", "show", "-p", "LoadState", "--value", standard], check=False)
+    if state.stdout.strip() != "loaded":
+        return None
+    canonical = Path("/etc/amnezia/amneziawg") / (iface + ".conf")
+    command = run(["systemctl", "show", "-p", "ExecStart", "--value", standard])
+    if Path(selected["config"]).resolve() == canonical.resolve() or re.search(r"(?<!\S)" + re.escape(selected["config"]) + r"(?=\s|;|$)", command):
+        return standard
+    raise RuntimeError("Служба awg-quick использует другую конфигурацию")
+
+
+def control(root, action):
+    if action not in ("start", "stop", "restart"):
+        raise ValueError("Invalid VPN control action")
+    selection = root / "selected-server.json"
+    if not selection.is_file():
+        raise RuntimeError("Сначала прикрепите конфигурацию: pnt vpn server install <node>")
+    with (root / "server-install.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        identity = json.loads(selection.read_text())["id"]
+        selected = next((item for item in inventory() if item["id"] == identity), None)
+        if selected is None or not selected["supported"]:
+            raise RuntimeError("Выбранная конфигурация AmneziaWG не найдена или недоступна")
+        if selected["kind"] == "docker":
+            args = ["docker", action]
+            if action != "start":
+                args += ["--time", "20"]
+            run(args + [selected["container"]], timeout=120)
+        else:
+            if selected["active"]:
+                verify_native_binding(selected)
+            owner = native_owner(selected)
+            if owner:
+                if action != "start" or not selected["active"]:
+                    run(["systemctl", action, owner], timeout=120)
+            else:
+                binary = shutil.which("awg-quick")
+                if not binary:
+                    raise RuntimeError("AmneziaWG tools не установлены: awg-quick не найден")
+                if selected["active"] and action in ("stop", "restart"):
+                    run([binary, "down", selected["config"]], timeout=60)
+                if action in ("start", "restart") and (not selected["active"] or action == "restart"):
+                    run([binary, "up", selected["config"]], timeout=60)
+        if action != "stop":
+            forwarding()
+            apply_firewall(selected)
+        result = next((item for item in inventory() if item["id"] == identity), None)
+        if result is None or result["active"] != (action != "stop"):
+            raise RuntimeError("AmneziaWG не перешёл в запрошенное состояние")
+        return result
+
+
 def service_action(root, action, identity):
     if not IDENTITY.fullmatch(identity):
         raise ValueError("Invalid configuration ID")
@@ -469,6 +533,8 @@ if __name__ == "__main__":
             request = json.load(sys.stdin)
             if request["action"] == "inventory":
                 print(json.dumps(inventory()))
+            elif request["action"] in ("start", "stop", "restart"):
+                print(json.dumps(control(root, request["action"])))
             elif request["action"] == "install":
                 setup(root, request["selection"], request["source"])
             else:

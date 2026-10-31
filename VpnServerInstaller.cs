@@ -22,11 +22,17 @@ static class VpnServerInstaller
         process.StartInfo.Environment["PNT_VPN_DATA"]=Path.Combine(App.Dir,"vpn");
         return process;
     }
-    public static async Task<string> Inventory(CancellationToken token)
+    public static Task<string> Inventory(CancellationToken token)=>Request("inventory",token);
+    public static Task<string> Control(string action,CancellationToken token)
+    {
+        if(action is not ("start" or "stop" or "restart"))throw new ArgumentException("Неверная операция AmneziaWG.");
+        return Request(action,token);
+    }
+    static async Task<string> Request(string action,CancellationToken token)
     {
         using var process=Process(Source(),true);process.Start();
         var output=process.StandardOutput.ReadToEndAsync(token);var error=process.StandardError.ReadToEndAsync(token);
-        await process.StandardInput.WriteLineAsync("{\"action\":\"inventory\"}");process.StandardInput.Close();
+        await process.StandardInput.WriteLineAsync(JsonSerializer.Serialize(new{action},App.Json));process.StandardInput.Close();
         try{await process.WaitForExitAsync(token);}catch{process.Kill(true);throw;}
         if(process.ExitCode!=0)throw new IOException((await error).Trim());
         return (await output).Trim();
