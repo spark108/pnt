@@ -297,7 +297,7 @@ sealed class Service(Store db, X509Certificate2 cert,int controlPort=442)
     }
     async Task ReconcileVpn()
     {
-        try{await VpnControl.Reconcile(db,stop.Token);}
+        try{await VpnControl.Reconcile(db,cert,stop.Token);}
         catch(OperationCanceledException){}
         catch(Exception e){Console.Error.WriteLine("pnt: VPN reconciliation: "+e.Message);}
     }

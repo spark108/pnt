@@ -20,13 +20,13 @@ def execute(request):
     root = Path(os.environ["PNT_VPN_DATA"])
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
     action = request["action"]
-    if action not in ("probe", "ensure", "stats", "clients", "reconcile"):
+    if action not in ("probe", "ensure", "stats", "clients", "reconcile", "reset"):
         raise ValueError("Unknown adapter action")
     client = request.get("client")
     if client is not None and not re.fullmatch("[0-9a-f]{16}", client):
         raise ValueError("Invalid client ID")
     binding = request.get("binding")
-    if action == "reconcile" and binding is None and (root / "servers").is_dir():
+    if action in ("reconcile", "reset") and binding is None and (root / "servers").is_dir():
         failures = []
         for entry in (root / "servers").glob("*.json"):
             try:
@@ -45,7 +45,7 @@ def execute(request):
             root = root / "instances" / binding["id"]
             root.mkdir(mode=0o700, parents=True, exist_ok=True)
     client_entries = lambda: [p for p in root.glob("*.json") if re.fullmatch(r"[0-9a-f]{16}", p.stem)]
-    if action == "reconcile" and not client_entries():
+    if action in ("reconcile", "reset") and not client_entries():
         return {}
     try:
         names = run(["docker", "ps", "--format", "{{.Names}}"] ).splitlines() if shutil.which("docker") else []
@@ -113,10 +113,10 @@ def execute(request):
     with (root / "adapter.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         config = docker(["cat", config_path])
-        if action == "reconcile":
+        if action in ("reconcile", "reset"):
             allowed = set(request.get("allowed", []))
             for entry in client_entries():
-                if entry.stem in allowed:
+                if (action == "reconcile" and entry.stem in allowed) or (action == "reset" and entry.stem != client):
                     continue
                 profile = json.loads(entry.read_text())
                 public = profile["public"]

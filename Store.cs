@@ -16,6 +16,7 @@ sealed class Store : IDisposable
             "CREATE TABLE IF NOT EXISTS direct_links(source TEXT NOT NULL,target TEXT NOT NULL,json TEXT NOT NULL,updated INTEGER NOT NULL,PRIMARY KEY(source,target))",
             "CREATE TABLE IF NOT EXISTS nodes(id TEXT PRIMARY KEY,json TEXT NOT NULL,version INTEGER NOT NULL)",
             "CREATE TABLE IF NOT EXISTS vpn_servers(id TEXT PRIMARY KEY,json TEXT NOT NULL,version INTEGER NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS vpn_devices(client TEXT PRIMARY KEY,epoch TEXT NOT NULL,device_key TEXT)",
             "CREATE TABLE IF NOT EXISTS vpn_clients(id TEXT PRIMARY KEY,json TEXT NOT NULL,version INTEGER NOT NULL)",
             "CREATE TABLE IF NOT EXISTS rules(id TEXT PRIMARY KEY,json TEXT NOT NULL,version INTEGER NOT NULL)",
             "CREATE TABLE IF NOT EXISTS invites(id TEXT PRIMARY KEY,json TEXT NOT NULL)",
@@ -181,6 +182,30 @@ sealed class Store : IDisposable
     }
     public List<Node> Nodes() => All<Node>("nodes");
     public List<VpnServer> VpnServers() => All<VpnServer>("vpn_servers");
+    internal VpnDeviceState DeviceAccess(string client,string? key,string action)
+    {
+        using var c=Open();using var tx=c.BeginTransaction(deferred:false);
+        using var read=c.CreateCommand();read.Transaction=tx;
+        read.CommandText="SELECT epoch,device_key FROM vpn_devices WHERE client=$id";read.Parameters.AddWithValue("$id",client);
+        VpnDeviceState state;
+        using(var reader=read.ExecuteReader())state=reader.Read()?new(reader.GetString(0),reader.IsDBNull(1)?null:reader.GetString(1)):new("",null);
+        if(action=="unbind-device")state=new(Guid.NewGuid().ToString("N"),null);
+        else if(action!="state-device")
+        {
+            if(key is null)throw new UnauthorizedAccessException("Нет ключа устройства.");
+            if(state.Key is not null&&state.Key!=key)throw new UnauthorizedAccessException("Конфигурация привязана к другому устройству.");
+            if(action=="bind-device"&&state.Key is null)state=new(Guid.NewGuid().ToString("N"),key);
+            else if(action=="check-device"&&state.Key is null)throw new UnauthorizedAccessException("Устройство ещё не привязано: сначала подключитесь.");
+            else if(action is not ("bind-device" or "check-device" or "catalog-device" or "state-device"))throw new ArgumentException("Неизвестная операция привязки.");
+        }
+        if(action is "bind-device" or "unbind-device")
+        {
+            using var write=c.CreateCommand();write.Transaction=tx;
+            write.CommandText="INSERT INTO vpn_devices VALUES($id,$epoch,$key) ON CONFLICT(client) DO UPDATE SET epoch=excluded.epoch,device_key=excluded.device_key";
+            write.Parameters.AddWithValue("$id",client);write.Parameters.AddWithValue("$epoch",state.Epoch);write.Parameters.AddWithValue("$key",(object?)state.Key??DBNull.Value);write.ExecuteNonQuery();
+        }
+        tx.Commit();return state;
+    }
     public List<VpnClient> VpnClients() => All<VpnClient>("vpn_clients");
     public void PutVpn(VpnServer value)
     {
@@ -191,7 +216,7 @@ sealed class Store : IDisposable
     public void PutVpn(VpnClient value)
     {
         using var c=Open();using var q=c.CreateCommand();
-        q.CommandText="INSERT INTO vpn_clients(id,json,version) VALUES($id,$json,$version) ON CONFLICT(id) DO UPDATE SET json=CASE WHEN json_extract(excluded.json,'$.protectedIdentity') IS NULL AND json_extract(vpn_clients.json,'$.cert')=json_extract(excluded.json,'$.cert') THEN json_set(excluded.json,'$.protectedIdentity',json_extract(vpn_clients.json,'$.protectedIdentity')) ELSE excluded.json END,version=excluded.version WHERE (excluded.version>vpn_clients.version OR (json_extract(excluded.json,'$.removed')=1 AND json_extract(vpn_clients.json,'$.removed')=0)) AND NOT (json_extract(vpn_clients.json,'$.removed')=1 AND json_extract(excluded.json,'$.removed')=0)";
+        q.CommandText="INSERT INTO vpn_clients(id,json,version) VALUES($id,$json,$version) ON CONFLICT(id) DO UPDATE SET json=CASE WHEN json_extract(vpn_clients.json,'$.cert')=json_extract(excluded.json,'$.cert') THEN json_set(excluded.json,'$.protectedIdentity',coalesce(json_extract(excluded.json,'$.protectedIdentity'),json_extract(vpn_clients.json,'$.protectedIdentity')),'$.deviceAuthority',coalesce(json_extract(vpn_clients.json,'$.deviceAuthority'),json_extract(excluded.json,'$.deviceAuthority'))) ELSE excluded.json END,version=excluded.version WHERE (excluded.version>vpn_clients.version OR (json_extract(excluded.json,'$.removed')=1 AND json_extract(vpn_clients.json,'$.removed')=0)) AND NOT (json_extract(vpn_clients.json,'$.removed')=1 AND json_extract(excluded.json,'$.removed')=0)";
         q.Parameters.AddWithValue("$id",value.Id);q.Parameters.AddWithValue("$json",JsonSerializer.Serialize(value,App.Json));q.Parameters.AddWithValue("$version",value.Version);q.ExecuteNonQuery();
     }
     public List<Rule> Rules() => All<Rule>("rules");

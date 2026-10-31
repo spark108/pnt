@@ -84,6 +84,8 @@ await Walk(root, []);
 Require((await Invoke("vpn", "client", "create", "test")).Code != 0 && executed is null, "Missing options must not reach storage");
 Require((await Invoke("forward", "add", "--listen", "node:123", "--wrong", "x")).Code != 0 && executed is null, "Unknown options must be rejected");
 Require((await Invoke("cluster", "stats")).Code != 0 && executed is null, "Unknown subcommands must be rejected");
+await Invoke("vpn","client","unbind","0123456789abcdef");Require(executed!.SequenceEqual(new[]{"vpn","client","unbind","0123456789abcdef"}),"Client unbind binding failed");
+Require((await Invoke("vpn","client","unbind")).Code!=0&&executed is null,"Client unbind accepted missing ID");
 await Invoke("vpn","client","get","Alice");Require(executed!.SequenceEqual(new[]{"vpn","client","get","Alice"}),"Client get console binding failed");
 await Invoke("vpn","client","get","Alice","--out=file.pnt");Require(executed!.SequenceEqual(new[]{"vpn","client","get","Alice","--out","file.pnt"}),"Client get output binding failed");
 Require((await Invoke("vpn","client","get")).Code!=0&&executed is null,"Client get accepted missing client");

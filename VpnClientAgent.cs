@@ -45,7 +45,8 @@ static class VpnClientAgent
             var target=root.GetProperty("server").GetString()??throw new ArgumentException("Сервер не выбран.");
             var reply=await Request(profile,identity,"ensure",target);
             var config=JsonSerializer.Deserialize<VpnConfiguration>(reply.VpnPayload!,App.Json)!;
-            var initial=await Request(profile,identity,"stats",target);
+            var epoch=reply.DeviceEpoch??throw new IOException("Сервер не вернул поколение сессии устройства.");
+            var initial=await Request(profile,identity,"stats",target,epoch:epoch);
             var baseline=JsonSerializer.Deserialize<VpnStatistics>(initial.VpnPayload!,App.Json)!.Handshake;
             using var local=new UdpClient(new IPEndPoint(IPAddress.Loopback,0));
             using var direct=new UdpClient();direct.Connect(config.Host,config.Port);
@@ -54,7 +55,7 @@ static class VpnClientAgent
             var relay=new VpnRelay(async(avoid,ct)=>
             {
                 if(!profile.Entrypoints.Any(n=>!n.Removed&&n.Id!=avoid))return null;
-                return await Open(profile,identity,"udp",target,ct,avoid);
+                return await Open(profile,identity,"udp",target,ct,avoid,epoch);
             },peer=>Output(new{status="routing",mode="relay",route=peer.RouteReady?.Hops,server=target}));
             long lastTraffic=0;
             var token=stop.Token;
@@ -84,13 +85,14 @@ static class VpnClientAgent
                 {
                     try
                     {
-                        var statsReply=await Request(profile,identity,"stats",target,token);
+                        var statsReply=await Request(profile,identity,"stats",target,token,epoch);
                         var stats=JsonSerializer.Deserialize<VpnStatistics>(statsReply.VpnPayload!,App.Json)!;
                         Output(new{status="statistics",handshake=stats.Handshake});
                         var healthy=stats.Handshake>baseline&&Environment.TickCount64-Volatile.Read(ref lastTraffic)<60_000;
                         if(!relay.Enabled&&!healthy)relay.Enable(lastPacket);
                         if(healthy)Output(new{status="connected",mode=relay.Enabled?"relay":"direct",server=target});
                     }
+                    catch(UnauthorizedAccessException){throw;}
                     catch(Exception)when(!token.IsCancellationRequested)
                     {
                         if(Environment.TickCount64-Volatile.Read(ref lastTraffic)>60_000)relay.Enable(lastPacket);
@@ -117,11 +119,11 @@ static class VpnClientAgent
         }
         catch(Exception e){Output(new{error=e.Message});return 1;}
     }
-    static async Task<Message> Request(VpnProfile profile,X509Certificate2 identity,string action,string? target,CancellationToken token=default)
+    static async Task<Message> Request(VpnProfile profile,X509Certificate2 identity,string action,string? target,CancellationToken token=default,string? epoch=null)
     {
-        using var peer=await Open(profile,identity,action,target,token);return peer.RouteReady!;
+        using var peer=await Open(profile,identity,action,target,token,epoch:epoch);return peer.RouteReady!;
     }
-    static async Task<Peer> Open(VpnProfile profile,X509Certificate2 identity,string action,string? target,CancellationToken token,string? exclude=null)
+    static async Task<Peer> Open(VpnProfile profile,X509Certificate2 identity,string action,string? target,CancellationToken token,string? exclude=null,string? epoch=null)
     {
         Exception? failure=null;
         var candidates=profile.Entrypoints.Where(n=>!n.Removed&&n.Id!=exclude).OrderBy(n=>n.Id!=target).ToArray();
@@ -134,11 +136,22 @@ static class VpnClientAgent
                 using var timeout=CancellationTokenSource.CreateLinkedTokenSource(token);timeout.CancelAfter(TimeSpan.FromSeconds(50));
                 peer=await Peer.ConnectRaw(node.Ip,node.Cert,identity,timeout.Token);
                 if(action=="udp")peer.EnableKeepAlive();
-                await Peer.Send(peer.Stream,new Message("vpn-client",profile.ClientId,Name:action,Target:target)).WaitAsync(timeout.Token);
+                await Peer.Send(peer.Stream,new Message("vpn-client",profile.ClientId,Name:action,Target:target,DeviceEpoch:epoch)).WaitAsync(timeout.Token);
                 var reply=await Peer.Read(peer.Stream).WaitAsync(timeout.Token);
+                if(reply?.Name=="vpn-device-denied")throw new UnauthorizedAccessException(reply.Error);
+                if(reply?.Type!="vpn-device-challenge"||reply.VpnPayload is null)throw new IOException(reply?.Error??"Обновите узел PNT: сервер не поддерживает привязку устройства.");
+                using(var device=VpnDeviceIdentity.Load())
+                {
+                    var request=new Message("vpn-client",profile.ClientId,Name:action,Target:target,DeviceEpoch:epoch);
+                    var proof=new VpnDeviceProof(Convert.ToBase64String(device.ExportSubjectPublicKeyInfo()),Convert.ToBase64String(device.SignData(VpnDevices.Payload(reply.VpnPayload,request),HashAlgorithmName.SHA256,DSASignatureFormat.Rfc3279DerSequence)));
+                    await Peer.Send(peer.Stream,new Message("vpn-device-proof",VpnPayload:JsonSerializer.Serialize(proof,App.Json))).WaitAsync(timeout.Token);
+                }
+                reply=await Peer.Read(peer.Stream).WaitAsync(timeout.Token);
+                if(reply?.Name=="vpn-device-denied")throw new UnauthorizedAccessException(reply.Error);
                 if(reply?.Type!="vpn-result")throw new IOException(reply?.Error??"Нет ответа PNT.");
                 peer.RouteReady=reply;return peer;
             }
+            catch(UnauthorizedAccessException){peer?.Dispose();throw;}
             catch(Exception e)when(!token.IsCancellationRequested){peer?.Dispose();failure=e;}
         }
         throw new IOException("Входные узлы PNT недоступны: "+failure?.Message,failure);

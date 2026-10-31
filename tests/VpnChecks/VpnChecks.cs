@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using System.Net;
 using System.Net.Sockets;
 using System.Security.Cryptography.X509Certificates;
@@ -11,6 +12,17 @@ static class VpnChecks
     static void Assert(bool value,string message){if(!value)throw new Exception(message);}
     public static async Task Main()
     {
+        if(OperatingSystem.IsWindows())
+        {
+            var name="PNT binding test "+Guid.NewGuid().ToString("N");
+            try
+            {
+                using var first=VpnDeviceIdentity.Windows(name);using var second=VpnDeviceIdentity.Windows(name);
+                Assert(first.ExportSubjectPublicKeyInfo().SequenceEqual(second.ExportSubjectPublicKeyInfo()),"Device key changed across helper restarts");
+                try{first.ExportPkcs8PrivateKey();throw new Exception("Windows device key was exportable");}catch(CryptographicException){}
+            }
+            finally{if(OperatingSystem.IsWindows()){using var key=CngKey.Open(name,CngProvider.MicrosoftSoftwareKeyStorageProvider);key.Delete();}}
+        }
         var sample=new VpnStatistics(1000,10,20,true,Address:"10.8.0.3");
         var direct=VpnConnections.Observe("server","client",sample,1100);
         Assert(direct.Connected==true&&direct.Mode=="direct","Fresh direct handshake missing");
@@ -111,8 +123,10 @@ static class VpnChecks
             VpnControl.Merge(otherDb,new Message("sync",VpnClients:[savedClient],VpnServers:db.VpnServers().ToArray()));
             var remoteProfile=VpnClientAgent.Validate(JsonSerializer.Serialize(VpnProfiles.Export(otherDb,otherCert,otherDb.VpnClients().Single()),App.Json));
             Assert(remoteProfile.Identity==profile.Identity,"Profile unavailable after cluster synchronization");
-            otherDb.PutVpn(savedClient with{ProtectedIdentity=null,Version=savedClient.Version+1});
-            Assert(otherDb.VpnClients().Single().ProtectedIdentity==savedClient.ProtectedIdentity,"Older node update erased saved identity");
+            otherDb.PutVpn(savedClient with{ProtectedIdentity=null,DeviceAuthority=null,Version=savedClient.Version+1});
+            Assert(otherDb.VpnClients().Single().ProtectedIdentity==savedClient.ProtectedIdentity&&otherDb.VpnClients().Single().DeviceAuthority==self,"Older node update erased saved identity/authority");
+            VpnControl.Merge(otherDb,new Message("sync",VpnClients:[savedClient with{DeviceAuthority=otherId,Version=savedClient.Version+2}]));
+            Assert(otherDb.VpnClients().Single().DeviceAuthority==self,"Synchronization moved binding authority");
             otherDb.Set("key_hash",new string('2',64));
             try{VpnProfiles.Export(otherDb,otherCert,savedClient);throw new Exception("Wrong cluster key decrypted identity");}catch(System.Security.Cryptography.CryptographicException){}
         }
@@ -121,16 +135,66 @@ static class VpnChecks
         try{VpnClientAgent.Validate(JsonSerializer.Serialize(profile with{ClientId=self},App.Json));throw new Exception("Tampered profile accepted");}catch(ArgumentException){}
         using var identity=X509CertificateLoader.LoadPkcs12(Convert.FromBase64String(profile.Identity),null,X509KeyStorageFlags.Exportable);
         var service=new Service(db,cert,0);var running=service.Run();
-        async Task<Message> Request(Message request)
+        using var deviceA=ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        using var deviceB=ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        var deviceAKey=Convert.ToBase64String(deviceA.ExportSubjectPublicKeyInfo());
+        var deviceBKey=Convert.ToBase64String(deviceB.ExportSubjectPublicKeyInfo());
+        async Task<Message> Request(Message request,ECDsa? device=null,bool badProof=false)
         {
             using var peer=await Peer.ConnectRaw("127.0.0.1",Certificate.Fingerprint(cert),identity,port:service.ControlPort);
             await Peer.Send(peer.Stream,request);
-            return await Peer.Read(peer.Stream).WaitAsync(TimeSpan.FromSeconds(10))??throw new Exception("No reply");
+            var response=await Peer.Read(peer.Stream).WaitAsync(TimeSpan.FromSeconds(10))??throw new Exception("No reply");
+            if(response.Type=="vpn-device-challenge")
+            {
+                device??=deviceA;
+                var proof=new VpnDeviceProof(Convert.ToBase64String(device.ExportSubjectPublicKeyInfo()),Convert.ToBase64String(device.SignData(VpnDevices.Payload(badProof?"replayed":response.VpnPayload!,request),HashAlgorithmName.SHA256,DSASignatureFormat.Rfc3279DerSequence)));
+                await Peer.Send(peer.Stream,new Message("vpn-device-proof",VpnPayload:JsonSerializer.Serialize(proof,App.Json)));
+                response=await Peer.Read(peer.Stream).WaitAsync(TimeSpan.FromSeconds(10))??throw new Exception("No authenticated reply");
+            }
+            return response;
         }
         try
         {
             var catalog=await Request(new Message("vpn-client",profile.ClientId,Name:"catalog"));
             Assert(catalog.Type=="vpn-result"&&catalog.VpnServers?.Single().Id==self,"Authorized catalog missing");
+            Assert(savedClient.DeviceAuthority==self,"Client has no stable binding authority");
+            Assert((await Request(new Message("vpn-client",profile.ClientId,Name:"catalog"),deviceB)).Type=="vpn-result","Unbound profile rejected a device before connection");
+            try{db.DeviceAccess(profile.ClientId,deviceAKey,"check-device");throw new Exception("Catalog bound a device");}catch(UnauthorizedAccessException){}
+            Assert((await Request(new Message("vpn-client",profile.ClientId,Name:"catalog"),badProof:true)).Name=="vpn-device-denied","Replayed challenge was accepted");
+            var proofRequest=new Message("vpn-client",profile.ClientId,Name:"catalog");
+            var signed=new VpnDeviceProof(deviceAKey,Convert.ToBase64String(deviceA.SignData(VpnDevices.Payload("challenge",proofRequest),HashAlgorithmName.SHA256,DSASignatureFormat.Rfc3279DerSequence)));
+            Assert(VpnDevices.Verify("challenge",proofRequest,signed)==deviceAKey,"Valid device signature failed");
+            foreach(var altered in new[]{proofRequest with{Name="ensure"},proofRequest with{Target=self},proofRequest with{Id=self},proofRequest with{DeviceEpoch="different"}})
+            {
+                try{VpnDevices.Verify("challenge",altered,signed);throw new Exception("Device proof transferred to another task");}catch(UnauthorizedAccessException){}
+            }
+            var state=await VpnDevices.Access(db,cert,savedClient,deviceAKey,"bind-device");
+            Assert(state.Key==deviceAKey&&state.Epoch.Length==32,"First connection did not bind device");
+            Assert((await Request(new Message("vpn-client",profile.ClientId,Name:"catalog"),deviceB)).Name=="vpn-device-denied","Copied profile authenticated on second device");
+            Assert((await Request(new Message("vpn-client",profile.ClientId,Name:"catalog"))).Type=="vpn-result","Bound device lost access");
+            Assert((await Request(new Message("vpn-client",profile.ClientId,Name:"stats",Target:self))).Name=="vpn-device-denied","Session without epoch was accepted");
+            var operation=new VpnOperation("ensure",profile.ClientId,savedClient.Cert,DeviceKey:deviceAKey,DeviceEpoch:state.Epoch);
+            await VpnDevices.VerifyOperation(db,cert,operation,default);
+            var reset=await VpnDevices.Access(db,cert,savedClient,null,"unbind-device");
+            Assert(reset.Key is null&&reset.Epoch!=state.Epoch,"Unbind retained old device authorization");
+            try{await VpnDevices.VerifyOperation(db,cert,operation,default);throw new Exception("Old session survived unbind");}catch(UnauthorizedAccessException){}
+            Assert((await Request(new Message("vpn-client",profile.ClientId,Name:"stats",Target:self))).Name=="vpn-device-denied","Revoked session did not receive explicit deauthorization");
+            var rebound=await VpnDevices.Access(db,cert,savedClient,deviceBKey,"bind-device");
+            Assert(rebound.Key==deviceBKey&&rebound.Epoch!=reset.Epoch,"New device did not bind after unbind");
+            Assert((await Request(new Message("vpn-client",profile.ClientId,Name:"catalog"))).Name=="vpn-device-denied","Old device retained access after rebinding");
+            await VpnDevices.Access(db,cert,savedClient,null,"unbind-device");
+            await VpnDevices.Access(db,cert,savedClient,deviceAKey,"bind-device");
+            try{await VpnDevices.VerifyOperation(db,cert,operation,default);throw new Exception("Old epoch survived rebinding to the same device");}catch(UnauthorizedAccessException){}
+            Assert((await Request(new Message("vpn-client",profile.ClientId,Name:"stats",Target:self,DeviceEpoch:state.Epoch))).Name=="vpn-device-denied","Old epoch fetched statistics after rebind");
+            Assert((await Request(new Message("vpn-client",profile.ClientId,Name:"ensure",Target:self,DeviceEpoch:state.Epoch))).Name=="vpn-device-denied","Old session refreshed itself after unbind");
+            var race=await Task.WhenAll(new[]{deviceAKey,deviceBKey}.Select(key=>Task.Run(()=>{
+                using var connection=new Store(Path.Combine(directory,"pnt.db"));
+                try{connection.DeviceAccess("0123456789abcdef",key,"bind-device");return true;}catch(UnauthorizedAccessException){return false;}
+            })));
+            Assert(race.Count(won=>won)==1,"Two simultaneous devices both acquired the same profile");
+            using(var reopened=new Store(Path.Combine(directory,"pnt.db")))
+                Assert(reopened.DeviceAccess(profile.ClientId,deviceAKey,"check-device").Key==deviceAKey,"Binding lost on database reopen");
+
             Assert((await Request(new Message("vpn-client",self,Name:"catalog"))).Type=="error","Forged client ID accepted");
             Assert((await Request(new Message("exec",profile.ClientId,Target:self,Command:"echo forbidden"))).Type=="error","Client obtained member privileges");
             Assert((await Request(new Message("vpn-client",profile.ClientId,Name:"exec",Target:self))).Type=="error","Client API accepted exec");
@@ -159,11 +223,16 @@ static class VpnChecks
             {
                 using var input=new TcpClient();var accepting=listener.AcceptTcpClientAsync();await input.ConnectAsync(IPAddress.Loopback,((IPEndPoint)listener.LocalEndpoint).Port);
                 using var exit=await accepting;using var stop=new CancellationTokenSource(TimeSpan.FromSeconds(10));
-                var exiting=VpnDatagrams.Exit(exit.GetStream(),"127.0.0.1",((IPEndPoint)echo.Client.LocalEndPoint!).Port,()=>true,stop.Token);
+                var sessionAllowed=true;
+                var exiting=VpnDatagrams.Exit(exit.GetStream(),"127.0.0.1",((IPEndPoint)echo.Client.LocalEndPoint!).Port,()=>sessionAllowed,stop.Token);
                 await VpnDatagrams.Write(input.GetStream(),Encoding.UTF8.GetBytes("through-pnt"),stop.Token);
                 var packet=await echo.ReceiveAsync(stop.Token);await echo.SendAsync(packet.Buffer,packet.RemoteEndPoint,stop.Token);
                 Assert(Encoding.UTF8.GetString(await VpnDatagrams.Read(input.GetStream(),stop.Token))=="through-pnt","UDP tunnel roundtrip failed");
-                stop.Cancel();try{await exiting;}catch(OperationCanceledException){}
+                sessionAllowed=false;await Task.Delay(1100);
+                await VpnDatagrams.Write(input.GetStream(),new byte[]{9},stop.Token);
+                try{await exiting.WaitAsync(stop.Token);throw new Exception("Deauthorized transport remained open");}catch(UnauthorizedAccessException){}
+                Assert(!echo.Client.Poll(1000,SelectMode.SelectRead),"Deauthorized transport forwarded a packet");
+                stop.Cancel();
             }
             finally{listener.Stop();}
             using var heartbeatListener=new TcpListener(IPAddress.Loopback,0);heartbeatListener.Start();
@@ -198,7 +267,7 @@ static class VpnChecks
                 Assert(dataFrames==10&&heartbeats==10,"Heartbeat/data frames were lost");await echoes;
                 stop.Cancel();try{await exiting;}catch(OperationCanceledException){}
             }
-            Console.WriteLine("PASS: repeatable encrypted profile exports, cross-node export, no-clobber output, signed profiles, client identity, ACL catalog, member isolation, revoke tombstones, UDP framing and real UDP roundtrip.");
+            Console.WriteLine("PASS: challenge proof, copied-profile rejection, atomic first bind, unbind/session revocation, device rebind, repeatable encrypted profile exports, cross-node export, no-clobber output, signed profiles, client identity, ACL catalog, member isolation, revoke tombstones, UDP framing and real UDP roundtrip.");
         }
         finally{service.Stop();await running;}
     }
