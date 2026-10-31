@@ -10,7 +10,7 @@ using System.Text.Json;
 namespace Pnt;
 
 record VpnServer(string Id,string Name,long Version,bool Removed=false);
-record VpnClient(string Id,string Name,string Cert,string[] Servers,long Version,bool Removed=false);
+record VpnClient(string Id,string Name,string Cert,string[] Servers,long Version,bool Removed=false,string? ProtectedIdentity=null);
 record VpnProfile(int Format,string Cluster,string ClientId,string Identity,Node[] Entrypoints,VpnServer[] Servers,string Issuer,string Signature);
 record VpnOperation(string Action,string? Client=null,string? Fingerprint=null,bool KeepAlive=false);
 record VpnConfiguration(string Config,string Host,int Port,string LocalHost,int LocalPort);
@@ -20,7 +20,7 @@ static class VpnControl
 {
     static bool Key(string? value)=>value is {Length:16}&&value.All(Uri.IsHexDigit);
     public static bool Valid(VpnServer value)=>Key(value.Id)&&value.Name.Length is >0 and <=64&&value.Version>0;
-    public static bool Valid(VpnClient value)=>Key(value.Id)&&value.Name.Length is >0 and <=64&&value.Cert.Length==64&&value.Cert.All(Uri.IsHexDigit)&&value.Servers.Length<=1024&&value.Servers.All(Key)&&value.Version>0;
+    public static bool Valid(VpnClient value)=>Key(value.Id)&&value.Name.Length is >0 and <=64&&value.Cert.Length==64&&value.Cert.All(Uri.IsHexDigit)&&value.Servers.Length<=1024&&value.Servers.All(Key)&&value.Version>0&&(value.ProtectedIdentity is null||value.ProtectedIdentity.Length is >0 and <=32768);
     public static VpnClient FindClient(Store db,string name)
     {
         var clients=db.VpnClients();var exact=clients.FirstOrDefault(c=>c.Id==name);if(exact!=null)return exact;
@@ -81,19 +81,17 @@ static class VpnControl
                     var req=new CertificateRequest("CN=pnt-vpn-client",key,HashAlgorithmName.SHA256);
                     using var identity=req.CreateSelfSigned(DateTimeOffset.UtcNow.AddMinutes(-5),DateTimeOffset.UtcNow.AddYears(5));
                     var createdClient=new VpnClient(Certificate.Id(identity),name.Trim(),Certificate.Fingerprint(identity),allowed,App.Now);
-                    var profile=new VpnProfile(1,db.Get("cluster")!,createdClient.Id,Convert.ToBase64String(identity.Export(X509ContentType.Pkcs12)),db.Nodes().Where(n=>!n.Removed).ToArray(),db.VpnServers().Where(s=>allowed.Contains(s.Id)&&!s.Removed).ToArray(),Convert.ToBase64String(cert.RawData),"");
-                    using var signer=cert.GetECDsaPrivateKey()!;
-                    profile=profile with{Signature=Convert.ToBase64String(signer.SignData(JsonSerializer.SerializeToUtf8Bytes(profile,App.Json),HashAlgorithmName.SHA256))};
-                    var options=new FileStreamOptions{Mode=FileMode.CreateNew,Access=FileAccess.Write,Share=FileShare.None};
-                    if(!OperatingSystem.IsWindows())options.UnixCreateMode=UnixFileMode.UserRead|UnixFileMode.UserWrite;
-                    using(var file=new FileStream(output,options))
-                    {
-                        if(OperatingSystem.IsWindows())ProtectExport(output);
-                        await JsonSerializer.SerializeAsync(file,profile,App.Json);
-                    }
+                    createdClient=createdClient with{ProtectedIdentity=VpnProfiles.Protect(db,createdClient,identity.Export(X509ContentType.Pkcs12))};
+                    var profile=VpnProfiles.Export(db,cert,createdClient);
+                    await VpnProfiles.Write(output,profile);
                     db.PutVpn(createdClient);Console.WriteLine($"Клиент создан: {createdClient.Id}. Профиль: {output}");
                 }
                 break;
+            case ["client","get",var name]:
+                Console.WriteLine(JsonSerializer.Serialize(VpnProfiles.Export(db,cert,FindClient(db,name)),App.Json));break;
+            case ["client","get",var name,"--out",var output]:
+                await VpnProfiles.Write(output,VpnProfiles.Export(db,cert,FindClient(db,name)));
+                Console.WriteLine("Профиль сохранён: "+output);break;
             case ["client","list"]:
                 await ListClients(db,cert);break;
             case ["client","show",var name]:Console.WriteLine(JsonSerializer.Serialize(FindClient(db,name),App.Json));break;
@@ -123,7 +121,7 @@ static class VpnControl
                 }
                 CliOutput.Table(["Сервер","Рукопожатие (UTC)","Принято","Отправлено"],handshakeRows);
                 break;
-            default:throw new ArgumentException("Неверная команда. pnt vpn status|start|stop|restart; pnt vpn server install|rename|list|remove; pnt vpn client create|list|show|allow|deny|revoke|handshake");
+            default:throw new ArgumentException("Неверная команда. pnt vpn status|start|stop|restart; pnt vpn server install|rename|list|remove; pnt vpn client create|get|list|show|allow|deny|revoke|handshake");
         }
     }
     static async Task ServerStatus(Store db,X509Certificate2 cert,Node target)
@@ -199,7 +197,7 @@ static class VpnControl
         catch(Exception e){Console.WriteLine("Отзыв на "+id+" ожидает выполнения: "+e.Message);}
     }
     [System.Runtime.Versioning.SupportedOSPlatform("windows")]
-    static void ProtectExport(string path)
+    internal static void ProtectExport(string path)
     {
         using var identity=System.Security.Principal.WindowsIdentity.GetCurrent();
         var acl=new System.Security.AccessControl.FileSecurity();acl.SetAccessRuleProtection(true,false);

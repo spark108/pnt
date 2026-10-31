@@ -61,3 +61,16 @@ python3 tests/VpnChecks/adapter_checks.py
 ```
 
 The .NET check uses an isolated random listener port and temporary state, exercises real TLS client authorization, privilege isolation, profile signatures, revocation and a real UDP round trip. Adapter checks exercise native and Docker command paths with simulated VPN backends, profile reuse, address allocation, handshake counters and peer removal without modifying installed VPN services.
+
+### Повторная выгрузка профиля клиента
+
+```sh
+pnt vpn client get user01
+pnt vpn client get user01 --out=file.pnt
+```
+
+Принимается имя или ID клиента. Без `--out` в stdout выводится только JSON профиля, пригодный для импорта. С `--out` создаётся новый файл с ограниченными правами; существующий файл не перезаписывается. ID и ключ клиента сохраняются, перечень узлов и разрешённых VPN-серверов берётся из текущего состояния кластера.
+
+Для новых клиентов закрытый ключ хранится в реестре в зашифрованном виде (AES-GCM с ключом, производным от общего ключа кластера) и синхронизируется между узлами. Все узлы должны быть обновлены. Экспорт разрешён администраторам PNT; отозванного клиента выгрузить нельзя. Профиль содержит закрытый ключ доступа.
+
+У ранее созданных клиентов закрытый ключ был только в исходном `.pnt`-файле: без него повторная выгрузка такого клиента невозможна. Команда сообщает об этом и не меняет его ID или действующие подключения.

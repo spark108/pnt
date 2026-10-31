@@ -188,7 +188,12 @@ sealed class Store : IDisposable
         q.CommandText="INSERT INTO vpn_servers VALUES($id,$json,$version) ON CONFLICT(id) DO UPDATE SET json=excluded.json,version=excluded.version WHERE excluded.version>vpn_servers.version";
         q.Parameters.AddWithValue("$id",value.Id);q.Parameters.AddWithValue("$json",JsonSerializer.Serialize(value,App.Json));q.Parameters.AddWithValue("$version",value.Version);q.ExecuteNonQuery();
     }
-    public void PutVpn(VpnClient value) => Upsert("vpn_clients",value.Id,value.Version,JsonSerializer.Serialize(value,App.Json));
+    public void PutVpn(VpnClient value)
+    {
+        using var c=Open();using var q=c.CreateCommand();
+        q.CommandText="INSERT INTO vpn_clients(id,json,version) VALUES($id,$json,$version) ON CONFLICT(id) DO UPDATE SET json=CASE WHEN json_extract(excluded.json,'$.protectedIdentity') IS NULL AND json_extract(vpn_clients.json,'$.cert')=json_extract(excluded.json,'$.cert') THEN json_set(excluded.json,'$.protectedIdentity',json_extract(vpn_clients.json,'$.protectedIdentity')) ELSE excluded.json END,version=excluded.version WHERE (excluded.version>vpn_clients.version OR (json_extract(excluded.json,'$.removed')=1 AND json_extract(vpn_clients.json,'$.removed')=0)) AND NOT (json_extract(vpn_clients.json,'$.removed')=1 AND json_extract(excluded.json,'$.removed')=0)";
+        q.Parameters.AddWithValue("$id",value.Id);q.Parameters.AddWithValue("$json",JsonSerializer.Serialize(value,App.Json));q.Parameters.AddWithValue("$version",value.Version);q.ExecuteNonQuery();
+    }
     public List<Rule> Rules() => All<Rule>("rules");
     public List<Invite> Invites() => All<Invite>("invites");
     public List<JoinRequest> JoinRequests() => All<JoinRequest>("join_requests");

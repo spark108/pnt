@@ -47,7 +47,7 @@ static class VpnChecks
         Environment.SetEnvironmentVariable("PNT_MANAGE_FIREWALL","0");
         using var cert=Certificate.Load(Path.Combine(directory,"node.pfx"));
         using var db=new Store(Path.Combine(directory,"pnt.db"));var self=Certificate.Id(cert);
-        db.Set("self",self);db.Set("cluster","test-cluster");db.Put(new Node(self,"local","127.0.0.1",Certificate.Fingerprint(cert),App.Now));
+        db.Set("self",self);db.Set("cluster","test-cluster");db.Set("key_hash",new string('1',64));db.Put(new Node(self,"local","127.0.0.1",Certificate.Fingerprint(cert),App.Now));
         db.PutVpn(new VpnServer(self,"Test VPN",App.Now));
         var originalOutput=Console.Out;
         try
@@ -80,6 +80,43 @@ static class VpnChecks
         var profile=VpnClientAgent.Validate(await File.ReadAllTextAsync(output));
         Assert(profile.ClientId==db.VpnClients().Single().Id,"Client identity mismatch");
         Assert(!db.Nodes().Any(n=>n.Id==profile.ClientId),"Client added to cluster topology");
+        var savedClient=db.VpnClients().Single();
+        Assert(savedClient.ProtectedIdentity is not null&&!savedClient.ProtectedIdentity.Contains(profile.Identity),"Client archive is missing or unencrypted");
+        async Task<string> CaptureGet(params string[] args)
+        {
+            using var capture=new StringWriter();Console.SetOut(capture);
+            try{await VpnControl.Command(db,cert,args);return capture.ToString();}
+            finally{Console.SetOut(originalOutput);}
+        }
+        var consoleProfile=VpnClientAgent.Validate(await CaptureGet("client","get","Alice"));
+        Assert(consoleProfile.Identity==profile.Identity&&consoleProfile.ClientId==profile.ClientId,"Console export rotated client identity");
+        var exported=Path.Combine(directory,"export.pnt");
+        await CaptureGet("client","get",savedClient.Id,"--out",exported);
+        Assert(VpnClientAgent.Validate(await File.ReadAllTextAsync(exported)).Identity==profile.Identity,"File export changed identity");
+        var unchanged=await File.ReadAllTextAsync(exported);
+        try{await CaptureGet("client","get","Alice","--out",exported);throw new Exception("Existing file overwritten");}catch(IOException){}
+        Assert(await File.ReadAllTextAsync(exported)==unchanged,"Existing profile modified on failure");
+        foreach(var bad in new[]{savedClient with{Removed=true},savedClient with{ProtectedIdentity=null},savedClient with{Id=self},savedClient with{Cert=new string('0',64)},savedClient with{Servers=[]}})
+        {
+            try{VpnProfiles.Export(db,cert,bad);throw new Exception("Invalid/unavailable client exported");}
+            catch(Exception e) when(e is ArgumentException or IOException or System.Security.Cryptography.CryptographicException){}
+        }
+        using(var otherCert=Certificate.Load(Path.Combine(directory,"other.pfx")))
+        using(var otherDb=new Store(Path.Combine(directory,"other.db")))
+        {
+            var otherId=Certificate.Id(otherCert);
+            otherDb.Set("cluster","test-cluster");otherDb.Set("key_hash",new string('1',64));otherDb.Set("self",otherId);
+            foreach(var node in db.Nodes())otherDb.Put(node);
+            otherDb.Put(new Node(otherId,"other","127.0.0.2",Certificate.Fingerprint(otherCert),App.Now));
+            VpnControl.Merge(otherDb,new Message("sync",VpnClients:[savedClient],VpnServers:db.VpnServers().ToArray()));
+            var remoteProfile=VpnClientAgent.Validate(JsonSerializer.Serialize(VpnProfiles.Export(otherDb,otherCert,otherDb.VpnClients().Single()),App.Json));
+            Assert(remoteProfile.Identity==profile.Identity,"Profile unavailable after cluster synchronization");
+            otherDb.PutVpn(savedClient with{ProtectedIdentity=null,Version=savedClient.Version+1});
+            Assert(otherDb.VpnClients().Single().ProtectedIdentity==savedClient.ProtectedIdentity,"Older node update erased saved identity");
+            otherDb.Set("key_hash",new string('2',64));
+            try{VpnProfiles.Export(otherDb,otherCert,savedClient);throw new Exception("Wrong cluster key decrypted identity");}catch(System.Security.Cryptography.CryptographicException){}
+        }
+
         Assert(!File.ReadAllText(Path.Combine(directory,"pnt.db")).Contains(profile.Identity),"Private client identity persisted to registry");
         try{VpnClientAgent.Validate(JsonSerializer.Serialize(profile with{ClientId=self},App.Json));throw new Exception("Tampered profile accepted");}catch(ArgumentException){}
         using var identity=X509CertificateLoader.LoadPkcs12(Convert.FromBase64String(profile.Identity),null,X509KeyStorageFlags.Exportable);
@@ -161,7 +198,7 @@ static class VpnChecks
                 Assert(dataFrames==10&&heartbeats==10,"Heartbeat/data frames were lost");await echoes;
                 stop.Cancel();try{await exiting;}catch(OperationCanceledException){}
             }
-            Console.WriteLine("PASS: signed profiles, client identity, ACL catalog, member isolation, revoke tombstones, UDP framing and real UDP roundtrip.");
+            Console.WriteLine("PASS: repeatable encrypted profile exports, cross-node export, no-clobber output, signed profiles, client identity, ACL catalog, member isolation, revoke tombstones, UDP framing and real UDP roundtrip.");
         }
         finally{service.Stop();await running;}
     }

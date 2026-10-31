@@ -84,6 +84,10 @@ await Walk(root, []);
 Require((await Invoke("vpn", "client", "create", "test")).Code != 0 && executed is null, "Missing options must not reach storage");
 Require((await Invoke("forward", "add", "--listen", "node:123", "--wrong", "x")).Code != 0 && executed is null, "Unknown options must be rejected");
 Require((await Invoke("cluster", "stats")).Code != 0 && executed is null, "Unknown subcommands must be rejected");
+await Invoke("vpn","client","get","Alice");Require(executed!.SequenceEqual(new[]{"vpn","client","get","Alice"}),"Client get console binding failed");
+await Invoke("vpn","client","get","Alice","--out=file.pnt");Require(executed!.SequenceEqual(new[]{"vpn","client","get","Alice","--out","file.pnt"}),"Client get output binding failed");
+Require((await Invoke("vpn","client","get")).Code!=0&&executed is null,"Client get accepted missing client");
+Require((await Invoke("vpn","client","get","Alice","--out")).Code!=0&&executed is null,"Client get accepted missing output path");
 await Invoke("vpn","status","exit-node");Require(executed!.SequenceEqual(new[]{"vpn","status","exit-node"}),"VPN status node binding failed");
 Require((await Invoke("vpn","status")).Code!=0&&executed is null,"VPN status accepted missing node");
 foreach(var action in new[]{"start","stop","restart"})
