@@ -108,6 +108,15 @@ await Invoke("cesium","add","96188","Здания");Require(executed!.SequenceEq
 Require((await Invoke("cesium","add")).Code!=0&&executed is null,"Cesium asset ID was optional");
 Require((await Invoke("vpn", "client", "create", "test", "--out", "test.pnt", "--servers", "one,two")).Code == 17, "Command callback result was lost");
 Require(executed!.SequenceEqual(new[] { "vpn", "client", "create", "test", "--servers", "one,two", "--out", "test.pnt" }), "Named options must be canonicalized for the existing handler");
+var rebootId="0123456789abcdef";
+foreach(var suffix in new[]{Array.Empty<string>(),new[]{"-f"}})
+{
+    Require((await Invoke(["node",rebootId,"reboot",..suffix])).Code==17,"Reboot command rejected");
+    Require(executed!.SequenceEqual(new[]{"node",rebootId,"reboot"}.Concat(suffix)),"Reboot ID/force binding failed");
+}
+foreach(var invalid in new[]{new[]{"node","reboot"},new[]{"node","bad","reboot"},new[]{"node","reboot",rebootId},new[]{"node",rebootId,"reboot","--force"},new[]{"node",rebootId,"list"},new[]{"node",rebootId,"status"}})
+    Require((await Invoke(invalid)).Code!=0&&executed is null,"Invalid reboot/node syntax accepted: "+string.Join(' ',invalid));
+Require((await Invoke("node",rebootId,"reboot","--help")).Code==0&&executed is null,"Reboot help executed task");
 await Invoke("node","list");
 Require(executed!.SequenceEqual(new[] { "nodes" }), "Omitted optional arguments must remain omitted");
 await Invoke("node","identity", "--fingerprint");

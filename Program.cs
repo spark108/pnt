@@ -28,7 +28,7 @@ record Message(string Type, string? Id = null, string? Name = null, string? Ip =
     string? Host = null, double? PingMs = null, bool Interactive = false,
     string? RequestId = null, long Deadline = 0, string[][]? Routes = null, PingReport[]? Links = null,
     NodeInterface[]? Interfaces = null, string? OutAddress = null, string? OutInterface = null, string? Platform = null, bool BehindNat = false,
-    VpnServer[]? VpnServers = null, VpnClient[]? VpnClients = null, string? VpnPayload = null, int ProbeCount = 0, CesiumConfig? Cesium = null);
+    VpnServer[]? VpnServers = null, VpnClient[]? VpnClients = null, string? VpnPayload = null, int ProbeCount = 0, CesiumConfig? Cesium = null,bool Force=false);
 
 static class App
 {
@@ -142,6 +142,10 @@ static class App
                     if (removed.Id == me) throw new Exception("Используйте pnt node leave.");
                     db.Put(removed with { Removed = true, Version = Now });
                     Console.WriteLine("Узел исключён."); break;
+                case ["node",var rebootNode,"reboot"]:
+                    Active(db);await NodeManagement.Reboot(db,cert,rebootNode,false);break;
+                case ["node",var rebootNode,"reboot","-f"]:
+                    Active(db);await NodeManagement.Reboot(db,cert,rebootNode,true);break;
                 case ["node", "kick", var targetNode]:
                     Active(db);await NodeManagement.Kick(db,cert,targetNode);break;
                 case ["cluster", "leave"]:

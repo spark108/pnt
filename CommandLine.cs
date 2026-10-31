@@ -16,9 +16,11 @@ static class CommandLine
         if (args.Length == 0) args = ["--help"];
         var current = (Command)root;
         var groupsOnly = true;
+        var targetSeen=false;
         foreach (var token in args)
         {
             var child = current.Subcommands.FirstOrDefault(c => c.Name == token);
+            if(child is null&&current.Name=="node"&&!targetSeen&&token.Length==16&&token.All(Uri.IsHexDigit)){targetSeen=true;continue;}
             if (child is null) { groupsOnly = false; break; }
             current = child;
         }
@@ -28,6 +30,7 @@ static class CommandLine
 
     internal static RootCommand Build(Func<string[], Task<int>> execute, bool clustered = false)
     {
+        var nodeTarget=new Argument<string>("id"){Arity=ArgumentArity.ZeroOrOne,Description="ID узла для команды reboot; указывается перед reboot."};
         var root = new RootCommand("PNT — управление децентрализованной сетью серверов.");
         var groups = new Dictionary<string, Command> { [""] = root };
         void Group(string path, string description)
@@ -56,6 +59,10 @@ static class CommandLine
             foreach (var argument in arguments) command.Arguments.Add(argument);
             foreach (var option in named) command.Options.Add(option);
             foreach (var flag in switches) command.Options.Add(flag);
+            if(path.StartsWith("node "))command.Validators.Add(result=>
+            {
+                if(result.GetValue(nodeTarget) is not null)result.AddError("Эта команда используется без ID перед подкомандой.");
+            });
             command.SetAction(async (result, cancellation) =>
             {
                 var values = (dispatch ?? path).Split(' ').ToList();
@@ -71,6 +78,17 @@ static class CommandLine
             groups[parent].Subcommands.Add(command);
         }
         Group("node", "Узлы, подключение и управление кластером.");
+        groups["node"].Arguments.Add(nodeTarget);
+        var reboot=new Command("reboot","Перезагрузить ОС: pnt node <id> reboot [-f]. Требует подтверждения.");
+        var forceReboot=new Option<bool>("-f"){Description="Принудительная перезагрузка; подтверждение остаётся обязательным."};
+        reboot.Options.Add(forceReboot);
+        reboot.Validators.Add(result=>
+        {
+            var target=result.GetValue(nodeTarget);
+            if(target is null||target.Length!=16||!target.All(Uri.IsHexDigit))result.AddError("Укажите 16-значный ID узла перед reboot: pnt node <id> reboot [-f].");
+        });
+        reboot.SetAction((result,cancellation)=>execute(result.GetValue(forceReboot)?["node",result.GetValue(nodeTarget)!,"reboot","-f"]:["node",result.GetValue(nodeTarget)!,"reboot"]));
+        groups["node"].Subcommands.Add(reboot);
         Group("node invite", "Приглашения в кластер.");
         Leaf("node init", "Создать новый кластер с общим ключом.", [("key", "Общий ключ кластера.")], dispatch:"create cluster", hidden:clustered);
         Leaf("node join", "Отправить заявку на вступление в кластер.", [("ip", "IPv4 действующего узла.")], dispatch:"connect cluster", hidden:clustered);
