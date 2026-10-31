@@ -38,7 +38,13 @@ acl.AddAccessRule(new FileSystemAccessRule(identity, FileSystemRights.FullContro
 new FileInfo(protectedFile).SetAccessControl(acl);
 File.SetAttributes(database, FileAttributes.ReadOnly);
 var helper = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../deploy/access.ps1"));
-var script = ". '" + helper.Replace("'", "''") + "'; Set-PntDirectoryAcl -DataPath '" + fixture.Replace("'", "''") + "' -GroupSid '" + group.Value + "' -AdministratorSid '" + identity.Value + "'";
+// Delete an enumerated SQLite temporary file immediately before SetAccessControl.
+var disappearing=Path.Combine(fixture,"PNT.DB-SHM.tmp");File.WriteAllText(disappearing,"temporary");
+var helperSource=File.ReadAllText(helper);
+if(!helperSource.Contains("try {Write-PntAcl}"))throw new Exception("ACL race injection point missing");
+var instrumented=Path.Combine(Path.GetTempPath(),"pnt-acl-race-"+Guid.NewGuid().ToString("N")+".ps1");
+File.WriteAllText(instrumented,helperSource.Replace("try {Write-PntAcl}","try {if([IO.Path]::GetFileName($Path) -eq 'PNT.DB-SHM.tmp'){[IO.File]::Delete($Path)};Write-PntAcl}"));
+var script = ". '" + instrumented.Replace("'", "''") + "'; Set-PntDirectoryAcl -DataPath '" + fixture.Replace("'", "''") + "' -GroupSid '" + group.Value + "' -AdministratorSid '" + identity.Value + "'";
 using var process = Process.Start(new ProcessStartInfo("powershell.exe")
 {
     UseShellExecute = false,
@@ -46,6 +52,13 @@ using var process = Process.Start(new ProcessStartInfo("powershell.exe")
 })!;
 process.WaitForExit();
 if (process.ExitCode != 0) throw new Exception("ACL repair failed; fixture: " + fixture);
+File.Delete(instrumented);
+if(File.Exists(disappearing))throw new Exception("Disappearing-file race was not exercised");
+// A persistent I/O failure must still abort repair, rather than being swallowed.
+File.WriteAllText(instrumented,helperSource.Replace("try {Write-PntAcl}","try {throw [IO.IOException]::new('persistent-acl-failure');Write-PntAcl}"));
+var failureScript=". '"+instrumented.Replace("'","''")+"'; try {Set-PntDirectoryAcl -DataPath '"+fixture.Replace("'","''")+"' -GroupSid '"+group.Value+"' -AdministratorSid '"+identity.Value+"'}catch{if($_.Exception.GetBaseException().Message -eq 'persistent-acl-failure'){exit 0};exit 2};exit 3";
+using(var failure=Process.Start(new ProcessStartInfo("powershell.exe"){UseShellExecute=false,ArgumentList={"-NoProfile","-NonInteractive","-ExecutionPolicy","Bypass","-Command","$ErrorActionPreference='Stop';"+failureScript}})!){failure.WaitForExit();if(failure.ExitCode!=0)throw new Exception("Persistent ACL error was suppressed");}
+File.Delete(instrumented);
 foreach (var path in Directory.EnumerateFileSystemEntries(fixture, "*", SearchOption.AllDirectories).Prepend(fixture))
 {
     var isDirectory = Directory.Exists(path);
@@ -75,4 +88,4 @@ db.Close();
 // This path was created locally above and is never derived from user input.
 if (!Path.GetFullPath(fixture).StartsWith(Path.GetFullPath(Path.GetTempPath()), StringComparison.OrdinalIgnoreCase)) throw new Exception("Unsafe cleanup.");
 Directory.Delete(fixture, true);
-Console.WriteLine("PASS: Windows ACL repair, protected files, SQLite WAL/SHM, write access, and identity preservation (no elevation required).");
+Console.WriteLine("PASS: Windows ACL repair, disappearing temporary files, persistent errors, protected files, SQLite WAL/SHM, write access, and identity preservation (no elevation required).");
