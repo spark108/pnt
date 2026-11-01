@@ -192,7 +192,7 @@ static class QuicTransport
     sealed class Session
     {
         readonly QuicConnection connection;
-        readonly QuicStream control;
+        readonly Stream control;
         readonly string self;
         readonly CancellationTokenSource stop = new();
         readonly string fingerprint, remoteId;
@@ -201,9 +201,10 @@ static class QuicTransport
         public Session(QuicConnection connection, QuicStream control, string self)
         {
             if (!Supported) throw new PlatformNotSupportedException();
-            this.connection = connection; this.control = control; this.self = self;
+            this.connection = connection; this.self = self;
             using var remote = new X509Certificate2(connection.RemoteCertificate!);
             fingerprint = Certificate.Fingerprint(remote); remoteId = Certificate.Id(remote);
+            this.control=LinkTraffic.Wrap(control,self,remoteId,fingerprint);
             active[this] = self;
         }
         public void Start() { _ = Run(); }
@@ -215,10 +216,11 @@ static class QuicTransport
             var stream = await connection.OpenOutboundStreamAsync(QuicStreamType.Bidirectional, limit.Token);
             try
             {
-                await Peer.Send(stream, new Message("quic-open", self)).WaitAsync(limit.Token);
-                var ready = await Peer.Read(stream).WaitAsync(limit.Token);
+                var metered=LinkTraffic.Wrap(stream,self,remoteId,fingerprint);
+                await Peer.Send(metered, new Message("quic-open", self)).WaitAsync(limit.Token);
+                var ready = await Peer.Read(metered).WaitAsync(limit.Token);
                 if (ready?.Type != "quic-open-ready" || ready.Id != remoteId) throw new IOException("QUIC stream not confirmed.");
-                return new Peer(stream, fingerprint, remoteId, connection.RemoteEndPoint.Address, "quic");
+                return new Peer(metered, fingerprint, remoteId, connection.RemoteEndPoint.Address, "quic");
             }
             catch { stream.Abort(QuicAbortDirection.Both, 2); await FinishStream(stream); throw; }
         }
@@ -253,10 +255,11 @@ static class QuicTransport
             if (!Supported) return;
             try
             {
-                var opening = await Peer.Read(stream).WaitAsync(TimeSpan.FromSeconds(5), stop.Token);
+                var metered=LinkTraffic.Wrap(stream,self,remoteId,fingerprint,true);
+                var opening = await Peer.Read(metered).WaitAsync(TimeSpan.FromSeconds(5), stop.Token);
                 if (opening?.Type != "quic-open" || opening.Id != remoteId) throw new IOException("Invalid QUIC stream header.");
-                await Peer.Send(stream, new Message("quic-open-ready", self)).WaitAsync(stop.Token);
-                if (handlers.TryGetValue(self, out var handler)) await handler(stream, fingerprint, remoteId);
+                await Peer.Send(metered, new Message("quic-open-ready", self)).WaitAsync(stop.Token);
+                if (handlers.TryGetValue(self, out var handler)) await handler(metered, fingerprint, remoteId);
             }
             catch { }
             finally { await FinishStream(stream); }

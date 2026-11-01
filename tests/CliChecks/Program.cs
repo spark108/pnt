@@ -86,6 +86,10 @@ Require((await Invoke("forward", "add", "--listen", "node:123", "--wrong", "x"))
 Require((await Invoke("cluster", "stats")).Code != 0 && executed is null, "Unknown subcommands must be rejected");
 await Invoke("vpn","client","unbind","0123456789abcdef");Require(executed!.SequenceEqual(new[]{"vpn","client","unbind","0123456789abcdef"}),"Client unbind binding failed");
 Require((await Invoke("vpn","client","unbind")).Code!=0&&executed is null,"Client unbind accepted missing ID");
+await Invoke("vpn","client","allow","*","*");Require(executed!.SequenceEqual(new[]{"vpn","client","allow","*","*"}),"Selector arguments changed in parser");
+await Invoke("node","*","reboot","-f");Require(executed!.SequenceEqual(new[]{"node","*","reboot","-f"}),"Wildcard reboot rejected");
+await Invoke("vpn","client","rename","Alice","New name");Require(executed!.SequenceEqual(new[]{"vpn","client","rename","Alice","New name"}),"Client rename arguments lost");
+Require((await Invoke("vpn","client","rename","Alice")).Code!=0&&executed is null,"Client rename accepted missing name");
 await Invoke("vpn","client","get","Alice");Require(executed!.SequenceEqual(new[]{"vpn","client","get","Alice"}),"Client get console binding failed");
 await Invoke("vpn","client","get","Alice","--out=file.pnt");Require(executed!.SequenceEqual(new[]{"vpn","client","get","Alice","--out","file.pnt"}),"Client get output binding failed");
 Require((await Invoke("vpn","client","get")).Code!=0&&executed is null,"Client get accepted missing client");

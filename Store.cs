@@ -13,6 +13,7 @@ sealed class Store : IDisposable
         foreach (var sql in new[]
         {
             "CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY,v TEXT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS link_traffic(source TEXT NOT NULL,target TEXT NOT NULL,json TEXT NOT NULL,updated INTEGER NOT NULL,PRIMARY KEY(source,target))",
             "CREATE TABLE IF NOT EXISTS direct_links(source TEXT NOT NULL,target TEXT NOT NULL,json TEXT NOT NULL,updated INTEGER NOT NULL,PRIMARY KEY(source,target))",
             "CREATE TABLE IF NOT EXISTS nodes(id TEXT PRIMARY KEY,json TEXT NOT NULL,version INTEGER NOT NULL)",
             "CREATE TABLE IF NOT EXISTS vpn_servers(id TEXT PRIMARY KEY,json TEXT NOT NULL,version INTEGER NOT NULL)",
@@ -75,6 +76,22 @@ sealed class Store : IDisposable
         q.CommandText = "SELECT json FROM direct_links WHERE updated>$u"; q.Parameters.AddWithValue("$u", App.Now - 45_000);
         using var reader = q.ExecuteReader(); var result = new List<PingReport>();
         while (reader.Read()) result.Add(JsonSerializer.Deserialize<PingReport>(reader.GetString(0), App.Json)!);
+        return result;
+    }
+    internal void PutTraffic(LinkTrafficReport value)
+    {
+        if(value.Source==value.Target||Resolve(value.Source) is null||Resolve(value.Target) is null||
+            value.Updated<App.Now-30_000||value.Updated>App.Now+60_000||value.IntervalMs is <1000 or >30_000||
+            !double.IsFinite(value.SentBytesPerSecond)||!double.IsFinite(value.ReceivedBytesPerSecond)||value.SentBytesPerSecond<0||value.ReceivedBytesPerSecond<0)return;
+        using var c=Open();using var q=c.CreateCommand();
+        q.CommandText="INSERT INTO link_traffic VALUES($s,$t,$j,$u) ON CONFLICT(source,target) DO UPDATE SET json=excluded.json,updated=excluded.updated WHERE excluded.updated>link_traffic.updated";
+        q.Parameters.AddWithValue("$s",value.Source);q.Parameters.AddWithValue("$t",value.Target);q.Parameters.AddWithValue("$j",JsonSerializer.Serialize(value,App.Json));q.Parameters.AddWithValue("$u",value.Updated);q.ExecuteNonQuery();
+    }
+    internal List<LinkTrafficReport> Traffic()
+    {
+        using var c=Open();using var q=c.CreateCommand();q.CommandText="SELECT json FROM link_traffic WHERE updated>$u";q.Parameters.AddWithValue("$u",App.Now-30_000);
+        using var reader=q.ExecuteReader();var result=new List<LinkTrafficReport>();
+        while(reader.Read())result.Add(JsonSerializer.Deserialize<LinkTrafficReport>(reader.GetString(0),App.Json)!);
         return result;
     }
     public string? Get(string key)

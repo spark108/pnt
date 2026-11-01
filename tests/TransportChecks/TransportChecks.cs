@@ -36,6 +36,7 @@ static class TransportChecks
             }
             else await Peer.Send(stream, new Message("echo", Output: request?.Output, Id: remote));
         }
+        LinkTraffic.Register(aid,(remote,fp)=>remote==bid&&fp==bfp);LinkTraffic.Register(bid,(remote,fp)=>remote==aid&&fp==afp);
         QuicTransport.Register(aid, Echo); QuicTransport.Register(bid, Echo);
         bool Authorized(string id, string fp) => id == bid && fp == bfp;
         using var stop = new CancellationTokenSource();

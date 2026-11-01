@@ -96,6 +96,7 @@ static class WebChecks
             merge.Invoke(replicaService,[new Message("sync",Nodes:[known with{Location=new(999,0,true),Version=known.Version+1}])]);
             Assert(replica.Resolve(self)?.Location?.Latitude==52.37,"Invalid replicated location accepted");
         }
+        db.PutTraffic(new(self,"bbbbbbbbbbbbbbbb",250000,125000,App.Now,5000));
         db.PutLink(new(self,"bbbbbbbbbbbbbbbb",22.5,App.Now,true));db.PutLink(new("bbbbbbbbbbbbbbbb","cccccccccccccccc",18.1,App.Now,true));
         var salt=RandomNumberGenerator.GetBytes(32);var hash=Rfc2898DeriveBytes.Pbkdf2("web-test-password",salt,210_000,HashAlgorithmName.SHA256,32);
         db.PutWeb(new(Guid.NewGuid().ToString("N"),true,Convert.ToHexString(salt),Convert.ToHexString(hash),App.Now));
@@ -139,6 +140,7 @@ static class WebChecks
             Assert((await client.GetAsync("/api/cesium/ion/v1/assets/11/endpoint")).StatusCode==HttpStatusCode.Unauthorized,"Ion endpoint bypassed authentication");
             client.DefaultRequestHeaders.Authorization=new AuthenticationHeaderValue("Basic",Convert.ToBase64String(Encoding.UTF8.GetBytes("admin:web-test-password")));
             var state=await client.GetFromJsonAsync<JsonElement>("/api/state");var csrf=state.GetProperty("csrfToken").GetString()!;
+            Assert(state.GetProperty("traffic")[0].GetProperty("sentBytesPerSecond").GetDouble()==250000,"Web state omitted link throughput");
             Assert(state.GetProperty("nodes").EnumerateArray().Single(n=>n.GetProperty("id").GetString()=="bbbbbbbbbbbbbbbb").GetProperty("vpn").GetBoolean(),"VPN marker missing from state");
             Assert(state.GetProperty("cesium").GetProperty("configured").GetBoolean()&&!state.GetRawText().Contains(MasterToken),"State leaked master token");
             Assert((await client.GetAsync("/api/cesium/ion/v1/assets/1/endpoint")).StatusCode==HttpStatusCode.NotFound,"Disabled ion asset was accessible");
@@ -178,6 +180,7 @@ static class WebChecks
                 Console.WriteLine("BROWSER_URL=https://127.0.0.1:"+panel.ListeningPort);
                 for(var i=0;i<180;i++)
                 {
+                    db.PutTraffic(new(self,"bbbbbbbbbbbbbbbb",250000,125000,App.Now,5000));
                     db.PutLink(new(self,"bbbbbbbbbbbbbbbb",11.2,App.Now,true));
                     db.PutLink(new("bbbbbbbbbbbbbbbb","cccccccccccccccc",18.1,App.Now,true));
                     await Task.Delay(5000);

@@ -133,6 +133,16 @@ static class VpnChecks
 
         Assert(!File.ReadAllText(Path.Combine(directory,"pnt.db")).Contains(profile.Identity),"Private client identity persisted to registry");
         try{VpnClientAgent.Validate(JsonSerializer.Serialize(profile with{ClientId=self},App.Json));throw new Exception("Tampered profile accepted");}catch(ArgumentException){}
+        var beforeClientRename=db.VpnClients().Single();
+        await VpnControl.Command(db,cert,["client","rename",beforeClientRename.Id," Alice renamed "]);
+        var afterClientRename=db.VpnClients().Single();
+        Assert(afterClientRename.Id==beforeClientRename.Id&&afterClientRename.Cert==beforeClientRename.Cert&&afterClientRename.Servers.SequenceEqual(beforeClientRename.Servers)&&afterClientRename.ProtectedIdentity==beforeClientRename.ProtectedIdentity&&afterClientRename.DeviceAuthority==beforeClientRename.DeviceAuthority&&afterClientRename.Name=="Alice renamed"&&afterClientRename.Version>beforeClientRename.Version,"Client rename changed identity, rights or binding authority");
+        Assert(VpnProfiles.Export(db,cert,afterClientRename).Identity==profile.Identity,"Client rename changed exported credentials");
+        foreach(var invalidName in new[]{" ",new string('x',65),"bad\nname"})
+        {
+            try{await VpnControl.Command(db,cert,["client","rename",afterClientRename.Id,invalidName]);throw new Exception("Invalid client name accepted");}catch(ArgumentException){}
+        }
+        await VpnControl.Command(db,cert,["client","rename",afterClientRename.Id,"Alice"]);
         using var identity=X509CertificateLoader.LoadPkcs12(Convert.FromBase64String(profile.Identity),null,X509KeyStorageFlags.Exportable);
         var service=new Service(db,cert,0);var running=service.Run();
         using var deviceA=ECDsa.Create(ECCurve.NamedCurves.nistP256);

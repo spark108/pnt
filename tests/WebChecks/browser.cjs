@@ -52,6 +52,9 @@ const path=require('node:path');
     assert(await page.evaluate(()=>geographicLayer.entities.values.some(e=>e.id.startsWith('border:')&&e.polyline)));
     assert(await page.evaluate(()=>geographicLabels.some(x=>x.city&&x.entity.label.text.getValue(viewer.clock.currentTime)==='Москва')));
     assert.equal(await page.evaluate(()=>viewer.entities.values.filter(e=>e.polyline).length),2);
+    assert(await page.evaluate(()=>viewer.entities.values.some(e=>e.polyline&&e.label.text.getValue(viewer.clock.currentTime).includes('3.00 Mbps'))));
+    assert(await page.evaluate(()=>{const e=edges()[0],saved=state.traffic;state.traffic=[];const missing=linkLabel(e).endsWith('—');state.traffic=[{source:e.a,target:e.b,sentBytesPerSecond:0,receivedBytesPerSecond:0,updated:now(),intervalMs:5000}];const idle=linkLabel(e).endsWith('0.000 Mbps');state.traffic=[{...state.traffic[0],updated:now()-31000}];const stale=linkLabel(e).endsWith('—');state.traffic=saved;return missing&&idle&&stale}));
+
     assert.equal(await page.evaluate(()=>viewer.entities.values.filter(e=>e.id.startsWith('node:')).length),3);
     assert(await page.evaluate(()=>viewer.scene.globe.enableLighting&&viewer.scene.globe.dynamicAtmosphereLightingFromSun&&viewer.clock.clockStep===Cesium.ClockStep.SYSTEM_CLOCK));
     assert(await page.evaluate(()=>{const e=viewer.entities.getById('node:bbbbbbbbbbbbbbbb');return !!e.billboard&&!e.point&&e.billboard.heightReference.getValue()===Cesium.HeightReference.RELATIVE_TO_GROUND&&Math.abs(Cesium.Cartographic.fromCartesian(e.position.getValue(viewer.clock.currentTime)).height-50)<.01}));

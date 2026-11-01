@@ -38,11 +38,12 @@ sealed class Peer : IDisposable
     public Message? RouteReady { get; set; }
     public string RemoteFingerprint => fingerprint!;
     public string RemoteId => remoteId!;
-    Peer(TcpClient socket, SslStream stream)
+    Peer(TcpClient socket, SslStream stream,string self)
     {
-        this.socket = socket; Stream = stream;
+        this.socket = socket;
         using var remote = new X509Certificate2(stream.RemoteCertificate!);
         fingerprint=Certificate.Fingerprint(remote);remoteId=Certificate.Id(remote);
+        Stream=LinkTraffic.Wrap(stream,self,remoteId,fingerprint);
     }
     internal Peer(Stream stream, string fingerprint, string remoteId, IPAddress? remoteAddress = null, string transport = "tcp")
     { Stream = stream; this.fingerprint = fingerprint; this.remoteId = remoteId; this.remoteAddress = remoteAddress; Transport = transport; }
@@ -78,7 +79,7 @@ sealed class Peer : IDisposable
                 EnabledSslProtocols = SslProtocols.Tls13,
                 CertificateRevocationCheckMode = X509RevocationMode.NoCheck
             }, timeout.Token);
-            return new Peer(tcp, tls);
+            return new Peer(tcp, tls,Certificate.Id(cert));
         }
         catch { tcp.Dispose(); throw; }
     }
@@ -94,7 +95,7 @@ sealed class Peer : IDisposable
                 ServerCertificate = cert, ClientCertificateRequired = true, EnabledSslProtocols = SslProtocols.Tls13,
                 CertificateRevocationCheckMode = X509RevocationMode.NoCheck
             }, timeout.Token);
-            return new Peer(tcp, tls);
+            return new Peer(tcp, tls,Certificate.Id(cert));
         }
         catch { tcp.Dispose(); throw; }
     }

@@ -96,6 +96,14 @@ static class VpnControl
                 await VpnDevices.Unbind(db,cert,FindClient(db,name));break;
             case ["client","list"]:
                 await ListClients(db,cert);break;
+            case ["client","rename",var name,var requestedClientName]:
+                var renamedClient=FindClient(db,name);
+                if(renamedClient.Removed)throw new ArgumentException("Клиент отозван.");
+                var clientName=requestedClientName.Trim();
+                if(clientName.Length is <1 or >64||clientName.Any(char.IsControl))throw new ArgumentException("Имя клиента: от 1 до 64 символов, без управляющих символов.");
+                if(db.VpnClients().Any(c=>!c.Removed&&c.Id!=renamedClient.Id&&c.Name.Equals(clientName,StringComparison.OrdinalIgnoreCase)))throw new ArgumentException("Имя клиента уже занято.");
+                db.PutVpn(renamedClient with{Name=clientName,Version=Math.Max(App.Now,renamedClient.Version+1)});
+                Console.WriteLine("Имя клиента изменено: "+clientName);break;
             case ["client","show",var name]:Console.WriteLine(JsonSerializer.Serialize(FindClient(db,name),App.Json));break;
             case ["client",var action,var name,var node] when action is "allow" or "deny":
                 var client=FindClient(db,name);if(client.Removed)throw new ArgumentException("Клиент отозван.");
@@ -123,7 +131,7 @@ static class VpnControl
                 }
                 CliOutput.Table(["Сервер","Рукопожатие (UTC)","Принято","Отправлено"],handshakeRows);
                 break;
-            default:throw new ArgumentException("Неверная команда. pnt vpn status|start|stop|restart; pnt vpn server install|rename|list|remove; pnt vpn client create|get|unbind|list|show|allow|deny|revoke|handshake");
+            default:throw new ArgumentException("Неверная команда. pnt vpn status|start|stop|restart; pnt vpn server install|rename|list|remove; pnt vpn client create|get|unbind|list|show|rename|allow|deny|revoke|handshake");
         }
     }
     static async Task ServerStatus(Store db,X509Certificate2 cert,Node target)

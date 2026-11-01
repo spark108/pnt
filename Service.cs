@@ -101,7 +101,10 @@ sealed class Service(Store db, X509Certificate2 cert,int controlPort=442)
         await Dispatch(peer.Stream, request);
     }
 
-    void RegisterMultiplex() => MultiplexPool.Register(id, async (stream, fingerprint, remote) =>
+    void RegisterMultiplex()
+    {
+        LinkTraffic.Register(id,QuicMember);
+        MultiplexPool.Register(id, async (stream, fingerprint, remote) =>
     {
         var request = await Peer.Read(stream).WaitAsync(TimeSpan.FromSeconds(20));
         if (request is null) return;
@@ -112,6 +115,7 @@ sealed class Service(Store db, X509Certificate2 cert,int controlPort=442)
         }
         await Dispatch(stream, request);
     });
+    }
 
     async Task Dispatch(Stream stream, Message request, bool routed = false)
     {
@@ -239,7 +243,7 @@ sealed class Service(Store db, X509Certificate2 cert,int controlPort=442)
         await Peer.Send(peer.Stream, new Message("welcome", id, Nodes: db.Nodes().ToArray(), Rules: db.Rules().ToArray(), KeyHash: db.Get("key_hash"), Update: db.Update(), Web: db.Web(),Cesium:db.Cesium()));
     }
 
-    Message Sync() => new("sync", id, Nodes: db.Nodes().ToArray(), Rules: db.Rules().ToArray(), Update: db.Update(), Pings: db.Pings().ToArray(), Web: db.Web(), Links: db.Links().ToArray(),VpnServers:db.VpnServers().ToArray(),VpnClients:db.VpnClients().ToArray(),Cesium:db.Cesium());
+    Message Sync() => new("sync", id, Nodes: db.Nodes().ToArray(), Rules: db.Rules().ToArray(), Update: db.Update(), Pings: db.Pings().ToArray(), Web: db.Web(), Links: db.Links().ToArray(),VpnServers:db.VpnServers().ToArray(),VpnClients:db.VpnClients().ToArray(),Cesium:db.Cesium(),Traffic:db.Traffic().ToArray());
 
     void Merge(Message m)
     {
@@ -255,6 +259,7 @@ sealed class Service(Store db, X509Certificate2 cert,int controlPort=442)
         VpnControl.Merge(db,m);
         foreach (var ping in m.Pings ?? []) db.PutPing(ping);
         foreach (var link in m.Links ?? []) db.PutLink(link);
+        foreach(var traffic in m.Traffic??[])if(traffic.Source!=id)db.PutTraffic(traffic);
         if (m.Update is not null) db.PutUpdate(m.Update);
         if (m.Web is not null) db.PutWeb(m.Web);
         if (m.Cesium is not null) db.PutCesium(m.Cesium);
@@ -273,6 +278,8 @@ sealed class Service(Store db, X509Certificate2 cert,int controlPort=442)
                     bootstrapWork=Bootstrap();
                 if (db.Get("cluster") != null && (db.Self()?.Removed != true || db.Get("left") == "1"))
                 {
+                    var members=db.Nodes().Where(n=>!n.Removed).Select(n=>n.Id).ToHashSet();
+                    foreach(var traffic in LinkTraffic.Sample(id,members))db.PutTraffic(traffic);
                     if (topologyWork.IsCompleted) topologyWork = routing.RefreshTopology(stop.Token);
                     foreach (var n in db.Nodes().Where(x => !x.Removed && x.Id != id))
                     {
@@ -516,10 +523,10 @@ sealed class Service(Store db, X509Certificate2 cert,int controlPort=442)
         {
             await Peer.Send(incoming, new Message("error", Error: "Пустая или слишком длинная команда.", RequestId: request.RequestId)); return;
         }
-        var windows=OperatingSystem.IsWindows();
-        using var process = new Process { StartInfo = ShellProcess.Create(request.Command,request.Interactive,App.Dir) };
-        try { process.Start(); }
+        ShellSession started;
+        try { started=ShellSession.Start(request.Command,request.Interactive,App.Dir,request.TerminalWidth,request.TerminalHeight); }
         catch (Exception e) { await Peer.Send(incoming, new Message("error", Error: e.Message, RequestId: request.RequestId)); return; }
+        using var process=started;
         try
         {
             if (sendReady) await Peer.Send(incoming, new Message("ready", Hops: (request.Hops ?? []).Append(id).ToArray()));
@@ -530,12 +537,14 @@ sealed class Service(Store db, X509Certificate2 cert,int controlPort=442)
                     while (await Peer.Read(incoming) is Message input)
                         if (request.Interactive && input.Type == "exec-input" && input.RequestId == request.RequestId)
                         {
-                            await process.StandardInput.WriteAsync(windows?input.Output?.Replace("\n","\r\n"):input.Output);
-                            await process.StandardInput.FlushAsync();
+                            await process.Input!.WriteAsync(input.Output);
+                            await process.Input.FlushAsync();
                         }
+                        else if(request.Interactive&&input.Type=="exec-resize"&&input.RequestId==request.RequestId)
+                            process.Resize(input.TerminalWidth,input.TerminalHeight);
                 }
                 catch { }
-                try { if (!process.HasExited) process.Kill(true); }
+                try { if (!process.HasExited) process.Kill(); }
                 catch { }
             });
             using var writeLock = new SemaphoreSlim(1, 1);
@@ -550,12 +559,12 @@ sealed class Service(Store db, X509Certificate2 cert,int controlPort=442)
                     finally { writeLock.Release(); }
                 }
             }
-            await Task.WhenAll(Pump(process.StandardOutput, false), Pump(process.StandardError, true), process.WaitForExitAsync());
+            await Task.WhenAll(Pump(process.Output,false),process.Error is null?Task.CompletedTask:Pump(process.Error,true),process.WaitForExit());
             await Peer.Send(incoming, new Message("exec-exit", ExitCode: process.ExitCode, RequestId: request.RequestId));
         }
         catch
         {
-            if (!process.HasExited) process.Kill(true);
+            if (!process.HasExited) process.Kill();
             throw;
         }
     }

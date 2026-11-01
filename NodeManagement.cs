@@ -11,12 +11,12 @@ static class NodeManagement
         output.Write("Введите ID узла для подтверждения: ");output.Flush();
         return string.Equals(input.ReadLine()?.Trim(),target.Id,StringComparison.OrdinalIgnoreCase);
     }
-    internal static async Task Reboot(Store db,X509Certificate2 cert,string destination,bool force)
+    internal static async Task Reboot(Store db,X509Certificate2 cert,string destination,bool force,bool selectionConfirmed=false)
     {
         var target=db.Resolve(destination)??throw new Exception("Узел не найден.");
         if(target.Platform is not ("linux" or "windows"))throw new PlatformNotSupportedException("Перезагрузка поддерживается на Linux и Windows.");
         if(Console.IsInputRedirected)throw new IOException("Для подтверждения перезагрузки нужен интерактивный терминал.");
-        if(!ConfirmReboot(target,force,Console.In,Console.Out)){Console.WriteLine("Перезагрузка отменена.");return;}
+        if(!selectionConfirmed&&!ConfirmReboot(target,force,Console.In,Console.Out)){Console.WriteLine("Перезагрузка отменена.");return;}
         using var peer=await new RouteTransport(db,cert).Connect(target.Id,message=>Console.Error.WriteLine(message));
         Message reply;
         try

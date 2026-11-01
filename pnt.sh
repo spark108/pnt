@@ -74,7 +74,7 @@ install_dependencies() {
     esac
     export DEBIAN_FRONTEND=noninteractive
     apt-get update
-    apt-get install -y ca-certificates curl git openssh-client systemd nftables iptables util-linux python3 \
+    apt-get install -y ca-certificates curl git openssh-client systemd nftables iptables util-linux bsdutils python3 \
         libc6 libgcc-s1 libgssapi-krb5-2 libstdc++6 tzdata zlib1g "$icu_package" "$ssl_package"
     if ! dpkg-query -W -f='${Status}' packages-microsoft-prod 2>/dev/null | grep -q 'install ok installed'; then
         curl -fsSL "https://packages.microsoft.com/config/debian/$VERSION_ID/packages-microsoft-prod.deb" \

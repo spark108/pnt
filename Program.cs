@@ -28,7 +28,7 @@ record Message(string Type, string? Id = null, string? Name = null, string? Ip =
     string? Host = null, double? PingMs = null, bool Interactive = false,
     string? RequestId = null, long Deadline = 0, string[][]? Routes = null, PingReport[]? Links = null,
     NodeInterface[]? Interfaces = null, string? OutAddress = null, string? OutInterface = null, string? Platform = null, bool BehindNat = false,
-    VpnServer[]? VpnServers = null, VpnClient[]? VpnClients = null, string? VpnPayload = null, int ProbeCount = 0, CesiumConfig? Cesium = null,bool Force=false,string? DeviceEpoch=null);
+    VpnServer[]? VpnServers = null, VpnClient[]? VpnClients = null, string? VpnPayload = null, int ProbeCount = 0, CesiumConfig? Cesium = null,bool Force=false,string? DeviceEpoch=null,int TerminalWidth=0,int TerminalHeight=0,LinkTrafficReport[]? Traffic=null);
 
 static class App
 {
@@ -92,134 +92,141 @@ static class App
             Directory.CreateDirectory(Dir);
             using var db = new Store(Path.Combine(Dir, "pnt.db"));
             var cert = Certificate.Load(Path.Combine(Dir, "node.pfx"));
-            var me = Certificate.Id(cert);
-            switch (a)
-            {
-                case ["vpn", .. var vpnArgs]: await VpnControl.Command(db,cert,vpnArgs);break;
-                case ["cesium", .. var cesiumArgs]:await CesiumControl.Command(db,cesiumArgs);break;
-                case ["install", "-r", var remoteHost]: return await Management.Remote(db, cert, remoteHost);
-                case ["serve"]:
-                    if (OperatingSystem.IsWindows() && !Environment.UserInteractive) WindowsServiceHost.Run(db,cert);
-                    else await new Service(db, cert).Run(); break;
-                case ["identity"]: Console.WriteLine(me); break;
-                case ["identity", "--fingerprint"]: Console.WriteLine(Certificate.Fingerprint(cert));break;
-                case ["node", "status"]:
-                    if(db.Get("cluster") is not null){Active(db);Console.WriteLine($"Кластер: {db.Get("cluster")}\nУзел: {me}\nIP: {db.Self()!.Ip}\nУзлов: {db.Nodes().Count(x=>!x.Removed)}");}
-                    else Console.WriteLine($"Узел: {me}\nСервер: {db.Get("bootstrap_host")}\nСертификат сервера: {db.Get("bootstrap_pin:"+db.Get("bootstrap_host"))}\nКластер: ожидает подтверждения");break;
-                case ["node", "status", "--require-cluster"]:
-                    Active(db);Console.WriteLine($"Кластер: {db.Get("cluster")}\nУзел: {me}\nIP: {db.Self()!.Ip}\nУзлов: {db.Nodes().Count(x=>!x.Removed)}");break;
-                case ["connect", "cluster", var host]:
-                    if(db.Get("cluster") is not null) throw new Exception("Узел уже состоит в кластере.");
-                    if(!IPAddress.TryParse(host,out var bootstrapIp) || bootstrapIp.AddressFamily!=AddressFamily.InterNetwork)throw new Exception("Укажите IPv4 действующего узла.");
-                    db.Set("bootstrap_host",bootstrapIp.ToString());db.Set("bootstrap_name",Environment.MachineName);
-                    db.Set("bootstrap_ip",OwnIp);Console.WriteLine("Заявка будет отправлена службой PNT. На действующем узле: pnt node requests, затем pnt node accept <id>. ID этого узла: "+me);break;
-                case ["cluster", "requests"]:
-                    Active(db);CliOutput.Table(["ID","Имя","IP","Платформа","Сертификат"],Enrollment.Requests(db).Where(r=>r.Status=="pending")
-                        .Select(r=>new CliCell[]{r.Id,r.Name,r.ObservedIp,r.Platform,r.Cert}));break;
-                case ["cluster", "accept", var requestId]: Enrollment.Approve(db,requestId);Console.WriteLine("Заявка подтверждена.");break;
-                case ["cluster", "reject", var requestId]: Enrollment.Reject(db,requestId);Console.WriteLine("Заявка отклонена.");break;
-                case ["create", "cluster", var key]:
-                    if (db.Get("cluster") != null) throw new Exception("Кластер уже создан или принят.");
-                    db.Set("cluster", Convert.ToHexString(RandomNumberGenerator.GetBytes(16)));
-                    db.Set("key_hash", Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(key))));
-                    db.Set("self", me);
-                    db.Put(new Node(me, Environment.MachineName, OwnIp, Certificate.Fingerprint(cert), Now, Platform:Platform));
-                    Console.WriteLine($"Кластер создан. ID узла: {me}"); break;
-                case ["cluster", "add", var ip]:
-                    Active(db);
-                    if (!IPAddress.TryParse(ip, out _)) throw new Exception("Ожидается IP-адрес.");
-                    var inviteId = Guid.NewGuid().ToString("N");
-                    var expires = Now + 3600_000;
-                    var secret = Convert.ToBase64String(HMACSHA256.HashData(Convert.FromHexString(db.Get("key_hash")!), Encoding.UTF8.GetBytes($"{inviteId}:{ip}:{expires}")));
-                    var inv = new Invite(inviteId, secret, ip, expires);
-                    db.Invite(inv);
-                    var invitationToken = new Token(db.Get("cluster")!, db.Self()!.Ip, Certificate.Fingerprint(cert), inv.Id, inv.Secret);
-                    Console.WriteLine(Convert.ToBase64String(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(invitationToken, Json)))); break;
-                case ["accept", "cluster", var token]: await Accept(db, cert, token); break;
-                case ["cluster", "remove", var node]:
-                    Active(db);
-                    var removed = db.Resolve(node) ?? throw new Exception("Узел не найден.");
-                    if (removed.Id == me) throw new Exception("Используйте pnt node leave.");
-                    db.Put(removed with { Removed = true, Version = Now });
-                    Console.WriteLine("Узел исключён."); break;
-                case ["node",var rebootNode,"reboot"]:
-                    Active(db);await NodeManagement.Reboot(db,cert,rebootNode,false);break;
-                case ["node",var rebootNode,"reboot","-f"]:
-                    Active(db);await NodeManagement.Reboot(db,cert,rebootNode,true);break;
-                case ["node", "kick", var targetNode]:
-                    Active(db);await NodeManagement.Kick(db,cert,targetNode);break;
-                case ["cluster", "leave"]:
-                    Active(db);NodeManagement.Leave(db);Console.WriteLine("Выход зарегистрирован."); break;
-                case ["cluster", "nodes"]: PrintNodes(db, null); break;
-                case ["cluster", "nodes", var fromNode]: PrintNodes(db, fromNode); break;
-                case ["nodes", "--interactive"]: await WatchNodes(db,null);break;
-                case ["nodes", var fromNode, "--interactive"]: await WatchNodes(db,fromNode);break;
-                case ["nodes"]: PrintNodes(db, null); break;
-                case ["nodes", var fromNode]: PrintNodes(db, fromNode); break;
-                case ["routes"]: PrintRoutes(db, null); break;
-                case ["routes", var destination]: PrintRoutes(db, destination); break;
-                case ["sh", var target, "--interactive", .. var command] when command.Length > 0:
-                    if (Console.IsInputRedirected) throw new Exception("Нужен интерактивный терминал.");
-                    return await RemoteCommands.Run(db, cert, target, string.Join(' ', command), true);
-                case ["sh", var target, .. var command] when command.Length > 0:
-                    return await RemoteCommands.Run(db, cert, target, string.Join(' ', command));
-                case ["ping", var host]:
-                    return await ExternalPing.Run(db, cert, host);
-                case ["cluster", "status"]:
-                    Active(db); Console.WriteLine($"Кластер: {db.Get("cluster")}\nУзел: {me}\nIP: {db.Self()!.Ip}\nУзлов: {db.Nodes().Count(x => !x.Removed)}"); break;
-                case ["cluster", "invites"]:
-                    CliOutput.Table(["ID","IP","Действует до (UTC)","Статус"],db.Invites().Select(i=>new CliCell[]{i.Id,i.Ip,
-                        DateTimeOffset.FromUnixTimeMilliseconds(i.Expires).ToString("u"),new(i.Used?"использовано":i.Expires<Now?"истекло":"активно",i.Used||i.Expires<Now?"grey":"green")}));break;
-                case ["cluster", "invite", "revoke", var id]: db.Revoke(id); break;
-                case ["cluster", "update", "announce", var commit]:
-                    Active(db);
-                    var current = db.AnnounceUpdate(commit);
-                    Console.WriteLine($"Обновление {current.Commit} объявлено кластеру."); break;
-                case ["cluster", "update", "applied", var updateId]:
-                    if (updateId.Length != 32 || !updateId.All(Uri.IsHexDigit)) throw new Exception("Некорректный ID события обновления.");
-                    db.Set("update_applied", updateId);
-                    Console.WriteLine("Обновление узла подтверждено."); break;
-                case ["cluster", "maintenance", "start"]:
-                    await SetMaintenance(db, cert, true); break;
-                case ["cluster", "maintenance", "done"]:
-                    await SetMaintenance(db, cert, false); break;
-                case ["web", "enable"]:
-                    Active(db);
-                    if (db.Rules().Any(x => !x.Removed && x.InPort == WebPanel.Port))
-                        throw new Exception($"Порт {WebPanel.Port} занят правилом проброса. Удалите правило перед включением веб интерфейса.");
-                    var password = ReadPassword();
-                    var salt = RandomNumberGenerator.GetBytes(32);
-                    var hash = Rfc2898DeriveBytes.Pbkdf2(password, salt, 210_000, HashAlgorithmName.SHA256, 32);
-                    var previous = db.Web();
-                    db.PutWeb(new WebConfig(Guid.NewGuid().ToString("N"), true, Convert.ToHexString(salt),
-                        Convert.ToHexString(hash), Math.Max(Now, (previous?.Version ?? 0) + 1)));
-                    await Broadcast(db, cert);
-                    Console.WriteLine($"Веб интерфейс включён на https://<IP>:{WebPanel.Port}/ (логин admin). Изменение отправлено узлам."); break;
-                case ["web", "disable"]:
-                    Active(db);
-                    var currentWeb = db.Web();
-                    db.PutWeb(new WebConfig(Guid.NewGuid().ToString("N"), false, "", "",
-                        Math.Max(Now, (currentWeb?.Version ?? 0) + 1)));
-                    await Broadcast(db, cert);
-                    Console.WriteLine("Веб интерфейс выключен; пароль сброшен. Изменение отправлено узлам."); break;
-                case ["name", .. var words] when words.Length > 0:
-                    Active(db); var name = string.Join(' ', words).Trim();
-                    if (name.Length is < 1 or > 64) throw new Exception("Имя: от 1 до 64 символов.");
-                    db.Put(db.Self()! with { Name = name, Version = Now }); break;
-                case ["forward", "add", .. var options]: AddRule(db, options); break;
-                case ["forward", "list"]:
-                    CliOutput.Table(["ID","Протокол","Вход","Через","Выход"],db.Rules().Where(r=>!r.Removed)
-                        .Select(r=>new CliCell[]{r.Id,"TCP",$"{db.Resolve(r.In)?.Name??r.In}:{r.InPort}",r.Via is null?"auto":db.Resolve(r.Via)?.Name??r.Via,$"{db.Resolve(r.To)?.Name??r.To}:{r.ToPort}"}));break;
-                case ["forward", "show", var id]:
-                    Console.WriteLine(JsonSerializer.Serialize(db.Rules().FirstOrDefault(x => x.Id == id) ?? throw new Exception("Правило не найдено."), Json)); break;
-                case ["forward", "remove", var id]:
-                    var rule = db.Rules().FirstOrDefault(x => x.Id == id && !x.Removed) ?? throw new Exception("Правило не найдено.");
-                    db.Put(rule with { Removed = true, Version = Now }); break;
-                default: throw new ArgumentException("Неверная команда. Используйте pnt help <команда>.");
-            }
-            return 0;
+            var selectorPlan=CommandSelectors.Create(db,a);
+            if(selectorPlan is null)return await ExecuteResolved(db,cert,a);
+            return await CommandSelectors.Run(selectorPlan,expanded=>ExecuteResolved(db,cert,expanded,true),Console.In,Console.Error,!Console.IsInputRedirected);
         }
         catch (Exception e) { CliOutput.Error("pnt: " + e.GetBaseException().Message); return 1; }
+    }
+
+    static async Task<int> ExecuteResolved(Store db,System.Security.Cryptography.X509Certificates.X509Certificate2 cert,string[] a,bool selectionConfirmed=false)
+    {
+        var me = Certificate.Id(cert);
+        switch (a)
+        {
+            case ["vpn", .. var vpnArgs]: await VpnControl.Command(db,cert,vpnArgs);break;
+            case ["cesium", .. var cesiumArgs]:await CesiumControl.Command(db,cesiumArgs);break;
+            case ["install", "-r", var remoteHost]: return await Management.Remote(db, cert, remoteHost);
+            case ["serve"]:
+                if (OperatingSystem.IsWindows() && !Environment.UserInteractive) WindowsServiceHost.Run(db,cert);
+                else await new Service(db, cert).Run(); break;
+            case ["identity"]: Console.WriteLine(me); break;
+            case ["identity", "--fingerprint"]: Console.WriteLine(Certificate.Fingerprint(cert));break;
+            case ["node", "status"]:
+                if(db.Get("cluster") is not null){Active(db);Console.WriteLine($"Кластер: {db.Get("cluster")}\nУзел: {me}\nIP: {db.Self()!.Ip}\nУзлов: {db.Nodes().Count(x=>!x.Removed)}");}
+                else Console.WriteLine($"Узел: {me}\nСервер: {db.Get("bootstrap_host")}\nСертификат сервера: {db.Get("bootstrap_pin:"+db.Get("bootstrap_host"))}\nКластер: ожидает подтверждения");break;
+            case ["node", "status", "--require-cluster"]:
+                Active(db);Console.WriteLine($"Кластер: {db.Get("cluster")}\nУзел: {me}\nIP: {db.Self()!.Ip}\nУзлов: {db.Nodes().Count(x=>!x.Removed)}");break;
+            case ["connect", "cluster", var host]:
+                if(db.Get("cluster") is not null) throw new Exception("Узел уже состоит в кластере.");
+                if(!IPAddress.TryParse(host,out var bootstrapIp) || bootstrapIp.AddressFamily!=AddressFamily.InterNetwork)throw new Exception("Укажите IPv4 действующего узла.");
+                db.Set("bootstrap_host",bootstrapIp.ToString());db.Set("bootstrap_name",Environment.MachineName);
+                db.Set("bootstrap_ip",OwnIp);Console.WriteLine("Заявка будет отправлена службой PNT. На действующем узле: pnt node requests, затем pnt node accept <id>. ID этого узла: "+me);break;
+            case ["cluster", "requests"]:
+                Active(db);CliOutput.Table(["ID","Имя","IP","Платформа","Сертификат"],Enrollment.Requests(db).Where(r=>r.Status=="pending")
+                    .Select(r=>new CliCell[]{r.Id,r.Name,r.ObservedIp,r.Platform,r.Cert}));break;
+            case ["cluster", "accept", var requestId]: Enrollment.Approve(db,requestId);Console.WriteLine("Заявка подтверждена.");break;
+            case ["cluster", "reject", var requestId]: Enrollment.Reject(db,requestId);Console.WriteLine("Заявка отклонена.");break;
+            case ["create", "cluster", var key]:
+                if (db.Get("cluster") != null) throw new Exception("Кластер уже создан или принят.");
+                db.Set("cluster", Convert.ToHexString(RandomNumberGenerator.GetBytes(16)));
+                db.Set("key_hash", Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(key))));
+                db.Set("self", me);
+                db.Put(new Node(me, Environment.MachineName, OwnIp, Certificate.Fingerprint(cert), Now, Platform:Platform));
+                Console.WriteLine($"Кластер создан. ID узла: {me}"); break;
+            case ["cluster", "add", var ip]:
+                Active(db);
+                if (!IPAddress.TryParse(ip, out _)) throw new Exception("Ожидается IP-адрес.");
+                var inviteId = Guid.NewGuid().ToString("N");
+                var expires = Now + 3600_000;
+                var secret = Convert.ToBase64String(HMACSHA256.HashData(Convert.FromHexString(db.Get("key_hash")!), Encoding.UTF8.GetBytes($"{inviteId}:{ip}:{expires}")));
+                var inv = new Invite(inviteId, secret, ip, expires);
+                db.Invite(inv);
+                var invitationToken = new Token(db.Get("cluster")!, db.Self()!.Ip, Certificate.Fingerprint(cert), inv.Id, inv.Secret);
+                Console.WriteLine(Convert.ToBase64String(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(invitationToken, Json)))); break;
+            case ["accept", "cluster", var token]: await Accept(db, cert, token); break;
+            case ["cluster", "remove", var node]:
+                Active(db);
+                var removed = db.Resolve(node) ?? throw new Exception("Узел не найден.");
+                if (removed.Id == me) throw new Exception("Используйте pnt node leave.");
+                db.Put(removed with { Removed = true, Version = Now });
+                Console.WriteLine("Узел исключён."); break;
+            case ["node",var rebootNode,"reboot"]:
+                Active(db);await NodeManagement.Reboot(db,cert,rebootNode,false,selectionConfirmed);break;
+            case ["node",var rebootNode,"reboot","-f"]:
+                Active(db);await NodeManagement.Reboot(db,cert,rebootNode,true,selectionConfirmed);break;
+            case ["node", "kick", var targetNode]:
+                Active(db);await NodeManagement.Kick(db,cert,targetNode);break;
+            case ["cluster", "leave"]:
+                Active(db);NodeManagement.Leave(db);Console.WriteLine("Выход зарегистрирован."); break;
+            case ["cluster", "nodes"]: PrintNodes(db, null); break;
+            case ["cluster", "nodes", var fromNode]: PrintNodes(db, fromNode); break;
+            case ["nodes", "--interactive"]: await WatchNodes(db,null);break;
+            case ["nodes", var fromNode, "--interactive"]: await WatchNodes(db,fromNode);break;
+            case ["nodes"]: PrintNodes(db, null); break;
+            case ["nodes", var fromNode]: PrintNodes(db, fromNode); break;
+            case ["routes"]: PrintRoutes(db, null); break;
+            case ["routes", var destination]: PrintRoutes(db, destination); break;
+            case ["sh", var target, "--interactive", .. var command] when command.Length > 0:
+                if (Console.IsInputRedirected) throw new Exception("Нужен интерактивный терминал.");
+                return await RemoteCommands.Run(db, cert, target, string.Join(' ', command), true);
+            case ["sh", var target, .. var command] when command.Length > 0:
+                return await RemoteCommands.Run(db, cert, target, string.Join(' ', command));
+            case ["ping", var host]:
+                return await ExternalPing.Run(db, cert, host);
+            case ["cluster", "status"]:
+                Active(db); Console.WriteLine($"Кластер: {db.Get("cluster")}\nУзел: {me}\nIP: {db.Self()!.Ip}\nУзлов: {db.Nodes().Count(x => !x.Removed)}"); break;
+            case ["cluster", "invites"]:
+                CliOutput.Table(["ID","IP","Действует до (UTC)","Статус"],db.Invites().Select(i=>new CliCell[]{i.Id,i.Ip,
+                    DateTimeOffset.FromUnixTimeMilliseconds(i.Expires).ToString("u"),new(i.Used?"использовано":i.Expires<Now?"истекло":"активно",i.Used||i.Expires<Now?"grey":"green")}));break;
+            case ["cluster", "invite", "revoke", var id]: db.Revoke(id); break;
+            case ["cluster", "update", "announce", var commit]:
+                Active(db);
+                var current = db.AnnounceUpdate(commit);
+                Console.WriteLine($"Обновление {current.Commit} объявлено кластеру."); break;
+            case ["cluster", "update", "applied", var updateId]:
+                if (updateId.Length != 32 || !updateId.All(Uri.IsHexDigit)) throw new Exception("Некорректный ID события обновления.");
+                db.Set("update_applied", updateId);
+                Console.WriteLine("Обновление узла подтверждено."); break;
+            case ["cluster", "maintenance", "start"]:
+                await SetMaintenance(db, cert, true); break;
+            case ["cluster", "maintenance", "done"]:
+                await SetMaintenance(db, cert, false); break;
+            case ["web", "enable"]:
+                Active(db);
+                if (db.Rules().Any(x => !x.Removed && x.InPort == WebPanel.Port))
+                    throw new Exception($"Порт {WebPanel.Port} занят правилом проброса. Удалите правило перед включением веб интерфейса.");
+                var password = ReadPassword();
+                var salt = RandomNumberGenerator.GetBytes(32);
+                var hash = Rfc2898DeriveBytes.Pbkdf2(password, salt, 210_000, HashAlgorithmName.SHA256, 32);
+                var previous = db.Web();
+                db.PutWeb(new WebConfig(Guid.NewGuid().ToString("N"), true, Convert.ToHexString(salt),
+                    Convert.ToHexString(hash), Math.Max(Now, (previous?.Version ?? 0) + 1)));
+                await Broadcast(db, cert);
+                Console.WriteLine($"Веб интерфейс включён на https://<IP>:{WebPanel.Port}/ (логин admin). Изменение отправлено узлам."); break;
+            case ["web", "disable"]:
+                Active(db);
+                var currentWeb = db.Web();
+                db.PutWeb(new WebConfig(Guid.NewGuid().ToString("N"), false, "", "",
+                    Math.Max(Now, (currentWeb?.Version ?? 0) + 1)));
+                await Broadcast(db, cert);
+                Console.WriteLine("Веб интерфейс выключен; пароль сброшен. Изменение отправлено узлам."); break;
+            case ["name", .. var words] when words.Length > 0:
+                Active(db); var name = string.Join(' ', words).Trim();
+                if (name.Length is < 1 or > 64) throw new Exception("Имя: от 1 до 64 символов.");
+                db.Put(db.Self()! with { Name = name, Version = Now }); break;
+            case ["forward", "add", .. var options]: AddRule(db, options); break;
+            case ["forward", "list"]:
+                CliOutput.Table(["ID","Протокол","Вход","Через","Выход"],db.Rules().Where(r=>!r.Removed)
+                    .Select(r=>new CliCell[]{r.Id,"TCP",$"{db.Resolve(r.In)?.Name??r.In}:{r.InPort}",r.Via is null?"auto":db.Resolve(r.Via)?.Name??r.Via,$"{db.Resolve(r.To)?.Name??r.To}:{r.ToPort}"}));break;
+            case ["forward", "show", var id]:
+                Console.WriteLine(JsonSerializer.Serialize(db.Rules().FirstOrDefault(x => x.Id == id) ?? throw new Exception("Правило не найдено."), Json)); break;
+            case ["forward", "remove", var id]:
+                var rule = db.Rules().FirstOrDefault(x => x.Id == id && !x.Removed) ?? throw new Exception("Правило не найдено.");
+                db.Put(rule with { Removed = true, Version = Now }); break;
+            default: throw new ArgumentException("Неверная команда. Используйте pnt help <команда>.");
+        }
+        return 0;
     }
 
     static void Active(Store db)
