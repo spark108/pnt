@@ -138,6 +138,22 @@ sealed class Store : IDisposable
         write.Parameters.AddWithValue("$notice", JsonSerializer.Serialize(notice, App.Json)); write.Parameters.AddWithValue("$id", notice.Id);
         write.ExecuteNonQuery(); tx.Commit(); return notice;
     }
+    public FtpConfig? Ftp()=>JsonSerializer.Deserialize<FtpConfig>(Get("ftp_config")??"null",App.Json);
+    public void PutFtp(FtpConfig value)
+    {
+        if(value.Id.Length!=32||!value.Id.All(Uri.IsHexDigit)||value.Version<=0)return;
+        using var c=Open();using var tx=c.BeginTransaction(deferred:false);
+        using var read=c.CreateCommand();read.Transaction=tx;read.CommandText="SELECT v FROM meta WHERE k='ftp_config'";
+        var old=JsonSerializer.Deserialize<FtpConfig>(read.ExecuteScalar() as string??"null",App.Json);
+        if(old is not null&&(old.Version>value.Version||old.Version==value.Version&&string.CompareOrdinal(old.Id,value.Id)>=0))return;
+        using var write=c.CreateCommand();write.Transaction=tx;write.CommandText="INSERT INTO meta VALUES('ftp_config',$v) ON CONFLICT(k) DO UPDATE SET v=excluded.v";write.Parameters.AddWithValue("$v",JsonSerializer.Serialize(value,App.Json));write.ExecuteNonQuery();tx.Commit();
+    }
+    internal string[] FtpUploads()
+    {
+        using var c=Open();using var q=c.CreateCommand();q.CommandText="SELECT v FROM meta WHERE k LIKE 'ftp_upload:%'";using var r=q.ExecuteReader();var result=new List<string>();while(r.Read())result.Add(r.GetString(0));return result.ToArray();
+    }
+    internal void RemoveFtpUpload(string id)
+    {using var c=Open();using var q=c.CreateCommand();q.CommandText="DELETE FROM meta WHERE k=$k";q.Parameters.AddWithValue("$k","ftp_upload:"+id);q.ExecuteNonQuery();}
     public WebConfig? Web()
     {
         var json = Get("web_config");

@@ -5,7 +5,9 @@ namespace Pnt;
 
 static class Firewall
 {
-    public static void Open(int port, string protocol = "tcp")
+    public static void Open(int port,string protocol="tcp")=>OpenPorts(port.ToString(),protocol);
+    public static void OpenRange(int first,int last)=>OpenPorts(first+"-"+last,"tcp");
+    static void OpenPorts(string port,string protocol)
     {
         if (protocol is not ("tcp" or "udp")) throw new ArgumentException("Unsupported firewall protocol.");
         if(Environment.GetEnvironmentVariable("PNT_MANAGE_FIREWALL")=="0")return;
@@ -27,16 +29,18 @@ static class Firewall
         catch { }
         try
         {
-            if (Run("iptables", "-C", "INPUT", "-p", protocol, "--dport", port.ToString(), "-j", "ACCEPT").code != 0)
+            if (Run("iptables", "-C", "INPUT", "-p", protocol, "--dport", port.Replace('-',':'), "-j", "ACCEPT").code != 0)
             {
-                var added = Run("iptables", "-I", "INPUT", "-p", protocol, "--dport", port.ToString(), "-m", "comment", "--comment", "pnt", "-j", "ACCEPT");
+                var added = Run("iptables", "-I", "INPUT", "-p", protocol, "--dport", port.Replace('-',':'), "-m", "comment", "--comment", "pnt", "-j", "ACCEPT");
                 if (added.code != 0) Console.Error.WriteLine("pnt: iptables: " + added.output);
             }
         }
         catch (Exception e) { Console.Error.WriteLine("pnt: firewall: " + e.Message); }
     }
 
-    public static void Close(int port, string protocol = "tcp")
+    public static void Close(int port,string protocol="tcp")=>ClosePorts(port.ToString(),protocol);
+    public static void CloseRange(int first,int last)=>ClosePorts(first+"-"+last,"tcp");
+    static void ClosePorts(string port,string protocol)
     {
         if (protocol is not ("tcp" or "udp")) throw new ArgumentException("Unsupported firewall protocol.");
         if(Environment.GetEnvironmentVariable("PNT_MANAGE_FIREWALL")=="0")return;
@@ -56,11 +60,11 @@ static class Firewall
             }
         }
         catch { }
-        try { Run("iptables", "-D", "INPUT", "-p", protocol, "--dport", port.ToString(), "-m", "comment", "--comment", "pnt", "-j", "ACCEPT"); }
+        try { Run("iptables", "-D", "INPUT", "-p", protocol, "--dport", port.Replace('-',':'), "-m", "comment", "--comment", "pnt", "-j", "ACCEPT"); }
         catch { }
     }
 
-    static void WindowsRule(int port,string protocol,bool open)
+    static void WindowsRule(string port,string protocol,bool open)
     {
         try
         {

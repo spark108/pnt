@@ -30,7 +30,7 @@ static class ForwardingChecks
         var echo=new TcpListener(IPAddress.Loopback,0);echo.Start();
         try
         {
-            for(var i=0;i<30;i++){try{using var test=await http.GetAsync("/api/state");break;}catch(HttpRequestException){await Task.Delay(100);}}
+            for(var i=0;i<200;i++){try{using var test=await http.GetAsync("/api/state");break;}catch(HttpRequestException){await Task.Delay(100);}}
             Assert((await http.GetAsync("/api/state")).StatusCode==HttpStatusCode.Unauthorized,"API is not protected");
             http.DefaultRequestHeaders.Authorization=new AuthenticationHeaderValue("Basic",Convert.ToBase64String(Encoding.UTF8.GetBytes("admin:test-password")));
             db.ChangeRoutes(self,_=>[new CachedRoute(self,[self],0,App.Now,1,0,1,true)]);

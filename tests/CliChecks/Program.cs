@@ -27,6 +27,8 @@ async Task<(int Code, string Output)> Invoke(params string[] args)
 }
 
 var rootHelp = await Invoke("--help");
+foreach(var verb in new[]{"enable","disable","status"}){await Invoke("ftp",verb);Require(executed!.SequenceEqual(new[]{"ftp",verb}),"FTPS command dispatch failed");}
+Require((await Invoke("ftp","enable","extra")).Code!=0&&executed is null,"FTPS accepted unknown arguments");
 Require(rootHelp.Code == 0 && rootHelp.Output.Contains("node") && !rootHelp.Output.Contains("--servers"), "Root help must list only its commands");
 var nodeHelp=await Invoke("node","--help");
 Require(nodeHelp.Output.Contains("init")&&nodeHelp.Output.Contains("join")&&!nodeHelp.Output.Contains("requests"),"New node help shows member-only commands");

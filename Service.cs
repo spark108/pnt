@@ -19,6 +19,7 @@ sealed class Service(Store db, X509Certificate2 cert,int controlPort=442)
     Task bootstrapWork = Task.CompletedTask;
     Task vpnWork = Task.CompletedTask;
     readonly WebPanel web = new(db, cert);
+    readonly FtpGateway ftp = new(db, cert);
     readonly RouteTransport routing = new(db, cert);
 
     public async Task Run()
@@ -57,6 +58,7 @@ sealed class Service(Store db, X509Certificate2 cert,int controlPort=442)
             stop.Cancel();
             if (udp is not null && QuicTransport.Supported) { await udp.DisposeAsync(); await udpWork; Firewall.Close(ControlPort, "udp"); }
             MultiplexPool.CloseLocal(id);
+            await ftp.Stop();
             await web.Stop();
             control.Stop();
             foreach (var l in listeners.Values) { Firewall.Close(((IPEndPoint)l.LocalEndpoint).Port); l.Stop(); }
@@ -121,6 +123,9 @@ sealed class Service(Store db, X509Certificate2 cert,int controlPort=442)
     {
         switch (request.Type)
         {
+            case "file-session":
+                if(request.Target==id)await FileService.Serve(db,stream,request,stop.Token);
+                break;
             case "latency-open":
                 await LatencyProbe.Reply(stream,request,id,stop.Token);break;
             case "vpn-admin":
@@ -211,7 +216,7 @@ sealed class Service(Store db, X509Certificate2 cert,int controlPort=442)
         var task = await Peer.Read(incoming).WaitAsync(TimeSpan.FromSeconds(20));
         if (task is null) return;
         if (task.RequestId != request.RequestId || task.Id != path[0] || task.Deadline <= App.Now ||
-            task.Type is not ("sync" or "probe" or "exec" or "ping-external" or "tcp-check" or "interfaces" or "tunnel" or "vpn-admin" or "latency-open" or "node-leave" or "node-reboot"))
+            task.Type is not ("sync" or "probe" or "exec" or "ping-external" or "tcp-check" or "interfaces" or "tunnel" or "vpn-admin" or "latency-open" or "node-leave" or "node-reboot" or "file-session"))
         {
             await Peer.Send(incoming, new Message("error", Error: "Запрос просрочен или не соответствует маршруту.", RequestId: task.RequestId)); return;
         }
@@ -240,10 +245,10 @@ sealed class Service(Store db, X509Certificate2 cert,int controlPort=442)
         }
         if (!db.Consume(invite)) { await Peer.Send(peer.Stream, new Message("error", Error: "Приглашение уже использовано.")); return; }
         db.Put(new Node(m.Id, m.Name, m.Ip, m.Cert, App.Now,Platform:m.Platform=="windows"?"windows":"linux"));
-        await Peer.Send(peer.Stream, new Message("welcome", id, Nodes: db.Nodes().ToArray(), Rules: db.Rules().ToArray(), KeyHash: db.Get("key_hash"), Update: db.Update(), Web: db.Web(),Cesium:db.Cesium()));
+        await Peer.Send(peer.Stream, new Message("welcome", id, Nodes: db.Nodes().ToArray(), Rules: db.Rules().ToArray(), KeyHash: db.Get("key_hash"), Update: db.Update(), Web: db.Web(),Cesium:db.Cesium(),Ftp:db.Ftp()));
     }
 
-    Message Sync() => new("sync", id, Nodes: db.Nodes().ToArray(), Rules: db.Rules().ToArray(), Update: db.Update(), Pings: db.Pings().ToArray(), Web: db.Web(), Links: db.Links().ToArray(),VpnServers:db.VpnServers().ToArray(),VpnClients:db.VpnClients().ToArray(),Cesium:db.Cesium(),Traffic:db.Traffic().ToArray());
+    Message Sync() => new("sync", id, Nodes: db.Nodes().ToArray(), Rules: db.Rules().ToArray(), Update: db.Update(), Pings: db.Pings().ToArray(), Web: db.Web(), Links: db.Links().ToArray(),VpnServers:db.VpnServers().ToArray(),VpnClients:db.VpnClients().ToArray(),Cesium:db.Cesium(),Traffic:db.Traffic().ToArray(),Ftp:db.Ftp());
 
     void Merge(Message m)
     {
@@ -262,6 +267,7 @@ sealed class Service(Store db, X509Certificate2 cert,int controlPort=442)
         foreach(var traffic in m.Traffic??[])if(traffic.Source!=id)db.PutTraffic(traffic);
         if (m.Update is not null) db.PutUpdate(m.Update);
         if (m.Web is not null) db.PutWeb(m.Web);
+        if(m.Ftp is not null)db.PutFtp(m.Ftp);
         if (m.Cesium is not null) db.PutCesium(m.Cesium);
     }
 
@@ -271,6 +277,7 @@ sealed class Service(Store db, X509Certificate2 cert,int controlPort=442)
         {
             try
             {
+                try{await ftp.Refresh();}catch(Exception e){Console.Error.WriteLine("pnt: FTPS: "+e.Message);}
                 await web.Refresh();
                 await RefreshListeners();
                 if(vpnWork.IsCompleted)vpnWork=ReconcileVpn();

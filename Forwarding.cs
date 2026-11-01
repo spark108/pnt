@@ -48,7 +48,7 @@ static class Forwarding
         var ingress=db.Resolve(input.InNode) ?? throw new ArgumentException("Узел входа не найден.");
         var exit=db.Resolve(input.OutNode) ?? throw new ArgumentException("Узел выхода не найден.");
         if (input.InPort is <1 or >65535 || input.DestinationPort is <1 or >65535) throw new ArgumentException("Порт должен быть от 1 до 65535.");
-        if(input.InPort==442 || input.InPort==WebPanel.Port && db.Web()?.Enabled==true) throw new ArgumentException("Порт занят службой PNT.");
+        if(FtpControl.Reserved(db,input.InPort)||input.InPort==442 || input.InPort==WebPanel.Port && db.Web()?.Enabled==true) throw new ArgumentException("Порт занят службой PNT.");
         if(!IPAddress.TryParse(input.Destination,out var destination) || destination.AddressFamily!=AddressFamily.InterNetwork || destination.Equals(IPAddress.Any))
             throw new ArgumentException("Укажите IPv4 адрес назначения.");
         if(db.Rules().Any(r=>!r.Removed && r.In==ingress.Id && r.InPort==input.InPort &&

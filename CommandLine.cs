@@ -114,6 +114,10 @@ static class CommandLine
         Leaf("node maintenance start", "Объявить обслуживание.", dispatch:"cluster maintenance start");
         Leaf("node maintenance done", "Завершить обслуживание.", dispatch:"cluster maintenance done");
         Group("forward", "Проброс TCP-портов через сеть PNT.");
+        Group("ftp", "Файловый FTPS-шлюз к узлам кластера.");
+        Leaf("ftp enable", "Включить FTPS на всех узлах: TCP 440, пассивный диапазон 44100–44131.");
+        Leaf("ftp disable", "Выключить FTPS на всех узлах и закрыть сеансы.");
+        Leaf("ftp status", "Показать настройки FTPS и сертификат текущего узла.");
         Group("web", "Веб-интерфейс всех узлов кластера.");
         Group("cesium", "Датасеты Cesium ion на глобусе.");
         Leaf("cesium token", "Сохранить токен Cesium ion; без аргумента — скрытый ввод. clear удаляет токен.", [("token?", "Токен Cesium ion либо clear.")]);

@@ -187,6 +187,37 @@ Cesium ion credentials are entered through the CLI; `pnt cesium token clear` rem
 
 Link labels show ping and current aggregate PNT throughput in both directions (Mbps), sampled about every five seconds and shared across the cluster. Rates exclude IP/TLS/QUIC overhead and are not a bandwidth test; stale or unavailable samples show `—`.
 
+## Cluster file access over FTPS
+
+```sh
+pnt ftp enable
+pnt ftp status
+pnt ftp disable
+```
+
+Enable/disable settings propagate to all members, including newly enrolled nodes. Offline members apply changes after synchronization. The gateway runs inside the PNT service, without a separate FTP server. Update all participating nodes before enabling it.
+
+Connect FileZilla or WinSCP to any reachable gateway:
+
+| Setting | Value |
+| --- | --- |
+| Protocol | FTP with **explicit TLS required** (FTPS, not SFTP or implicit TLS) |
+| Control port | **440/TCP** |
+| Username | `admin` |
+| Password | Original shared cluster key |
+| Data mode | Passive, TLS protected (`PROT P`); binary file transfers |
+| Passive ports | **44100–44131/TCP** |
+
+Protocol references: [FTP over TLS (RFC 4217)](https://www.rfc-editor.org/rfc/rfc4217), [MLSD and REST (RFC 3659)](https://www.rfc-editor.org/rfc/rfc3659).
+
+The node certificate is self-signed. Verify its SHA-256 fingerprint against `pnt ftp status` on that gateway before trusting it. Use binary transfer mode in the client; ASCII file conversion is not supported. Plaintext login, unencrypted data connections and active FTP are rejected. The service opens/closes the gateway and passive firewall rules; upstream firewalls still need to allow these ports. For a gateway behind NAT, forward the same ports and use EPSV so the client uses the control connection's address. An external entry into PNT must be reachable; backend nodes may remain behind NAT.
+
+The virtual root lists `Node name [node-id]` directories. Linux exposes its filesystem root; Windows exposes drives as `C`, `D`, etc. Active paths use immutable node IDs. Offline nodes stay listed and report an availability error when opened. Virtual node directories cannot be created/deleted. The owner can browse and modify real files with the permissions of the remote PNT service, normally root/LocalSystem. There are no separate FTP users or directory restrictions.
+
+Directory listing, metadata, download, upload, mkdir, nonrecursive rmdir, file deletion and same-node rename are supported. Operations use PNT routes, including relay/reverse NAT channels. Files stream in bounded 1 MiB blocks with SHA-256 verification; interrupted transport operations retry up to twice through routing. Uploads use private staging files beside the destination and only replace it after final verification; a concurrently changed destination is not overwritten. New Linux files have mode `0600`; replacement preserves existing Unix permission bits. Ownership and Windows ACLs follow the service/staging file, not the original file. FTP does not copy filesystem metadata.
+
+`REST` supports resuming downloads and uploads against an existing destination file. Within a running transfer, a changed source version is rejected. An unfinished staged upload cannot be resumed by a different FTP session; reconnecting clients must restart it, or explicitly resume from a complete existing destination. Staging files/receipts expire after 24 hours. If the gateway stops, reconnect to any available gateway. Cross-node rename/move, recursive deletion and permission-changing FTP extensions are not supported.
+
 ## Access, ports and state
 
 | Port | Purpose |
@@ -194,6 +225,7 @@ Link labels show ping and current aggregate PNT throughput in both directions (M
 | UDP 442 | Primary persistent certificate-pinned QUIC node transport; Linux needs libmsquic |
 | TCP 442 | TLS fallback, compatibility, enrollment and restricted VPN-client entry |
 | TCP 8016 | HTTPS panel when enabled |
+| TCP 440, 44100–44131 | FTPS control and protected passive data when enabled |
 | Configured AmneziaWG UDP port | Direct VPN connection to an exit |
 | TCP 22 | SSH remote installation where applicable |
 
@@ -229,6 +261,7 @@ dotnet run --project tests/CliChecks -c Release
 dotnet run --project tests/SelectorChecks -c Release
 dotnet run --project tests/TerminalChecks -c Release
 dotnet run --project tests/NodeChecks -c Release
+dotnet run --project tests/FtpChecks -c Release
 dotnet run --project tests/VpnChecks -c Release
 python3 tests/VpnChecks/adapter_checks.py
 ```

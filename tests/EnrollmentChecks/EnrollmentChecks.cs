@@ -35,6 +35,7 @@ static class EnrollmentChecks
         var aid=Certificate.Id(a);var bid=Certificate.Id(b);
         serverDb.Set("self",aid);serverDb.Set("cluster",Guid.NewGuid().ToString("N"));serverDb.Set("key_hash",new string('A',64));
         serverDb.Put(new Node(aid,"public","127.0.0.2",Certificate.Fingerprint(a),App.Now,Platform:App.Platform));
+        var ftp=new FtpConfig(Guid.NewGuid().ToString("N"),true,App.Now);serverDb.PutFtp(ftp);
         natDb.Set("bootstrap_host","127.0.0.2");natDb.Set("bootstrap_name","nat-node");natDb.Set("bootstrap_ip","10.99.0.10");
         var server=new Service(serverDb,a);var nat=new Service(natDb,b);
         typeof(Service).GetMethod("RegisterMultiplex",BindingFlags.Instance|BindingFlags.NonPublic)!.Invoke(nat,null);
@@ -50,6 +51,7 @@ static class EnrollmentChecks
             Enrollment.Approve(serverDb,bid);
             for(var i=0;natDb.Get("cluster") is null&&i<50;i++)await Task.Delay(100);
             Assert(natDb.Get("cluster")==serverDb.Get("cluster"),"Approval not received");
+            Assert(natDb.Ftp()==ftp,"FTPS configuration did not reach enrolled NAT node");
             Assert(serverDb.Resolve(bid)?.BehindNat==true,"NAT status missing");
             await Task.Delay(200);
             var interfaces=await Forwarding.GetInterfaces(serverDb,a,bid);

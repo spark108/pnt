@@ -133,7 +133,7 @@ static class CommandSelectors
                 if(!inputs.Add(command[listen]))throw new ArgumentException("Селекторы создают несколько назначений для одного входного порта. Выберите один узел назначения и один --via.");
                 var colon=command[listen].LastIndexOf(':');
                 if(colon<0||!int.TryParse(command[listen][(colon+1)..],out var port)||port is <1 or >65535)throw new ArgumentException("Неверный входной порт.");
-                if(port==442||port==WebPanel.Port&&db.Web()?.Enabled==true)throw new ArgumentException("Порт зарезервирован службой PNT.");
+                if(FtpControl.Reserved(db,port)||port==442||port==WebPanel.Port&&db.Web()?.Enabled==true)throw new ArgumentException("Порт зарезервирован службой PNT.");
                 if(db.Rules().Any(r=>!r.Removed&&r.In==command[listen][..colon]&&r.InPort==port))throw new ArgumentException("Входной порт уже занят правилом проброса.");
             }
         }
