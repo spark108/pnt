@@ -116,7 +116,7 @@ async function initGlobe(){try{
  viewer.scene.globe.dynamicAtmosphereLighting=true;viewer.scene.globe.dynamicAtmosphereLightingFromSun=true;
  viewer.scene.globe.lightingFadeOutDistance=0;viewer.scene.globe.lightingFadeInDistance=1;
  viewer.scene.atmosphere.dynamicLighting=Cesium.DynamicAtmosphereLightingType.SUNLIGHT;
- viewer.camera.setView({destination:Cesium.Cartesian3.fromDegrees(35,40,18000000)});viewer.camera.percentageChanged=.02;viewer.camera.changed.addEventListener(layoutLabels);
+ viewer.camera.setView({destination:Cesium.Cartesian3.fromDegrees(35,40,18000000)});viewer.camera.percentageChanged=.02;viewer.camera.changed.addEventListener(render);
  viewer.screenSpaceEventHandler.removeInputAction(Cesium.ScreenSpaceEventType.LEFT_DOUBLE_CLICK);
  const idAt=pos=>{const picked=viewer.scene.pick(pos);return picked?.id?.id?.startsWith('node:')?picked.id.id.slice(5):null};
  viewer.screenSpaceEventHandler.setInputAction(event=>{const id=idAt(event.position);if(id)chooseNode(id);else closeNodeMenu()},Cesium.ScreenSpaceEventType.LEFT_CLICK);
@@ -225,15 +225,28 @@ async function loadGeography(){try{
 $('map-geography').onchange=()=>{const enabled=$('map-geography').checked;try{localStorage.setItem('pnt.mapGeography',enabled?'on':'off')}catch{}if(geographicLayer)geographicLayer.show=enabled;layoutLabels()};
 function arc(a,b){const start=Cesium.Cartographic.fromDegrees(a.location.longitude,a.location.latitude),end=Cesium.Cartographic.fromDegrees(b.location.longitude,b.location.latitude);try{const startHeight=groundHeight(a),endHeight=groundHeight(b),geodesic=new Cesium.EllipsoidGeodesic(start,end),height=Math.max(60000,Math.min(1800000,geodesic.surfaceDistance*.15));return Array.from({length:49},(_,i)=>{const t=i/48,p=geodesic.surfaceDistance>1?geodesic.interpolateUsingFraction(t):start;return Cesium.Cartesian3.fromRadians(p.longitude,p.latitude,startHeight*(1-t)+endHeight*t+Math.sin(Math.PI*t)*height)})}catch{return [position(a,groundHeight(a)),position(b,groundHeight(b))]}}
 const geometryKeys=new Map();
+let displayNodes=new Map();
+function spreadNodes(){
+ const items=state.nodes.filter(located).slice().sort((a,b)=>a.id.localeCompare(b.id)),groups=[],pixels=new Map(),occluder=new Cesium.EllipsoidalOccluder(Cesium.Ellipsoid.WGS84,viewer.camera.positionWC);
+ for(const item of items){const point=position(item,groundHeight(item)),p=occluder.isPointVisible(point)&&Cesium.SceneTransforms.worldToWindowCoordinates(viewer.scene,point);if(p)pixels.set(item.id,p)}
+ const pending=new Set(items);
+ while(pending.size){const group=[pending.values().next().value];pending.delete(group[0]);for(let i=0;i<group.length;i++)for(const item of pending){const a=pixels.get(group[i].id),b=pixels.get(item.id);if(a&&b&&Math.hypot(a.x-b.x,a.y-b.y)<70){group.push(item);pending.delete(item)}}groups.push(group)}
+ displayNodes=new Map(items.map(n=>[n.id,n]));
+ for(const group of groups){if(group.length<2)continue;group.sort((a,b)=>a.id.localeCompare(b.id));const center=Cesium.BoundingSphere.fromPoints(group.map(n=>position(n,0))).center,origin=Cesium.Ellipsoid.WGS84.scaleToGeodeticSurface(center);if(!origin)continue;
+  const frame=Cesium.Transforms.eastNorthUpToFixedFrame(origin),meters=viewer.camera.getPixelSize(new Cesium.BoundingSphere(origin,1),viewer.scene.drawingBufferWidth,viewer.scene.drawingBufferHeight)*(viewer.scene.drawingBufferHeight/viewer.canvas.clientHeight),radius=Math.max(65,group.length*18)*meters;
+  group.forEach((n,i)=>{const angle=2*Math.PI*i/group.length,point=Cesium.Matrix4.multiplyByPoint(frame,new Cesium.Cartesian3(Math.cos(angle)*radius,Math.sin(angle)*radius,0),new Cesium.Cartesian3()),c=Cesium.Cartographic.fromCartesian(point);displayNodes.set(n.id,{...n,location:{...n.location,longitude:Cesium.Math.toDegrees(c.longitude),latitude:Cesium.Math.toDegrees(c.latitude)}})})
+ }
+}
 function render(){const graph=edges(),selected=from&&to?route(graph):null;
  $('route-time').replaceChildren();const strong=document.createElement('strong');strong.textContent=selected?`${selected.ms.toFixed(1)} ms`:'Нет доступного маршрута';$('route-time').append(strong);
  $('route-nodes').textContent=selected?selected.path.map(name).join(' → '):'Для пути нужны свежие измерения прямых связей.';
  const unknown=state.nodes.filter(n=>!located(n));$('unlocated').replaceChildren();for(const n of unknown){const b=document.createElement('button');b.textContent=n.name+' · задать геолокацию';b.onclick=()=>openLocation(n.id);$('unlocated').append(b)}
  if(!viewer)return;
+ spreadNodes();
  const marked=new Set();if(selected)for(let i=0;i<selected.path.length-1;i++)marked.add([selected.path[i],selected.path[i+1]].sort().join('|'));
  viewer.entities.suspendEvents();const keep=new Set();
 
- for(const item of state.nodes.filter(located)){
+ for(const item of displayNodes.values()){
   const id='node:'+item.id,selectedNode=[from,to,...via].includes(item.id),key=JSON.stringify([item.location.latitude,item.location.longitude]);keep.add(id);
   const color=Cesium.Color.fromCssColorString(selectedNode?'#f8c66a':item.vpn?'#60a5fa':'#67e8c4'),text=item.name+(item.updating&&now()-item.updatingSince<3600000?' · update':'');
   let entity=viewer.entities.getById(id);
@@ -245,7 +258,7 @@ function render(){const graph=edges(),selected=from&&to?route(graph):null;
  }
  let visibleLinks=0;
  for(const e of pairs(graph)){
-  const a=node(e.a),b=node(e.b);if(!located(a)||!located(b))continue;
+  const a=displayNodes.get(e.a),b=displayNodes.get(e.b);if(!a||!b)continue;
   const id='link:'+e.a+':'+e.b,key=JSON.stringify([a.location.latitude,a.location.longitude,b.location.latitude,b.location.longitude,groundHeight(a),groundHeight(b)]),selectedEdge=marked.has([e.a,e.b].sort().join('|')),color=Cesium.Color.fromCssColorString(selectedEdge?'#f8c66a':'#55d2c0');keep.add(id);
   let entity=viewer.entities.getById(id);
   if(!entity){const points=arc(a,b);entity=viewer.entities.add({id,polyline:{positions:points,width:selectedEdge?4:2,arcType:Cesium.ArcType.NONE,material:color},position:points[Math.floor(points.length/2)],label:{text:linkLabel(e),font:'12px sans-serif',fillColor:color,showBackground:true,backgroundColor:Cesium.Color.fromCssColorString('#071020dd'),pixelOffset:new Cesium.Cartesian2(0,-8),style:Cesium.LabelStyle.FILL_AND_OUTLINE,outlineWidth:2,outlineColor:Cesium.Color.BLACK}})}
@@ -260,11 +273,21 @@ $('drawer-toggle').onclick=()=>{const open=$('drawer').classList.toggle('open');
 document.addEventListener('keydown',event=>{if(event.key==='Escape'&&$('drawer').classList.contains('open')&&!document.querySelector('dialog[open]'))$('drawer-toggle').click()});
 function layoutLabels(){
  if(!viewer)return;const occupied=[],time=viewer.clock.currentTime;
- const screen=entity=>Cesium.SceneTransforms.worldToWindowCoordinates(viewer.scene,entity.id.startsWith('node:')?position(node(entity.id.slice(5)),groundHeight(node(entity.id.slice(5)))):entity.position.getValue(time));
- for(const entity of viewer.entities.values.filter(e=>e.polyline)){const p=screen(entity);if(p)occupied.push({x:p.x-35,y:p.y-20,w:70,h:24})}
- for(const entity of viewer.entities.values.filter(e=>e.id.startsWith('node:'))){const p=screen(entity);if(!p)continue;const vpn=!!entity.billboard;occupied.push(vpn?{x:p.x-22,y:p.y-44,w:44,h:44}:{x:p.x-10,y:p.y-10,w:20,h:20});const text=entity.label.text.getValue(time),w=Math.min(250,text.length*7+16),h=24;let offset=-28;
-  for(const candidate of (vpn?[-62,-90,28,-118,56,-146,84]:[-28,-56,28,-84,56,-112,84,-140,112])){const rect={x:p.x-w/2,y:p.y+candidate-h/2,w,h};if(!occupied.some(r=>rect.x<r.x+r.w+4&&rect.x+rect.w+4>r.x&&rect.y<r.y+r.h+4&&rect.y+rect.h+4>r.y)){offset=candidate;occupied.push(rect);break}}
-  entity.label.pixelOffset=new Cesium.Cartesian2(0,offset);
+ const screen=entity=>{const n=displayNodes.get(entity.id.slice(5));return Cesium.SceneTransforms.worldToWindowCoordinates(viewer.scene,n?position(n,groundHeight(n)):entity.position.getValue(time))};
+ const nodes=viewer.entities.values.filter(e=>e.id.startsWith('node:')).sort((a,b)=>a.id.localeCompare(b.id)),links=viewer.entities.values.filter(e=>e.id.startsWith('link:')).sort((a,b)=>a.id.localeCompare(b.id));
+ const overlaps=rect=>occupied.some(r=>rect.x<r.x+r.w+6&&rect.x+rect.w+6>r.x&&rect.y<r.y+r.h+5&&rect.y+rect.h+5>r.y);
+ for(const entity of nodes){const p=screen(entity);if(p)occupied.push(entity.billboard?{x:p.x-22,y:p.y-44,w:44,h:44}:{x:p.x-10,y:p.y-10,w:20,h:20})}
+ const measure=document.createElement('canvas').getContext('2d');
+ for(const entity of [...nodes,...links]){const isLink=entity.id.startsWith('link:'),points=isLink?entity.polyline.positions.getValue(time):null;let placed=false;
+  measure.font=isLink?'12px sans-serif':'13px sans-serif';const w=measure.measureText(entity.label.text.getValue(time)).width+20,h=26;
+  const anchors=isLink?[.5,.35,.65,.2,.8].map(t=>points[Math.round((points.length-1)*t)]):[null];
+  for(const anchor of anchors){const p=anchor?Cesium.SceneTransforms.worldToWindowCoordinates(viewer.scene,anchor):screen(entity);if(!p)continue;
+   const offsets=isLink?[[0,-8],[0,-36],[0,24],[0,-64],[0,52]]:Array.from({length:16},(_,i)=>[i<8?0:(i%2?-1:1)*(w/2+30),(i%8%2?1:-1)*(Math.floor(i%8/2)*30+(entity.billboard?62:30))]);
+   for(const [x,y] of offsets){const rect={x:p.x+x-w/2,y:p.y+y-h/2,w,h};if(rect.x<0||rect.y<0||rect.x+w>viewer.canvas.clientWidth||rect.y+h>viewer.canvas.clientHeight||overlaps(rect))continue;
+    if(anchor)entity.position=anchor;entity.label.pixelOffset=new Cesium.Cartesian2(x,y);occupied.push(rect);placed=true;break}
+   if(placed)break;
+  }
+  entity.label.show=placed;
  }
  if(geographicLayer?.show){const height=viewer.camera.positionCartographic.height,occluder=new Cesium.EllipsoidalOccluder(Cesium.Ellipsoid.WGS84,viewer.camera.positionWC);
   for(const item of geographicLabels){const entity=item.entity,position=entity.position.getValue(time);entity.show=false;if(height>item.maxHeight||!occluder.isPointVisible(position))continue;const p=screen(entity);if(!p||p.x<0||p.y<0||p.x>viewer.canvas.clientWidth||p.y>viewer.canvas.clientHeight)continue;

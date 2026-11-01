@@ -126,6 +126,21 @@ const path=require('node:path');
     await page.waitForTimeout(800);await page.screenshot({path:path.resolve('.test-data/ion-imagery-night.png')});
     assert(brightness('.test-data/ion-imagery-day.png')>brightness('.test-data/ion-imagery-night.png')*2,'Ion imagery hides the night shading');
     await page.evaluate(()=>{viewer.clock.clockStep=Cesium.ClockStep.SYSTEM_CLOCK});
+    const overlap=await page.evaluate(()=>{
+      events.close();$('map-surface').value='local';$('map-surface').onchange();
+      const template=state.nodes[0];state.nodes=Array.from({length:5},(_,i)=>({...template,id:'overlap'+i,name:'Same location '+i,vpn:i%2===0,location:{latitude:52,longitude:5,manual:true}}));
+      state.nodes.push({...template,id:'remote',name:'Remote endpoint',location:{latitude:52,longitude:20,manual:true}});
+      state.links=state.nodes.slice(0,5).flatMap((n,i)=>[{source:n.id,target:'remote',direct:true,ms:25+i,updated:now()},{source:n.id,target:'overlap'+((i+1)%5),direct:true,ms:1+i,updated:now()}]);
+      from='overlap0';to='remote';via=[];viewer.camera.setView({destination:Cesium.Cartesian3.fromDegrees(12,52,2200000)});render();
+      const time=viewer.clock.currentTime,project=n=>Cesium.SceneTransforms.worldToWindowCoordinates(viewer.scene,position(n,groundHeight(n))),points=state.nodes.slice(0,5).map(n=>project(displayNodes.get(n.id))),centers=state.nodes.slice(0,5).map(n=>viewer.entities.getById('link:'+n.id+':remote').polyline.positions.getValue(time)[24]);
+      let minDistance=Infinity;for(let i=0;i<points.length;i++)for(let j=0;j<i;j++)minDistance=Math.min(minDistance,Math.hypot(points[i].x-points[j].x,points[i].y-points[j].y));
+      const measure=document.createElement('canvas').getContext('2d'),rects=viewer.entities.values.filter(e=>e.label&&e.label.show.getValue(time)).map(e=>{const isNode=e.id.startsWith('node:'),p=isNode?project(displayNodes.get(e.id.slice(5))):Cesium.SceneTransforms.worldToWindowCoordinates(viewer.scene,e.position.getValue(time)),offset=e.label.pixelOffset.getValue(time);measure.font=isNode?'13px sans-serif':'12px sans-serif';const w=measure.measureText(e.label.text.getValue(time)).width+20;return {x:p.x+offset.x-w/2,y:p.y+offset.y-13,w,h:26}});
+      let collisions=0;for(let i=0;i<rects.length;i++)for(let j=0;j<i;j++){const a=rects[i],b=rects[j];if(a.x<b.x+b.w&&a.x+a.w>b.x&&a.y<b.y+b.h&&a.y+a.h>b.y)collisions++}
+      const first=displayNodes.get('overlap0').location;viewer.camera.setView({destination:Cesium.Cartesian3.fromDegrees(12,52,1400000)});render();const second=displayNodes.get('overlap0').location;
+      return {minDistance,collisions,labels:rects.length,distinctLines:centers.every((p,i)=>centers.slice(0,i).every(q=>Cesium.Cartesian3.distance(p,q)>100)),unchanged:state.nodes.slice(0,5).every(n=>n.location.latitude===52&&n.location.longitude===5),rescaled:first.longitude!==second.longitude};
+    });
+    assert(overlap.minDistance>60,JSON.stringify(overlap));assert.equal(overlap.collisions,0);assert(overlap.labels>=10,JSON.stringify(overlap));assert(overlap.distinctLines&&overlap.unchanged&&overlap.rescaled,JSON.stringify(overlap));
+    await page.waitForTimeout(400);await page.screenshot({path:path.resolve('.test-data/globe-overlapping-nodes.png')});
     assert.deepEqual(errors,[]);
     console.log('PASS: globe, routes, manual locations, fresh links, offline assets, desktop/mobile layout, NASA tile protocol/fallback and mouse-wheel zoom, native ion terrain/imagery/3D/vector loading, scoped asset keys, live unloading, terrain-relative VPN markers and real-time day/night lighting.');
   }finally{await browser.close()}
