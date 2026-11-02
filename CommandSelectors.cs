@@ -10,12 +10,12 @@ static class CommandSelectors
     record Slot(int Index,Choice[] Values);
     internal sealed record Plan(Func<IEnumerable<string[]>> Commands,long Count,string[] Targets,Func<string[],string>? Describe=null,string Action="");
 
-    static bool Expression(string value)=>value=="*"||value.Contains(',')||value.StartsWith('-');
+    static bool Expression(string value)=>value=="*"||value.Contains(',')||value.StartsWith('-')&&!value.StartsWith("--");
 
     internal static Plan? Create(Store db,string[] args)
     {
         if(args is ["sh",var shellTarget,"--interactive",..]&&Expression(shellTarget))throw new ArgumentException("--interactive нельзя использовать с селектором *. Укажите один конкретный узел.");
-        if(args is ["nodes",var listed,..]&&Expression(listed))throw new ArgumentException("В node list селектор * не применяется. Для списка всех узлов: pnt node list [--interactive].");
+        if(args is ["nodes",var listed,..]&&Expression(listed))throw new ArgumentException("В node list можно указать только один исходный узел. Селекторы не поддерживаются.");
         if(args is ["vpn","client","get",var exported,..]&&Expression(exported))throw new ArgumentException("Для выгрузки профиля укажите конкретного клиента: pnt vpn client get <client> [--out=file.pnt].");
         var positions=new List<Position>();
         var aggregate=-1;
@@ -85,17 +85,17 @@ static class CommandSelectors
             var available=Choices(kind);var included=new HashSet<string>();var excluded=new HashSet<string>();var positive=false;
             foreach(var token in expression.Split(',',StringSplitOptions.TrimEntries))
             {
-                if(token.Length==0)throw new ArgumentException("������ ������� ���������.");
+                if(token.Length==0)throw new ArgumentException("Пустой элемент селектора.");
                 if(token=="*"){positive=true;included.UnionWith(available.Select(c=>c.Value));continue;}
                 var negative=token.StartsWith('-');var value=negative?token[1..]:token;
-                if(value.Length==0||value=="*")throw new ArgumentException("����� ������ ������� ID ��� ��� �������.");
+                if(value.Length==0||value=="*")throw new ArgumentException("После минуса укажите ID или имя объекта.");
                 var id=Resolve(new Position(0,kind),value);
-                if(!available.Any(c=>c.Value==id))throw new ArgumentException("������ �� ������ � ��������� ����� ���������: "+CliOutput.Clean(value));
+                if(!available.Any(c=>c.Value==id))throw new ArgumentException("Объект не входит в доступный набор селектора: "+CliOutput.Clean(value));
                 (negative?excluded:included).Add(id);positive|=!negative;
             }
-            if(!positive)throw new ArgumentException("������� * ��� ������ �������� ����� ������������, �������� *,-id.");
+            if(!positive)throw new ArgumentException("Укажите * или список объектов перед исключениями, например *,-id.");
             included.ExceptWith(excluded);var result=available.Where(c=>included.Contains(c.Value)).ToArray();
-            if(result.Length==0)throw new ArgumentException("�������� �� ������ �� ������ �������.");
+            if(result.Length==0)throw new ArgumentException("Селектор не выбрал ни одного объекта.");
             return result;
         }
         var template=args.ToArray();var slots=new List<Slot>();var targets=new List<string>();

@@ -134,6 +134,9 @@ foreach(var invalid in new[]{new[]{"node","reboot"},new[]{"node","bad","reboot"}
 Require((await Invoke("node",rebootId,"reboot","--help")).Code==0&&executed is null,"Reboot help executed task");
 await Invoke("node","list");
 Require(executed!.SequenceEqual(new[] { "nodes" }), "Omitted optional arguments must remain omitted");
+await Invoke("node","list","--interactive");Require(executed!.SequenceEqual(new[]{"nodes","--interactive"}),"Interactive node-list flag became a source selector");
+await Invoke("node","list","source","--interactive");Require(executed!.SequenceEqual(new[]{"nodes","source","--interactive"}),"Interactive node-list source binding failed");
+await Invoke("node","list","--interactive","source");Require(executed!.SequenceEqual(new[]{"nodes","source","--interactive"}),"Flag-first interactive node list lost its source");
 await Invoke("node","identity", "--fingerprint");
 Require(executed!.SequenceEqual(new[] { "identity", "--fingerprint" }), "Boolean option binding failed");
 await Invoke("update", "--check");

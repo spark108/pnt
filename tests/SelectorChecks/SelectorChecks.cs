@@ -18,6 +18,9 @@ static class SelectorChecks
         var alice=new VpnClient("aaaaaaaaaaaaaaaa","Alice",new string('D',64),[],App.Now);
         var bob=new VpnClient("bbbbbbbbbbbbbbbb","Bob",new string('E',64),[],App.Now);
         db.PutVpn(alice);db.PutVpn(bob);db.PutVpn(new VpnClient("cccccccccccccccc","Revoked",new string('F',64),[],App.Now,Removed:true));
+        foreach(var ordinaryList in new[]{new[]{"nodes"},new[]{"nodes","--interactive"},new[]{"nodes",linux},new[]{"nodes",linux,"--interactive"}})
+            Assert(CommandSelectors.Create(db,ordinaryList) is null,"Single-source node list or --interactive treated as selector");
+        try{Plan(db,"nodes","*");throw new Exception("Node list accepted a selector");}catch(ArgumentException error){Assert(error.Message.StartsWith("В node list можно указать только один исходный узел."),"Node-list error text has a damaged source encoding");}
         var all=Plan(db,"vpn","client","allow","*","*");
         Assert(all.Count==4&&all.Commands().Count()==4,"Client/server Cartesian product failed");
         Assert(all.Commands().All(a=>a[3] is "aaaaaaaaaaaaaaaa" or "bbbbbbbbbbbbbbbb"&&new[]{self,linux}.Contains(a[4])),"Removed or non-VPN node selected");
