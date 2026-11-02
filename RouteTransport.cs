@@ -22,11 +22,11 @@ sealed class RouteTransport(Store db, X509Certificate2 cert)
             limit.CancelAfter(TimeSpan.FromSeconds(8));
             return await OpenPath([self], Guid.NewGuid().ToString("N"), limit.Token);
         }
-        for (var pass = 0; pass < 2; pass++)
+        for (var pass = 0; pass < 3; pass++)
         {
-            foreach (var route in db.Routes(target).Where(r => App.Now-r.Updated < RouteCache.FreshFor && r.Path.All(n => db.Resolve(n) is not null))
-                .OrderByDescending(r => r.Primary).ThenBy(r=>r.Path.Length<=2?0:1)
-                .ThenBy(r=>r.Path.Skip(1).SkipLast(1).Count(n=>db.Resolve(n)?.BehindNat==true)).ThenBy(r => r.Ms))
+            var members=db.Nodes().Where(n=>!n.Removed).ToArray();var active=members.Select(n=>n.Id).ToHashSet();var policy=new RelayPolicy(members);
+            foreach (var route in db.Routes(target).Where(r => App.Now-r.Updated < RouteCache.FreshFor && r.Path.All(active.Contains)&&(policy.ReserveCount(r.Path)>0)==(pass==2))
+                .OrderBy(r=>policy.Rank(r.Path)).ThenByDescending(r=>r.Primary).ThenBy(r=>r.Ms))
             {
                 cancellation.ThrowIfCancellationRequested();
                 try
@@ -37,7 +37,7 @@ sealed class RouteTransport(Store db, X509Certificate2 cert)
                     var peer = await OpenPath(route.Path, Guid.NewGuid().ToString("N"), limit.Token);
                     db.ChangeRoutes(target, old => old.Select(r => r.Path.SequenceEqual(route.Path)
                         ? r with { Updated = App.Now, Successes = r.Successes+1,
-                            Primary = r.Primary || !old.Any(p => p.Primary && App.Now-p.Updated<RouteCache.FreshFor) } : r).ToList());
+                            Primary = true } : r with{Primary=false}).ToList());
                     peer.RouteReady=peer.RouteReady! with {PingMs=route.Ms};return peer;
                 }
                 catch when (!cancellation.IsCancellationRequested)
@@ -86,8 +86,9 @@ sealed class RouteTransport(Store db, X509Certificate2 cert)
             var self = Certificate.Id(cert);
             var discovered = await Search(new Message("route-search", self, Target: target, Hops: [],
                 RequestId: Guid.NewGuid().ToString("N"), Deadline: App.Now+10_000, PingMs: 0));
-            var paths = discovered.Concat(RoutePlanner.Paths(db,self,target))
-                .DistinctBy(p => string.Join("/",p)).Take(48).ToArray();
+            var members=db.Nodes().Where(n=>!n.Removed).ToDictionary(n=>n.Id);var policy=new RelayPolicy(members.Values);
+            var paths = policy.KeepBackup(discovered.Concat(RoutePlanner.Paths(db,self,target))
+                .DistinctBy(p => string.Join("/",p)).OrderBy(policy.Rank),p=>p,48).ToArray();
             using var budget = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
             budget.CancelAfter(TimeSpan.FromSeconds(15));
             using var slots = new SemaphoreSlim(8);
@@ -104,7 +105,7 @@ sealed class RouteTransport(Store db, X509Certificate2 cert)
                 finally { if(entered) slots.Release(); }
             }));
             cancellation.ThrowIfCancellationRequested();
-            db.ChangeRoutes(target, old => RouteCache.Apply(old,target,measured.Where(m => double.IsFinite(m.Ms)),n=>db.Resolve(n)?.BehindNat==true));
+            db.ChangeRoutes(target, old => RouteCache.Apply(old,target,measured.Where(m => double.IsFinite(m.Ms)),n=>members.TryGetValue(n,out var member)&&member.BehindNat,n=>members.TryGetValue(n,out var member)&&!member.RelayEnabled));
             scanTimes[target] = App.Now;
         }
         finally { gate.Release(); }
@@ -137,7 +138,7 @@ sealed class RouteTransport(Store db, X509Certificate2 cert)
         using var budget=new CancellationTokenSource(TimeSpan.FromMilliseconds(Math.Max(1,request.Deadline-App.Now)));
         using var slots=new SemaphoreSlim(8);
         var replies=await Task.WhenAll(RoutePlanner.Candidates(db,self,request.Target,path)
-            .OrderBy(n=>n.Id==request.Target?0:1).ThenBy(n=>n.BehindNat?1:0).ThenBy(_=>Random.Shared.Next()).Select(async next =>
+            .OrderBy(n=>n.Id==request.Target?0:1).ThenBy(n=>n.RelayEnabled?0:1).ThenBy(n=>n.BehindNat?1:0).ThenBy(_=>Random.Shared.Next()).Select(async next =>
         {
             var entered=false;
             try
@@ -152,9 +153,10 @@ sealed class RouteTransport(Store db, X509Certificate2 cert)
             catch { return Array.Empty<string[]>(); }
             finally {if(entered) slots.Release();}
         }));
-        return replies.SelectMany(p=>p).Where(p=>p.Length<=10 && p.Length>=path.Length && p.Take(path.Length).SequenceEqual(path) &&
+        var policy=new RelayPolicy(db.Nodes());
+        return policy.KeepBackup(replies.SelectMany(p=>p).Where(p=>p.Length<=10 && p.Length>=path.Length && p.Take(path.Length).SequenceEqual(path) &&
             p[^1]==request.Target && p.Distinct().Count()==p.Length && p.All(n=>db.Resolve(n)is not null))
-            .DistinctBy(p=>string.Join("/",p)).OrderBy(p=>p.Length).Take(8).ToArray();
+            .DistinctBy(p=>string.Join("/",p)).OrderBy(policy.Rank).ThenBy(p=>p.Length),p=>p,8).ToArray();
     }
 
     public static async Task<Message> SendTask(Peer peer, Message task, int startWithinSeconds = 20)

@@ -31,7 +31,7 @@ static class CommandLine
     internal static RootCommand Build(Func<string[], Task<int>> execute, bool clustered = false)
     {
         var nodeTarget=new Argument<string>("id"){Arity=ArgumentArity.ZeroOrOne,Description="ID узла или * для команды reboot; указывается перед reboot."};
-        var root = new RootCommand("PNT — управление децентрализованной сетью серверов. Селектор * выбирает все узлы/клиентов с обязательным подтверждением Y/N.");
+        var root = new RootCommand("PNT — управление децентрализованной сетью серверов. Селекторы: * — все, запятая — список, -id — исключение. Требуется подтверждение Y/N.");
         var groups = new Dictionary<string, Command> { [""] = root };
         void Group(string path, string description)
         {
@@ -49,7 +49,7 @@ static class CommandLine
             var command = new Command(path[(split + 1)..], description);
             var arguments = (parameters ?? []).Select(p => new Argument<string>(p.Name.TrimEnd('?'))
             {
-                Description = p.Description + (path is not ("node list" or "vpn client get")&&p.Name.TrimEnd('?') is "node" or "client" or "from" ? " * — выбрать всех; требуется Y/N." : ""),
+                Description = p.Description + (path is not ("node list" or "vpn client get")&&p.Name.TrimEnd('?') is "node" or "client" or "from" ? " Селекторы: *, id1,id2, *,-id; требуется Y/N." : ""),
                 Arity = p.Name.EndsWith('?') ? ArgumentArity.ZeroOrOne : ArgumentArity.ExactlyOne
             }).ToArray();
             var named = (options ?? []).Select(o => new Option<string>(o.Name)
@@ -97,6 +97,10 @@ static class CommandLine
         Leaf("node name", "Изменить имя текущего узла.", [("name", "Новое имя.")], dispatch:"name", hidden:!clustered);
         Leaf("node list", "Показать узлы, пинг и транспортные маршруты.", [("from?", "ID или имя узла, от лица которого показать пинг.")], flags:["--interactive"], dispatch:"nodes", hidden:!clustered);
         Leaf("node routes", "Показать основные и резервные маршруты.", [("node?", "ID, имя или IP конечного узла.")], dispatch:"routes", hidden:!clustered);
+        Group("node relay", "Участие узла в транзите; выключенный транзит используется только как резерв.");groups["node relay"].Hidden=!clustered;
+        Leaf("node relay enable", "Включить обычный транзит (по умолчанию у всех узлов).",[("node?","Узел; по умолчанию текущий. * выбирает все узлы с подтверждением Y/N.")],hidden:!clustered);
+        Leaf("node relay disable", "Использовать узел для транзита только при отсутствии обычного маршрута.",[("node?","Узел; по умолчанию текущий. * выбирает все узлы с подтверждением Y/N.")],hidden:!clustered);
+        Leaf("node relay status", "Показать режим транзита узла.",[("node?","Узел; по умолчанию текущий. * выбирает все узлы с подтверждением Y/N.")],hidden:!clustered);
         Leaf("node requests", "Показать ожидающие заявки на вступление.", dispatch:"cluster requests", hidden:!clustered);
         Leaf("node accept", "Принять заявку нового узла.", [("id", "ID заявки либо * для всех ожидающих заявок.")], dispatch:"cluster accept", hidden:!clustered);
         Leaf("node reject", "Отклонить заявку нового узла.", [("id", "ID заявки либо * для всех ожидающих заявок.")], dispatch:"cluster reject", hidden:!clustered);
@@ -155,21 +159,21 @@ static class CommandLine
         Leaf("vpn server remove", "Исключить узел из каталога VPN.", [("node", "ID или имя узла.")]);
         Leaf("vpn server list", "Показать разрешённые VPN-серверы.");
         Leaf("vpn client create", "Создать клиента и экспортировать подписанный профиль доступа.", [("name", "Уникальное имя клиента.")],
-            [("--servers", "Разрешённые VPN-узлы через запятую или * для всех; требуется Y/N.", true), ("--out", "Путь нового файла .pnt; существующий файл не перезаписывается.", true)]);
+            [("--servers", "VPN-узлы: id1,id2 или *,-id для всех кроме указанных. Требуется Y/N.", true), ("--out", "Путь нового файла .pnt; существующий файл не перезаписывается.", true)]);
         Leaf("vpn client get", "Выгрузить профиль доступа клиента в консоль или файл.", [("client", "ID или имя клиента.")],
             [("--out", "Путь нового файла .pnt; без параметра профиль выводится в консоль.", false)]);
         Leaf("vpn client list", "Показать VPN-клиентов и состояние доступа.");
         Leaf("vpn client rename", "Переименовать VPN-клиента, сохранив его идентичность и права.", [("client", "ID или имя клиента."),("new_name", "Новое уникальное имя клиента.")]);
         Leaf("vpn client show", "Показать свойства и права клиента.", [("client", "ID или имя клиента.")]);
-        Leaf("vpn client allow", "Разрешить клиенту VPN-сервер.", [("client", "ID или имя клиента."), ("node", "ID или имя сервера.")]);
+        Leaf("vpn client allow", "Разрешить клиентам VPN-серверы. Селекторы требуют Y/N.", [("client", "ID/имя, список через запятую или *,-client_id."), ("node", "VPN-серверы: ID/имя, список или *,-node_id,-node2_id.")]);
         Leaf("vpn client deny", "Запретить клиенту VPN-сервер.", [("client", "ID или имя клиента."), ("node", "ID или имя сервера.")]);
         Leaf("vpn client unbind", "Сбросить привязку устройства; следующее подключение привяжет новое устройство.", [("client", "ID клиента.")]);
         Leaf("vpn client revoke", "Отозвать доступ клиента ко всем серверам.", [("client", "ID или имя клиента.")]);
         Leaf("vpn client handshake", "Показать рукопожатие и счётчики трафика клиента.", [("client", "ID или имя клиента."), ("node?", "Проверять только указанный сервер.")]);
         var shell = new Command("sh", "Выполнить команду на узле с потоковой передачей вывода. Аргументы после узла передаются удалённой оболочке без разбора.");
-        shell.Arguments.Add(new Argument<string>("node") { Description = "ID или имя конечного узла либо * для всех; требуется Y/N." });
+        shell.Arguments.Add(new Argument<string>("node") { Description = "ID/имя узла либо селектор *, id1,id2, *,-id; требуется Y/N." });
         shell.Arguments.Add(new Argument<string[]>("command") { Description = "Команда и её аргументы.", Arity = ArgumentArity.OneOrMore });
-        shell.Options.Add(new Option<bool>("--interactive") { Description = "Интерактивный терминал одного узла; несовместим с селектором *." });
+        shell.Options.Add(new Option<bool>("--interactive") { Description = "Интерактивный терминал одного узла; несовместим с селекторами." });
         shell.SetAction((result, cancellation) => execute(["sh", .. result.Tokens.Select(t => t.Value).Skip(1)]));
         root.Subcommands.Add(shell);
         return root;

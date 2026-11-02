@@ -11,7 +11,7 @@ using Microsoft.Data.Sqlite;
 namespace Pnt;
 
 record Node(string Id, string Name, string Ip, string Cert, long Version, bool Removed = false,
-    bool Updating = false, long UpdatingSince = 0, bool BehindNat = false, string Platform = "linux", NodeLocation? Location = null);
+    bool Updating = false, long UpdatingSince = 0, bool BehindNat = false, string Platform = "linux", NodeLocation? Location = null,bool RelayEnabled=true);
 record JoinRequest(string Id, string Name, string Ip, string ObservedIp, string Cert, string Platform, long Created, string Status = "pending", bool BehindNat = false);
 record Rule(string Id, string In, int InPort, string? Via, string To, int ToPort, long Version, bool Removed = false,
     string InAddress = "0.0.0.0", string? InInterface = null, string? OutAddress = null, string? OutInterface = null);
@@ -106,6 +106,7 @@ static class App
         {
             case ["vpn", .. var vpnArgs]: await VpnControl.Command(db,cert,vpnArgs);break;
             case ["ftp", .. var ftpArgs]:await FtpControl.Command(db,cert,ftpArgs);break;
+            case ["node","relay",var action,..var relayArgs]:await NodeManagement.Relay(db,cert,action,relayArgs);break;
             case ["cesium", .. var cesiumArgs]:await CesiumControl.Command(db,cesiumArgs);break;
             case ["install", "-r", var remoteHost]: return await Management.Remote(db, cert, remoteHost);
             case ["serve"]:
@@ -235,7 +236,7 @@ static class App
         if (db.Get("cluster") == null || db.Get("left") == "1" || db.Self()?.Removed == true) throw new Exception("Узел не состоит в активном кластере.");
     }
 
-    static readonly string[] NodeColumns=["ID","Имя","IP","Пинг / статус","NAT"];
+    static readonly string[] NodeColumns=["ID","Имя","IP","Пинг / статус","NAT","Реле"];
     static void PrintNodes(Store db,string? fromNode)
     {
         var rows=NodeRows(db,fromNode);
@@ -269,7 +270,7 @@ static class App
                 : ping is not null ? $"{ping.Ms:0.0} ms" + (ping.Direct ? "" :
                     ping.Route is { Length: > 2 } route ? " через " + string.Join(" → ", route.Skip(1).SkipLast(1).Select(x => nodes.FirstOrDefault(n => n.Id == x)?.Name ?? x)) : " через другой узел")
                 : long.TryParse(db.Get("peer_sync_seen:"+node.Id),out var seen)&&Now-seen<30_000?"нет замера":"нет связи";
-            rows.Add([node.Id,node.Name,new(node.Ip,node.BehindNat?"grey":null),new(status,node.Removed||status=="нет связи"?"red":status is "update" or "нет замера"?"yellow":"green"),new(node.BehindNat?"NAT":"—",node.BehindNat?"cyan":"grey")]);
+            rows.Add([node.Id,node.Name,new(node.Ip,node.BehindNat?"grey":null),new(status,node.Removed||status=="нет связи"?"red":status is "update" or "нет замера"?"yellow":"green"),new(node.BehindNat?"NAT":"—",node.BehindNat?"cyan":"grey"),new(node.RelayEnabled?"да":"резерв",node.RelayEnabled?"green":"yellow")]);
         }
         return rows;
     }
@@ -277,6 +278,7 @@ static class App
     static void PrintRoutes(Store db, string? destination)
     {
         Active(db);
+        var policy=new RelayPolicy(db.Nodes());
         var nodes = destination is null ? db.Nodes().Where(n => !n.Removed && n.Id != db.Get("self"))
             : new[] { db.Resolve(destination) ?? throw new Exception("Узел не найден.") };
         var rows = new List<CliCell[]>();
@@ -285,8 +287,12 @@ static class App
             var routes = db.Routes(node.Id).OrderByDescending(r => r.Primary).ThenBy(r => r.Ms).ToArray();
             if (routes.Length == 0) rows.Add([node.Name,node.Id,CliOutput.Status("поиск"),"—","—"]);
             foreach (var route in routes)
-                rows.Add([node.Name,node.Id,CliOutput.Status(App.Now-route.Updated >= RouteCache.FreshFor ? "устарел" : route.Primary ? "основной" : "резервный"),$"{route.Ms:0.0} ms",
+            {
+                var status=CliOutput.Status(App.Now-route.Updated >= RouteCache.FreshFor ? "устарел" : route.Primary ? "основной" : "резервный");
+                if(policy.ReserveCount(route.Path)>0)status=new(status.Value+" · резервный транзит","yellow");
+                rows.Add([node.Name,node.Id,status,$"{route.Ms:0.0} ms",
                     string.Join(" → ",route.Path.Select(id=>db.Resolve(id)?.Name??id))]);
+            }
         }
         CliOutput.Table(["Узел","ID","Статус","Пинг","Маршрут"],rows);
     }

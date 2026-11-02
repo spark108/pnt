@@ -67,6 +67,9 @@ pnt node list
 pnt node list <source-node>
 pnt node list --interactive
 pnt node routes [node]
+pnt node relay enable [node]
+pnt node relay disable [node]
+pnt node relay status [node]
 pnt node kick <node>
 pnt node remove <node>
 pnt node leave
@@ -79,6 +82,8 @@ Verify identities/certificates before approval. Bootstrap uses trust on first us
 A NAT node needs outbound access to a known member, without inbound port mapping. There is no public rendezvous service or UDP hole punching. Confirmed direct paths take priority; alternatives consider NAT transit, latency and stability.
 
 Inter-node latency uses short PNT requests, not ICMP; relays are named. `node list <source-node>` shows that node's measurements. `--interactive` refreshes the table until Ctrl+C. `kick` requests voluntary departure and propagates removal after acknowledgement; `remove` excludes without the target's response. Reboot restarts the OS after five seconds: one-target reboot requires entering its ID; `-f` requests forced reboot without bypassing confirmation.
+
+All nodes, including existing members, default to ordinary transit. `node relay disable [node]` makes the selected node an **emergency relay**: new routes use it as an intermediate only when no ordinary route can be established. Its own commands and incoming endpoint connections remain available. Without `[node]`, the current node is selected; `*` supports confirmed bulk changes. The setting is persisted and synchronized across the cluster. Cached/discovered routes prefer ordinary relays even if emergency routes have lower latency. Ordinary paths are searched before emergency fallback, and regain preference after recovery. Discovery and synchronization still reach emergency relays; this is a routing preference, not a firewall ban. Existing streams are allowed to finish. `node list` shows a relay column; `node routes` marks emergency transit. Update all members so older software does not ignore the policy.
 
 ## Remote commands
 
@@ -95,13 +100,15 @@ Update both the CLI and target nodes for interactive terminal support. Interacti
 
 `pnt ping <IPv4/domain>` separately measures external ICMP latency from available members and reports the fastest exit and the paths used to contact them.
 
-## Select all with `*`
+## Selectors: all, lists and exclusions
 
 Quote `*` in Unix shells to prevent filename expansion:
 
 ```sh
 pnt vpn client allow '*' node-name
 pnt vpn client allow '*' '*'
+pnt vpn client allow '*,-<client_id>' '*'
+pnt vpn client allow '<client_id>,<client2_id>' '*,-<node_id>,-<node2_id>'
 pnt vpn client create NewClient --servers '*' --out=/tratsuk.pnt
 pnt vpn client deny '*' node-name
 pnt vpn client unbind '*'
@@ -109,13 +116,15 @@ pnt sh '*' 'hostname'
 pnt node '*' reboot
 ```
 
+A comma joins explicit IDs/names; `*` selects the available set; `-id` excludes an object after all positive items have been combined. Order does not affect exclusions, and duplicates are removed. Include `*` or at least one positive item; exclusion-only expressions, unknown objects and empty results are rejected before changes. The same syntax works in `--servers`, for example `--servers '*,-node-id'`. Lists and exclusions also require confirmation.
+
 PNT shows selected objects and operation count, then requires interactive **Y/N** confirmation. Only `Y` proceeds. `N`, empty input and EOF cancel before tasks run. Redirected stdin cannot confirm a selection; there is no bypass flag.
 
 - Multiple selectors form all combinations. `allow '*' '*'` grants each active client every registered VPN server. `--servers '*'` creates one client with that list, without subscribing to future nodes.
 - General selectors include active members, including temporarily unreachable ones. Removed nodes/revoked clients are excluded. VPN-server operations select registered VPN nodes; `vpn status '*'` and `vpn server install '*'` select Linux nodes.
 - `node kick '*'`, `node remove '*'` and `node routes '*'` exclude the current node. `node accept '*'` / `reject '*'` select pending requests. Reboot handles the current node last with the common Y/N confirmation.
 - Selection is fixed before confirmation. Tasks/output run sequentially; failures are reported, remaining tasks continue, and any failure produces a nonzero exit code.
-- `node list` and `vpn client get` do **not** accept `*`. Use `node list [--interactive]` for a list and one client for export. **`--interactive` cannot be combined with a selector**, including in `pnt sh`.
+- `node list` and `vpn client get` do **not** accept selectors. Use `node list [--interactive]` for a list and one client for export. **`--interactive` cannot be combined with a selector**, including in `pnt sh`.
 - Forwarding accepts `--listen '*:8080'`, `--to '*:80'` and `--via '*'` only when resulting rules have distinct input ports. Conflicts are rejected before creation.
 
 Client names must remain unique: `vpn client rename '*' NewName` is rejected if more than one client is selected.
@@ -261,6 +270,7 @@ dotnet run --project tests/CliChecks -c Release
 dotnet run --project tests/SelectorChecks -c Release
 dotnet run --project tests/TerminalChecks -c Release
 dotnet run --project tests/NodeChecks -c Release
+dotnet run --project tests/RelayPolicyChecks -c Release
 dotnet run --project tests/FtpChecks -c Release
 dotnet run --project tests/VpnChecks -c Release
 python3 tests/VpnChecks/adapter_checks.py

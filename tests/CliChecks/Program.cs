@@ -39,6 +39,9 @@ await Invoke("node","invite","accept","token");Require(executed!.SequenceEqual(n
 Require((await Invoke("node","init")).Code!=0&&executed is null,"Init accepted a missing key");
 var freshRoot=root;
 root=CommandLine.Build(args=>{executed=args;return Task.FromResult(17);},clustered:true);
+foreach(var action in new[]{"enable","disable","status"}){await Invoke("node","relay",action);Require(executed!.SequenceEqual(new[]{"node","relay",action}),"Local relay mode command failed");await Invoke("node","relay",action,"target");Require(executed!.Last()=="target","Relay target missing");}
+await Invoke("vpn","client","allow","*,-aaaaaaaaaaaaaaaa","*");Require(executed!.SequenceEqual(new[]{"vpn","client","allow","*,-aaaaaaaaaaaaaaaa","*"}),"Client exclusion changed in CLI parser");
+await Invoke("vpn","client","allow","aaaaaaaaaaaaaaaa,bbbbbbbbbbbbbbbb","*,-2222222222222222,-3333333333333333");Require(executed![3].Contains(',')&&executed[4].Contains("-3333333333333333"),"List/exclusion arguments lost");
 nodeHelp=await Invoke("node","--help");
 Require(!nodeHelp.Output.Contains("init")&&!nodeHelp.Output.Contains("join")&&nodeHelp.Output.Contains("accept")&&nodeHelp.Output.Contains("list"),"Member node help must hide init/join");
 foreach(var legacy in new[]{"create","accept","connect","cluster","nodes","name","identity","routes"})

@@ -52,6 +52,7 @@ const path=require('node:path');
     assert(await page.evaluate(()=>geographicLayer.entities.values.some(e=>e.id.startsWith('border:')&&e.polyline)));
     assert(await page.evaluate(()=>geographicLabels.some(x=>x.city&&x.entity.label.text.getValue(viewer.clock.currentTime)==='Москва')));
     assert.equal(await page.evaluate(()=>viewer.entities.values.filter(e=>e.polyline).length),2);
+    assert(await page.evaluate(()=>{const saved=state.nodes;try{state.nodes=[{id:'a',relayEnabled:false},{id:'b',relayEnabled:false},{id:'c',relayEnabled:false},{id:'d',relayEnabled:true}];const graph=[{a:'a',b:'b',ms:1},{a:'b',b:'c',ms:1},{a:'a',b:'d',ms:100},{a:'d',b:'c',ms:100}];return shortest('a','c',graph).path.join(',')==='a,d,c'&&shortest('a','c',graph.slice(0,2)).path.join(',')==='a,b,c'&&shortest('a','b',graph).path.join(',')==='a,b'}finally{state.nodes=saved}}));
     assert(await page.evaluate(()=>viewer.entities.values.some(e=>e.polyline&&e.label.text.getValue(viewer.clock.currentTime).includes('3.00 Mbps'))));
     assert(await page.evaluate(()=>{const e=edges()[0],saved=state.traffic;state.traffic=[];const missing=linkLabel(e).endsWith('—');state.traffic=[{source:e.a,target:e.b,sentBytesPerSecond:0,receivedBytesPerSecond:0,updated:now(),intervalMs:5000}];const idle=linkLabel(e).endsWith('0.000 Mbps');state.traffic=[{...state.traffic[0],updated:now()-31000}];const stale=linkLabel(e).endsWith('—');state.traffic=saved;return missing&&idle&&stale}));
 

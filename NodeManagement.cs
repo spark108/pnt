@@ -5,6 +5,23 @@ namespace Pnt;
 static class NodeManagement
 {
     static readonly SemaphoreSlim rebootGate=new(1,1);
+    static bool Active(Store db)=>db.Get("cluster") is not null&&db.Get("left")!="1"&&db.Self() is {Removed:false};
+    internal static Node SetRelay(Store db,string? selector,bool enabled)
+    {
+        if(!Active(db))throw new IOException("Узел не состоит в активном кластере.");
+        var node=db.Resolve(selector??db.Get("self")!)??throw new ArgumentException("Узел не найден.");
+        if(node.RelayEnabled==enabled)return node;
+        var updated=node with{RelayEnabled=enabled,Version=Math.Max(App.Now,node.Version+1)};db.Put(updated);return updated;
+    }
+    internal static async Task Relay(Store db,X509Certificate2 cert,string action,string[] args)
+    {
+        if(!Active(db))throw new IOException("Узел не состоит в активном кластере.");
+        if(args.Length>1||action is not ("enable" or "disable" or "status"))throw new ArgumentException("pnt node relay enable|disable|status [node]");
+        var selector=args.FirstOrDefault();
+        var node=action=="status"?db.Resolve(selector??db.Get("self")!)??throw new ArgumentException("Узел не найден."):SetRelay(db,selector,action=="enable");
+        CliOutput.Table(["ID","Узел","Транзит"],[[node.Id,node.Name,new(node.RelayEnabled?"включён":"только резерв",node.RelayEnabled?"green":"yellow")]]);
+        if(action!="status")Console.WriteLine("Настройка отправлена кластеру: "+await App.Broadcast(db,cert)+". Новые маршруты предпочитают обычные реле; открытые потоки не разрываются.");
+    }
     internal static bool ConfirmReboot(Node target,bool force,TextReader input,TextWriter output)
     {
         output.WriteLine((force?"Принудительная перезагрузка ОС":"Полная перезагрузка ОС")+": "+CliOutput.Clean(target.Name)+" ("+target.Id+").");

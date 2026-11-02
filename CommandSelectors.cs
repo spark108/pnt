@@ -10,11 +10,13 @@ static class CommandSelectors
     record Slot(int Index,Choice[] Values);
     internal sealed record Plan(Func<IEnumerable<string[]>> Commands,long Count,string[] Targets,Func<string[],string>? Describe=null,string Action="");
 
+    static bool Expression(string value)=>value=="*"||value.Contains(',')||value.StartsWith('-');
+
     internal static Plan? Create(Store db,string[] args)
     {
-        if(args is ["sh","*","--interactive",..])throw new ArgumentException("--interactive нельзя использовать с селектором *. Укажите один конкретный узел.");
-        if(args is ["nodes","*",..])throw new ArgumentException("В node list селектор * не применяется. Для списка всех узлов: pnt node list [--interactive].");
-        if(args is ["vpn","client","get","*",..])throw new ArgumentException("Для выгрузки профиля укажите конкретного клиента: pnt vpn client get <client> [--out=file.pnt].");
+        if(args is ["sh",var shellTarget,"--interactive",..]&&Expression(shellTarget))throw new ArgumentException("--interactive нельзя использовать с селектором *. Укажите один конкретный узел.");
+        if(args is ["nodes",var listed,..]&&Expression(listed))throw new ArgumentException("В node list селектор * не применяется. Для списка всех узлов: pnt node list [--interactive].");
+        if(args is ["vpn","client","get",var exported,..]&&Expression(exported))throw new ArgumentException("Для выгрузки профиля укажите конкретного клиента: pnt vpn client get <client> [--out=file.pnt].");
         var positions=new List<Position>();
         var aggregate=-1;
         switch(args)
@@ -23,6 +25,7 @@ static class CommandSelectors
             case ["routes",_]: positions.Add(new(1,Kind.OtherNode));break;
             case ["node",_,"reboot",..]: positions.Add(new(1,Kind.Node));break;
             case ["node","kick",_]: positions.Add(new(2,Kind.OtherNode));break;
+            case ["node","relay",var action,_] when action is "enable" or "disable" or "status": positions.Add(new(3,Kind.Node));break;
             case ["cluster","remove",_]: positions.Add(new(2,Kind.OtherNode));break;
             case ["cluster",var action,_] when action is "accept" or "reject": positions.Add(new(2,Kind.PendingNode));break;
             case ["vpn",var action,_] when action is "status" or "start" or "stop" or "restart":
@@ -47,9 +50,9 @@ static class CommandSelectors
                 break;
         }
         string Host(Position p)=>p.Endpoint&&args[p.Index].LastIndexOf(':') is var colon&&colon>=0?args[p.Index][..colon]:args[p.Index];
-        var stars=positions.Where(p=>Host(p)=="*").ToArray();
-        var aggregateStar=aggregate>=0&&aggregate<args.Length&&args[aggregate].Split(',',StringSplitOptions.TrimEntries).Contains("*");
-        if(stars.Length==0&&!aggregateStar)return null;
+        var selections=positions.Where(p=>Expression(Host(p))).ToArray();
+        var aggregateStar=aggregate>=0&&aggregate<args.Length&&Expression(args[aggregate]);
+        if(selections.Length==0&&!aggregateStar)return null;
         if(db.Get("cluster") is null||db.Get("left")=="1"||db.Self()?.Removed!=false)throw new ArgumentException("Узел не состоит в активном кластере.");
 
         Choice[] Choices(Kind kind)
@@ -63,9 +66,9 @@ static class CommandSelectors
             else nodes=nodes.OrderBy(n=>n.Id);
             return nodes.Select(n=>new Choice(n.Id,"Узел: "+n.Name+" ("+n.Id+")")).ToArray();
         }
-        string Resolve(Position position)
+        string Resolve(Position position,string? selected=null)
         {
-            var value=Host(position);
+            var value=selected??Host(position);
             if(position.Kind==Kind.Client)return VpnControl.FindClient(db,value).Id;
             if(position.Kind==Kind.PendingNode)return Choices(position.Kind).FirstOrDefault(c=>c.Value==value)?.Value??throw new ArgumentException("Заявка не найдена.");
             var node=db.Resolve(value);
@@ -76,6 +79,24 @@ static class CommandSelectors
             }
             if(position.Kind==Kind.VpnServer&&!Choices(position.Kind).Any(c=>c.Value==node.Id))throw new ArgumentException("Узел не зарегистрирован как VPN-сервер.");
             return node.Id;
+        }
+        Choice[] Select(Kind kind,string expression)
+        {
+            var available=Choices(kind);var included=new HashSet<string>();var excluded=new HashSet<string>();var positive=false;
+            foreach(var token in expression.Split(',',StringSplitOptions.TrimEntries))
+            {
+                if(token.Length==0)throw new ArgumentException("������ ������� ���������.");
+                if(token=="*"){positive=true;included.UnionWith(available.Select(c=>c.Value));continue;}
+                var negative=token.StartsWith('-');var value=negative?token[1..]:token;
+                if(value.Length==0||value=="*")throw new ArgumentException("����� ������ ������� ID ��� ��� �������.");
+                var id=Resolve(new Position(0,kind),value);
+                if(!available.Any(c=>c.Value==id))throw new ArgumentException("������ �� ������ � ��������� ����� ���������: "+CliOutput.Clean(value));
+                (negative?excluded:included).Add(id);positive|=!negative;
+            }
+            if(!positive)throw new ArgumentException("������� * ��� ������ �������� ����� ������������, �������� *,-id.");
+            included.ExceptWith(excluded);var result=available.Where(c=>included.Contains(c.Value)).ToArray();
+            if(result.Length==0)throw new ArgumentException("�������� �� ������ �� ������ �������.");
+            return result;
         }
         var template=args.ToArray();var slots=new List<Slot>();var targets=new List<string>();
         foreach(var position in positions)
@@ -88,9 +109,9 @@ static class CommandSelectors
                     throw new ArgumentException("Адрес должен иметь вид узел:порт или *:порт.");
                 suffix=args[position.Index][colon..];
             }
-            if(Host(position)=="*")
+            if(Expression(Host(position)))
             {
-                var choices=Choices(position.Kind);
+                var choices=Select(position.Kind,Host(position));
                 if(choices.Length==0)throw new ArgumentException("Селектор * не нашёл подходящих объектов.");
                 slots.Add(new(position.Index,choices.Select(c=>c with{Value=c.Value+suffix}).ToArray()));
                 targets.AddRange(choices.Select(c=>c.Label));
@@ -103,16 +124,11 @@ static class CommandSelectors
                 targets.Add(label);
             }
         }
-        if(args is ["vpn","client","rename","*",_]&&slots.Single().Values.Length>1)throw new ArgumentException("Нельзя дать нескольким клиентам одно уникальное имя. Укажите конкретного клиента.");
+        if(args is ["vpn","client","rename",_,_]&&slots.Single().Values.Length>1)throw new ArgumentException("Нельзя дать нескольким клиентам одно уникальное имя. Укажите конкретного клиента.");
         if(aggregateStar)
         {
-            var choices=Choices(Kind.VpnServer);
-            if(choices.Length==0)throw new ArgumentException("Нет доступных VPN-серверов.");
-            var selected=args[aggregate].Split(',',StringSplitOptions.RemoveEmptyEntries|StringSplitOptions.TrimEntries)
-                .SelectMany(value=>value=="*"?choices.Select(c=>c.Value):new[]{db.Resolve(value)?.Id??throw new ArgumentException("VPN-узел не найден.")})
-                .Distinct().Order().ToArray();
-            if(selected.Any(id=>!choices.Any(c=>c.Value==id)))throw new ArgumentException("Узел не зарегистрирован как VPN-сервер.");
-            template[aggregate]=string.Join(',',selected);targets.AddRange(choices.Select(c=>c.Label));
+            var choices=Select(Kind.VpnServer,args[aggregate]);
+            template[aggregate]=string.Join(',',choices.Select(c=>c.Value));targets.AddRange(choices.Select(c=>c.Label));
         }
         IEnumerable<string[]> Expand(int index,string[] command)
         {
