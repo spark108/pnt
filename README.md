@@ -46,7 +46,7 @@ pnt install -r root@192.0.2.20
 sudo ./pnt.sh install -r root@192.0.2.20
 ```
 
-PNT chooses a reachable Linux executor with SSH access to the target and returns prompts/logs through cluster routes. The new node enrolls back to that executor and is approved as part of installation. SSH authentication is interactive when needed; PNT does not save passwords. Install Windows targets locally.
+PNT chooses a reachable Linux executor with SSH access to the target and returns prompts/logs through cluster routes. After SSH authentication, the installer registers the new node and sends its cluster connection credentials and certificate-pinned bootstrap state over SSH stdin. No join request, approval polling or manual acceptance is required; the new service opens the outbound cluster connection automatically. Credentials are not written to command arguments or installation logs. Existing cluster membership is never overwritten. SSH authentication is interactive when needed; PNT does not save passwords. Install Windows targets locally.
 
 ## Cluster management
 

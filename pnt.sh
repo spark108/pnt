@@ -205,26 +205,15 @@ install_remote() {
     begin_stage 'PNT установлен на удалённом сервере'
     remote_ssh "set -e; export DEBIAN_FRONTEND=noninteractive; apt-get update; apt-get install -y git ca-certificates; touch /etc/default/pnt; sed -i '/^PNT_ADVERTISE_IP=/d' /etc/default/pnt; printf 'PNT_ADVERTISE_IP=%s\\n' '$remote_ip' >> /etc/default/pnt; if [ -d /root/pnt/.git ]; then git -C /root/pnt remote set-url origin $REPOSITORY; git -C /root/pnt pull --ff-only origin master; else git clone $REPOSITORY /root/pnt; fi; if [ -x /usr/local/bin/pnt ]; then /root/pnt/pnt.sh update; else /root/pnt/pnt.sh install; fi"
     printf '✓ %s\n' "$CURRENT_STAGE" >> "$PROGRESS"
-    begin_stage 'Заявка нового узла отправлена'
-    entry_ip=$("$BIN" node status --require-cluster | sed -n 's/^IP: //p')
-    remote_id=$(remote_ssh 'pnt node identity')
-    printf '%s\n' "$remote_id" | grep -Eq '^[0-9a-f]{16}$' || die 'The remote node returned an invalid identity.'
-    remote_ssh "pnt node join '$entry_ip'"
+    begin_stage 'Параметры подключения переданы через SSH'
+    # Keep the cluster credential off command lines, disk and operation logs.
+    remote_identity=$(remote_ssh 'pnt _node-provision identity')
+    connection_bundle=$(printf '%s\n' "$remote_identity" | "$BIN" _node-provision export)
+    printf '%s\n' "$connection_bundle" | remote_ssh 'set -e; systemctl stop pnt.service; trap "systemctl start pnt.service" EXIT; pnt _node-provision import'
+    unset connection_bundle remote_identity
     printf '✓ %s\n' "$CURRENT_STAGE" >> "$PROGRESS"
-    begin_stage 'Подключение нового узла подтверждено'
-    attempts=0
-    until "$BIN" node requests | grep -q "^$remote_id "; do
-        attempts=$((attempts + 1))
-        [ "$attempts" -lt 30 ] || die 'The new node did not send its enrollment request.'
-        sleep 1
-    done
-    "$BIN" node accept "$remote_id"
-    attempts=0
-    until remote_ssh 'pnt node status --require-cluster >/dev/null 2>&1'; do
-        attempts=$((attempts + 1))
-        [ "$attempts" -lt 30 ] || die 'The new node did not receive approval.'
-        sleep 1
-    done
+    begin_stage 'Новый узел подключён к кластеру'
+    remote_ssh 'pnt node status --require-cluster >/dev/null'
     printf '✓ %s\n' "$CURRENT_STAGE" >> "$PROGRESS"
 }
 

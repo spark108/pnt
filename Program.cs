@@ -58,7 +58,7 @@ static class App
         CliOutput.Initialize();
         try
         {
-            if (a.Length > 0 && a[0] is "_vpn-client" or "_prepare-access" or "_vpn-server-setup") return await Execute(a);
+            if (a.Length > 0 && a[0] is "_vpn-client" or "_prepare-access" or "_vpn-server-setup" or "_node-provision") return await Execute(a);
             LocalAccess.Demand();
             var clustered = false;
             if(a.Length==0 || a[0] is "node" or "help" or "--help" or "-h" or "-?")
@@ -92,6 +92,7 @@ static class App
             Directory.CreateDirectory(Dir);
             using var db = new Store(Path.Combine(Dir, "pnt.db"));
             var cert = Certificate.Load(Path.Combine(Dir, "node.pfx"));
+            if(a is ["_node-provision",var provisionAction]){await Provisioning.Run(db,cert,provisionAction);return 0;}
             var selectorPlan=CommandSelectors.Create(db,a);
             if(selectorPlan is null)return await ExecuteResolved(db,cert,a);
             return await CommandSelectors.Run(selectorPlan,expanded=>ExecuteResolved(db,cert,expanded,true),Console.In,Console.Error,!Console.IsInputRedirected);

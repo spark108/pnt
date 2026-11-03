@@ -55,11 +55,11 @@ static class Enrollment
         if(mux?.Type=="mux" && mux.Id==member.Id)await MultiplexPool.Accept(peer,Certificate.Id(cert),true);
     }
 
-    public static async Task Connect(Store db,X509Certificate2 cert,CancellationToken token)
+    public static async Task Connect(Store db,X509Certificate2 cert,CancellationToken token,int port=442)
     {
         var host=db.Get("bootstrap_host");if(host is null||db.Get("cluster") is not null)return;
         var pin=db.Get("bootstrap_pin:"+host);
-        using var peer=await Peer.ConnectRaw(host,pin,cert,token);
+        using var peer=await Peer.ConnectRaw(host,pin,cert,token,port);
         if(pin is null) {db.Set("bootstrap_pin:"+host,peer.RemoteFingerprint);Console.WriteLine("pnt: bootstrap certificate: "+peer.RemoteFingerprint);}
         var self=Certificate.Id(cert);
         var advertised=db.Get("bootstrap_ip")??App.OwnIp;

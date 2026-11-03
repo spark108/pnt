@@ -37,18 +37,41 @@ static class EnrollmentChecks
         serverDb.Put(new Node(aid,"public","127.0.0.2",Certificate.Fingerprint(a),App.Now,Platform:App.Platform));
         var ftp=new FtpConfig(Guid.NewGuid().ToString("N"),true,App.Now);serverDb.PutFtp(ftp);
         natDb.Set("bootstrap_host","127.0.0.2");natDb.Set("bootstrap_name","nat-node");natDb.Set("bootstrap_ip","10.99.0.10");
+        var provision=args.Contains("--provision");
+        if(provision)
+        {
+            var bundle=Provisioning.Export(serverDb,new ProvisionIdentity(Convert.ToBase64String(b.RawData),"ssh-node","10.99.0.10",App.Platform));
+            using var invalidDb=new Store(Path.Combine(directory,"invalid.db"));
+            try{Provisioning.Import(invalidDb,a,bundle);throw new Exception("Wrong identity accepted");}catch(IOException){}
+            Assert(invalidDb.Get("cluster") is null,"Invalid import changed membership");
+            Provisioning.Import(natDb,b,bundle);
+            Assert(!Enrollment.Requests(serverDb).Any(),"SSH provisioning created an enrollment request");
+            Assert(natDb.Get("key_hash")==serverDb.Get("key_hash")&&natDb.Get("bootstrap_peer_cert")==Certificate.Fingerprint(a),"Credentials or certificate pin missing");
+            try{Provisioning.Import(natDb,b,bundle);throw new Exception("Existing cluster overwritten");}catch(IOException){}
+        }
+
         var server=new Service(serverDb,a);var nat=new Service(natDb,b);
         typeof(Service).GetMethod("RegisterMultiplex",BindingFlags.Instance|BindingFlags.NonPublic)!.Invoke(nat,null);
-        var listener=new TcpListener(IPAddress.Parse("127.0.0.2"),442);listener.Start();
+        var listener=new TcpListener(IPAddress.Parse("127.0.0.2"),0);listener.Start();var port=((IPEndPoint)listener.LocalEndpoint).Port;
         var sockets=0;
         _=Task.Run(async()=>{try{while(true){var socket=await listener.AcceptTcpClientAsync();Interlocked.Increment(ref sockets);_=Task.Run(async()=>{try{await(Task)typeof(Service).GetMethod("Handle",BindingFlags.Instance|BindingFlags.NonPublic)!.Invoke(server,[socket])!;}catch{socket.Dispose();}});}}catch{}});
         using var stop=new CancellationTokenSource();
-        var joining=Enrollment.Connect(natDb,b,stop.Token);
+        var joining=provision?Task.CompletedTask:Enrollment.Connect(natDb,b,stop.Token,port);
         try
         {
-            for(var i=0;!Enrollment.Requests(serverDb).Any(r=>r.Id==bid)&&i<50;i++)await Task.Delay(100);
-            Assert(natDb.Get("cluster") is null && serverDb.Resolve(bid) is null,"Enrollment joined without approval");
-            Enrollment.Approve(serverDb,bid);
+            if(provision)
+            {
+                MultiplexPool.SetAddress(bid,Certificate.Fingerprint(a),"127.0.0.2");
+                using var initial=await Peer.Connect("127.0.0.2",Certificate.Fingerprint(a),b,port:port);
+                await Peer.Send(initial.Stream,new Message("route-info",bid));
+                Assert((await Peer.Read(initial.Stream))?.Type=="route-info","Provisioned node cannot connect");
+            }
+            else
+            {
+                for(var i=0;!Enrollment.Requests(serverDb).Any(r=>r.Id==bid)&&i<50;i++)await Task.Delay(100);
+                Assert(natDb.Get("cluster") is null && serverDb.Resolve(bid) is null,"Enrollment joined without approval");
+                Enrollment.Approve(serverDb,bid);
+            }
             for(var i=0;natDb.Get("cluster") is null&&i<50;i++)await Task.Delay(100);
             Assert(natDb.Get("cluster")==serverDb.Get("cluster"),"Approval not received");
             Assert(natDb.Ftp()==ftp,"FTPS configuration did not reach enrolled NAT node");
@@ -67,7 +90,7 @@ static class EnrollmentChecks
             }
             Assert(sockets==1,"Reverse task opened another network connection instead of reusing the NAT channel");
             MultiplexPool.CloseLocal(bid);await joining.WaitAsync(TimeSpan.FromSeconds(5));
-            using(var reconnect=await Peer.Connect("127.0.0.2",Certificate.Fingerprint(a),b))
+            using(var reconnect=await Peer.Connect("127.0.0.2",Certificate.Fingerprint(a),b,port:port))
             {await Peer.Send(reconnect.Stream,new Message("route-info",bid));Assert((await Peer.Read(reconnect.Stream))?.Type=="route-info","Reconnect failed");}
             Assert((await Forwarding.GetInterfaces(serverDb,a,bid)).Length>0,"Reverse channel not restored after reconnect");
             var chosen=RouteCache.Apply([],bid,[(new[]{aid,"relay",bid},1.0),(new[]{aid,bid},100.0)]);
@@ -76,7 +99,7 @@ static class EnrollmentChecks
             Assert(natRoutes.Single(r=>r.Primary).Path[1]=="normal","NAT transit did not get lower priority");
             await NodeManagement.Kick(serverDb,a,bid);
             Assert(natDb.Get("left")=="1"&&natDb.Self()!.Removed&&serverDb.Nodes().Single(n=>n.Id==bid).Removed,"Routed kick did not leave and remove the NAT member");
-            Console.WriteLine("PASS: routed voluntary kick, explicit approval, NAT reverse RPC, command execution, one outbound connection, reconnect, route priorities");
+            Console.WriteLine("PASS: "+(provision?"SSH provisioning without join/accept, ":"")+"routed voluntary kick, explicit approval, NAT reverse RPC, command execution, one outbound connection, reconnect, route priorities");
         }
         finally{stop.Cancel();MultiplexPool.CloseLocal(aid);MultiplexPool.CloseLocal(bid);listener.Stop();}
     }
