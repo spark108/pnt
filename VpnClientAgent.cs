@@ -18,7 +18,7 @@ static class VpnClientAgent
         using var issuer=X509CertificateLoader.LoadCertificate(Convert.FromBase64String(profile.Issuer));
         if(!profile.Entrypoints.Any(n=>n.Cert==Certificate.Fingerprint(issuer)))throw new ArgumentException("Издатель отсутствует среди доверенных узлов.");
         using var key=issuer.GetECDsaPublicKey();
-        if(key is null||!key.VerifyData(JsonSerializer.SerializeToUtf8Bytes(profile with{Signature=""},App.Json),Convert.FromBase64String(profile.Signature),HashAlgorithmName.SHA256))throw new ArgumentException("Подпись профиля PNT недействительна.");
+        if(key is null||!key.VerifyData(VpnProfiles.SignaturePayload(profile,json),Convert.FromBase64String(profile.Signature),HashAlgorithmName.SHA256))throw new ArgumentException("Подпись профиля PNT недействительна.");
         using var identity=Identity(profile);
         if(!identity.HasPrivateKey||Certificate.Id(identity)!=profile.ClientId||identity.NotAfter.ToUniversalTime()<DateTime.UtcNow)throw new ArgumentException("Ключ клиента недействителен или истёк.");
         return profile;

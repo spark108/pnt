@@ -91,6 +91,17 @@ static class VpnChecks
         await VpnControl.Command(db,cert,["client","create","Alice","--servers","local","--out",output]);
         var profile=VpnClientAgent.Validate(await File.ReadAllTextAsync(output));
         Assert(profile.ClientId==db.VpnClients().Single().Id,"Client identity mismatch");
+        foreach(var missing in new[]{new[]{"relayEnabled"},new[]{"location","relayEnabled"}})
+        {
+            var legacy=JsonSerializer.SerializeToNode(profile with{Signature=""},App.Json)!;
+            foreach(var node in legacy["entrypoints"]!.AsArray())foreach(var field in missing)node!.AsObject().Remove(field);
+            using var signer=cert.GetECDsaPrivateKey()!;
+            legacy["signature"]=Convert.ToBase64String(signer.SignData(JsonSerializer.SerializeToUtf8Bytes(legacy,App.Json),HashAlgorithmName.SHA256));
+            Assert(VpnClientAgent.Validate(legacy.ToJsonString(App.Json)).ClientId==profile.ClientId,"Legacy optional node fields broke signature validation");
+            legacy["entrypoints"]![0]!["name"]="tampered";
+            try{VpnClientAgent.Validate(legacy.ToJsonString(App.Json));throw new Exception("Tampered legacy profile accepted");}catch(ArgumentException){}
+        }
+
         Assert(!db.Nodes().Any(n=>n.Id==profile.ClientId),"Client added to cluster topology");
         var savedClient=db.VpnClients().Single();
         Assert(savedClient.ProtectedIdentity is not null&&!savedClient.ProtectedIdentity.Contains(profile.Identity),"Client archive is missing or unencrypted");

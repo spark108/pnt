@@ -2,11 +2,23 @@ using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace Pnt;
 
 static class VpnProfiles
 {
+    internal static byte[] SignaturePayload(VpnProfile profile,string originalJson)
+    {
+        var payload=JsonSerializer.SerializeToNode(profile with{Signature=""},App.Json)!;
+        using var original=JsonDocument.Parse(originalJson);
+        var originalNodes=original.RootElement.GetProperty("entrypoints");
+        var nodes=payload["entrypoints"]!.AsArray();
+        for(var index=0;index<nodes.Count;index++)
+            foreach(var optional in new[]{"location","relayEnabled"})
+                if(!originalNodes[index].TryGetProperty(optional,out _))nodes[index]!.AsObject().Remove(optional);
+        return JsonSerializer.SerializeToUtf8Bytes(payload,App.Json);
+    }
     static byte[] Key(Store db)
     {
         var secret=db.Get("key_hash")??throw new IOException("Отсутствует ключ кластера для хранения профилей VPN.");
