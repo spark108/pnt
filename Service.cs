@@ -14,6 +14,7 @@ sealed class Service(Store db, X509Certificate2 cert,int controlPort=442)
     readonly Dictionary<string, TcpListener> listeners = new();
     readonly CancellationTokenSource stop = new();
     readonly Dictionary<string, Task> checks = new();
+    readonly Dictionary<string, Task> synchronizations = new();
     readonly Dictionary<string, (Task Work, long Due)> routeScans = new();
     Task topologyWork = Task.CompletedTask;
     Task bootstrapWork = Task.CompletedTask;
@@ -294,8 +295,11 @@ sealed class Service(Store db, X509Certificate2 cert,int controlPort=442)
                             routeScans[n.Id] = (ScanRoutes(n.Id), App.Now + Random.Shared.Next(20_000,30_001));
                         if (!checks.TryGetValue(n.Id, out var previous) || previous.IsCompleted)
                             checks[n.Id] = CheckNode(n);
+                        if (!synchronizations.TryGetValue(n.Id, out var sync) || sync.IsCompleted)
+                            synchronizations[n.Id] = SyncNode(n);
                     }
                     foreach (var key in checks.Where(x => x.Value.IsCompleted && db.Resolve(x.Key) is null).Select(x => x.Key).ToArray()) checks.Remove(key);
+                    foreach (var key in synchronizations.Where(x => x.Value.IsCompleted && db.Resolve(x.Key) is null).Select(x => x.Key).ToArray()) synchronizations.Remove(key);
                     if (db.Self()?.Removed != true) LaunchPendingUpdate();
                 }
             }
@@ -327,6 +331,18 @@ sealed class Service(Store db, X509Certificate2 cert,int controlPort=442)
     {
         try
         {
+            using var measured = await routing.Connect(node.Id, cancellation: stop.Token);
+            var ms = await LatencyProbe.Measure(measured,id,node.Id,stop.Token);
+            var path = measured.RouteReady!.Hops!;
+            db.SetPing(node.Id,ms,path.Length==2,path);
+        }
+        catch { }
+    }
+
+    async Task SyncNode(Node node)
+    {
+        try
+        {
             using(var peer = await routing.Connect(node.Id, cancellation: stop.Token))
             {
                 var request = await RouteTransport.SendTask(peer, Sync());
@@ -334,10 +350,6 @@ sealed class Service(Store db, X509Certificate2 cert,int controlPort=442)
                 if (reply.Type != "sync") return;
                 Merge(reply);db.Set("peer_sync_seen:"+node.Id,App.Now.ToString());
             }
-            using var measured = await routing.Connect(node.Id, cancellation: stop.Token);
-            var ms = await LatencyProbe.Measure(measured,id,node.Id,stop.Token);
-            var path = measured.RouteReady!.Hops!;
-            db.SetPing(node.Id,ms,path.Length==2,path);
         }
         catch { }
     }
