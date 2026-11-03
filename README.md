@@ -137,7 +137,7 @@ Selectors apply to existing node/client argument positions. They do not expand c
 pnt vpn server install <node>
 pnt vpn server list
 pnt vpn server rename <node> 'Netherlands #1'
-pnt vpn status <node>
+pnt vpn server status <node>
 pnt vpn start [node]
 pnt vpn stop [node]
 pnt vpn restart [node]
@@ -155,6 +155,10 @@ pnt vpn client handshake alice [node]
 pnt vpn client unbind <client-id>
 pnt vpn client revoke alice
 ```
+
+`pnt vpn server status <node>` displays the current interface/client state and cumulative connection statistics: total and active observed sessions, direct/relayed counts, per-client totals and server receive/send bytes, data routes with node IDs, and entry/transit usage per node. The exit node samples AmneziaWG every 15 seconds and stores this history in its local SQLite database; reports can be requested through cluster routes. Update the exit nodes to start collecting. History is not replicated to other nodes and remains readable when the VPN backend is stopped.
+
+These are sampled sessions, not TCP connections or handshake counts. Rekeys, standby relays and route changes do not create extra logical connections. A disconnect observed by the collector, or a gap of more than 180 seconds, starts a new session on reconnection. Brief disconnects between samples may be missed, and direct disconnects can take up to the handshake timeout to appear. One session can use multiple modes/routes, so their counts can overlap. The initial counters establish a baseline; traffic before collection is not reconstructed. Subsequent counter resets are handled without double counting. Bytes are measured at the exit server; attribution to modes/routes is approximate between samples. Direct VPN data bypasses the cluster, so control/catalog entry nodes are not counted as data relays. Statistics survive PNT restarts; restore the exit database from backup to restore its history.
 
 PNT installs AmneziaWG on Debian or attaches an existing native/Docker configuration, offers a choice and prepares forwarding/firewall rules. Native discovery includes `/etc/amnezia/amneziawg`, `/etc/amneziawg` and `/opt/amnezia/awg`. Only **AmneziaWG** is supported; ordinary WireGuard and `/etc/wireguard` are not used. Existing unmanaged peers are preserved.
 

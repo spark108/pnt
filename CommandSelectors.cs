@@ -30,8 +30,8 @@ static class CommandSelectors
             case ["cluster",var action,_] when action is "accept" or "reject": positions.Add(new(2,Kind.PendingNode));break;
             case ["vpn",var action,_] when action is "status" or "start" or "stop" or "restart":
                 positions.Add(new(2,action=="status"?Kind.LinuxNode:Kind.VpnServer));break;
-            case ["vpn","server",var action,_,..] when action is "install" or "rename" or "remove":
-                positions.Add(new(3,action=="install"?Kind.LinuxNode:Kind.VpnServer));break;
+            case ["vpn","server",var action,_,..] when action is "install" or "rename" or "remove" or "status":
+                positions.Add(new(3,action is "install" or "status"?Kind.LinuxNode:Kind.VpnServer));break;
             case ["vpn","client","create",_,..]:
                 aggregate=Array.IndexOf(args,"--servers")+1;
                 if(aggregate==0)aggregate=-1;

@@ -41,6 +41,8 @@ static class VpnControl
         {
             case ["status",var targetName]:
                 await ServerStatus(db,cert,FindNode(db,targetName));break;
+            case ["server","status",var targetName]:
+                await ServerStatus(db,cert,FindNode(db,targetName));break;
             case [var action,..var targetNames] when action is "start" or "stop" or "restart" && targetNames.Length<=1:
                 var controlled=targetNames.Length==0?db.Self()!:FindNode(db,targetNames[0]);
                 if(controlled.Platform=="windows")throw new PlatformNotSupportedException("Сервер AmneziaWG поддерживается на Debian Linux.");
@@ -131,7 +133,7 @@ static class VpnControl
                 }
                 CliOutput.Table(["Сервер","Рукопожатие (UTC)","Принято","Отправлено"],handshakeRows);
                 break;
-            default:throw new ArgumentException("Неверная команда. pnt vpn status|start|stop|restart; pnt vpn server install|rename|list|remove; pnt vpn client create|get|unbind|list|show|rename|allow|deny|revoke|handshake");
+            default:throw new ArgumentException("Неверная команда. pnt vpn status|start|stop|restart; pnt vpn server install|rename|list|status|remove; pnt vpn client create|get|unbind|list|show|rename|allow|deny|revoke|handshake");
         }
     }
     static async Task ServerStatus(Store db,X509Certificate2 cert,Node target)
@@ -145,6 +147,12 @@ static class VpnControl
             catch(Exception e){error=e.Message;}
         }
         PrintServerStatus(db,target,configs,clients,error);
+        try
+        {
+            var usage=JsonSerializer.Deserialize<VpnUsageReport>(await Query(db,cert,target.Id,new("usage")),App.Json)??throw new IOException("Нет статистики подключений.");
+            VpnUsage.Print(db,usage,App.Now);
+        }
+        catch(Exception e){Console.WriteLine("История подключений недоступна: "+e.Message);}
     }
     internal static void PrintServerStatus(Store db,Node target,VpnServerConfiguration[] configs,Dictionary<string,VpnStatistics>? clients,string? error)
     {
@@ -259,8 +267,8 @@ static class VpnControl
                 "probe"=>await VpnAdapter.Run("probe",null,[],token),
                 "ensure"=>JsonSerializer.Serialize(await Prepare(db,cert,operation,token),App.Json),
                 "stats"=>JsonSerializer.Serialize(VpnConnections.Observe(Certificate.Id(cert),operation.Client!,JsonSerializer.Deserialize<VpnStatistics>(await VpnAdapter.Run("stats",operation.Client,[],token),App.Json)!,DateTimeOffset.UtcNow.ToUnixTimeSeconds()),App.Json),
-                "clients"=>JsonSerializer.Serialize((JsonSerializer.Deserialize<Dictionary<string,VpnStatistics>>(await VpnAdapter.Run("clients",null,[],token),App.Json)??[])
-                    .ToDictionary(p=>p.Key,p=>VpnConnections.Observe(Certificate.Id(cert),p.Key,p.Value,DateTimeOffset.UtcNow.ToUnixTimeSeconds())),App.Json),
+                "clients"=>JsonSerializer.Serialize(await VpnUsage.ReadClients(db,cert,token),App.Json),
+                "usage"=>JsonSerializer.Serialize(VpnUsage.Read(db,App.Now),App.Json),
                 "reconcile"=>await VpnAdapter.Run("reconcile",null,AllowedIds(db),token),
                 _=>throw new ArgumentException("Неизвестная операция VPN.")
             };

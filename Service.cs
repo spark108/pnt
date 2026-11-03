@@ -19,6 +19,7 @@ sealed class Service(Store db, X509Certificate2 cert,int controlPort=442)
     Task topologyWork = Task.CompletedTask;
     Task bootstrapWork = Task.CompletedTask;
     Task vpnWork = Task.CompletedTask;
+    Task vpnUsageWork = Task.CompletedTask;
     readonly WebPanel web = new(db, cert);
     readonly FtpGateway ftp = new(db, cert);
     readonly RouteTransport routing = new(db, cert);
@@ -282,6 +283,7 @@ sealed class Service(Store db, X509Certificate2 cert,int controlPort=442)
                 await web.Refresh();
                 await RefreshListeners();
                 if(vpnWork.IsCompleted)vpnWork=ReconcileVpn();
+                if(vpnUsageWork.IsCompleted)vpnUsageWork=VpnUsage.Sample(db,cert,stop.Token);
                 if(db.Get("cluster") is null && db.Get("bootstrap_host") is not null && bootstrapWork.IsCompleted)
                     bootstrapWork=Bootstrap();
                 if (db.Get("cluster") != null && (db.Self()?.Removed != true || db.Get("left") == "1"))

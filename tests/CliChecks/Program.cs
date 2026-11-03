@@ -27,6 +27,8 @@ async Task<(int Code, string Output)> Invoke(params string[] args)
 }
 
 var rootHelp = await Invoke("--help");
+await Invoke("vpn","server","status","0123456789abcdef");Require(executed!.SequenceEqual(new[]{"vpn","server","status","0123456789abcdef"}),"VPN server status dispatch failed");
+Require((await Invoke("vpn","server","status")).Code!=0&&executed is null,"VPN server status accepted missing node");
 foreach(var verb in new[]{"enable","disable","status"}){await Invoke("ftp",verb);Require(executed!.SequenceEqual(new[]{"ftp",verb}),"FTPS command dispatch failed");}
 Require((await Invoke("ftp","enable","extra")).Code!=0&&executed is null,"FTPS accepted unknown arguments");
 Require(rootHelp.Code == 0 && rootHelp.Output.Contains("node") && !rootHelp.Output.Contains("--servers"), "Root help must list only its commands");

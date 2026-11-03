@@ -19,6 +19,10 @@ sealed class Store : IDisposable
             "CREATE TABLE IF NOT EXISTS vpn_servers(id TEXT PRIMARY KEY,json TEXT NOT NULL,version INTEGER NOT NULL)",
             "CREATE TABLE IF NOT EXISTS vpn_devices(client TEXT PRIMARY KEY,epoch TEXT NOT NULL,device_key TEXT)",
             "CREATE TABLE IF NOT EXISTS vpn_clients(id TEXT PRIMARY KEY,json TEXT NOT NULL,version INTEGER NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS vpn_usage_sessions(id TEXT PRIMARY KEY,client TEXT NOT NULL,started INTEGER NOT NULL,last_seen INTEGER NOT NULL,ended INTEGER NOT NULL DEFAULT 0,received INTEGER NOT NULL DEFAULT 0,sent INTEGER NOT NULL DEFAULT 0)",
+            "CREATE INDEX IF NOT EXISTS vpn_usage_client ON vpn_usage_sessions(client,last_seen)",
+            "CREATE TABLE IF NOT EXISTS vpn_usage_paths(session TEXT NOT NULL,mode TEXT NOT NULL,route TEXT NOT NULL,first_seen INTEGER NOT NULL,last_seen INTEGER NOT NULL,received INTEGER NOT NULL,sent INTEGER NOT NULL,PRIMARY KEY(session,mode,route))",
+            "CREATE TABLE IF NOT EXISTS vpn_usage_state(client TEXT PRIMARY KEY,observed INTEGER NOT NULL,received INTEGER NOT NULL,sent INTEGER NOT NULL,session TEXT)",
             "CREATE TABLE IF NOT EXISTS rules(id TEXT PRIMARY KEY,json TEXT NOT NULL,version INTEGER NOT NULL)",
             "CREATE TABLE IF NOT EXISTS invites(id TEXT PRIMARY KEY,json TEXT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS join_requests(id TEXT PRIMARY KEY,json TEXT NOT NULL)",
@@ -39,7 +43,7 @@ sealed class Store : IDisposable
         if (!hasDirect) { using var alter = c.CreateCommand(); alter.CommandText = "ALTER TABLE peer_pings ADD COLUMN direct INTEGER NOT NULL DEFAULT 0"; alter.ExecuteNonQuery(); }
         if (!hasRoute) { using var alter = c.CreateCommand(); alter.CommandText = "ALTER TABLE peer_pings ADD COLUMN route TEXT NOT NULL DEFAULT '[]'"; alter.ExecuteNonQuery(); }
     }
-    SqliteConnection Open()
+    internal SqliteConnection Open()
     {
         var c = new SqliteConnection($"Data Source={path};Pooling=False;Default Timeout=5");
         c.Open();
