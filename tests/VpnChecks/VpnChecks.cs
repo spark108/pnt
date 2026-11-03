@@ -142,7 +142,12 @@ static class VpnChecks
             try{VpnProfiles.Export(otherDb,otherCert,savedClient);throw new Exception("Wrong cluster key decrypted identity");}catch(System.Security.Cryptography.CryptographicException){}
         }
 
-        Assert(!File.ReadAllText(Path.Combine(directory,"pnt.db")).Contains(profile.Identity),"Private client identity persisted to registry");
+        foreach(var file in Directory.EnumerateFiles(directory,"pnt.db*"))
+        {
+            using var bytes=new FileStream(file,FileMode.Open,FileAccess.Read,FileShare.ReadWrite|FileShare.Delete);
+            using var text=new StreamReader(bytes);
+            Assert(!text.ReadToEnd().Contains(profile.Identity),"Private client identity persisted to registry or WAL");
+        }
         try{VpnClientAgent.Validate(JsonSerializer.Serialize(profile with{ClientId=self},App.Json));throw new Exception("Tampered profile accepted");}catch(ArgumentException){}
         var beforeClientRename=db.VpnClients().Single();
         await VpnControl.Command(db,cert,["client","rename",beforeClientRename.Id," Alice renamed "]);

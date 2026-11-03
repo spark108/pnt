@@ -141,7 +141,7 @@ sealed class Service(Store db, X509Certificate2 cert,int controlPort=442)
             case "route-open":
                 await OpenFixedRoute(stream, request); break;
             case "sync":
-                Merge(request);
+                await Merge(request);
                 await Peer.Send(stream, Sync() with { RequestId = request.RequestId });
                 break;
             case "probe":
@@ -252,24 +252,12 @@ sealed class Service(Store db, X509Certificate2 cert,int controlPort=442)
 
     Message Sync() => new("sync", id, Nodes: db.Nodes().ToArray(), Rules: db.Rules().ToArray(), Update: db.Update(), Pings: db.Pings().ToArray(), Web: db.Web(), Links: db.Links().ToArray(),VpnServers:db.VpnServers().ToArray(),VpnClients:db.VpnClients().ToArray(),Cesium:db.Cesium(),Traffic:db.Traffic().ToArray(),Ftp:db.Ftp());
 
-    void Merge(Message m)
+    async Task Merge(Message m)
     {
-        foreach (var n in m.Nodes ?? [])
-        {
-            var old = db.Nodes().FirstOrDefault(x => x.Id == n.Id);
-            // A member's certificate is immutable, including across gossip updates.
-            if (old != null && old.Cert != n.Cert) continue;
-            if (n.Ip.Length > 64 || n.Name.Length > 64 || n.Location is {} location&&!GeoLocations.Valid(location)) continue;
-            db.Put(n);
-        }
-        foreach (var r in m.Rules ?? []) db.Put(r);
-        VpnControl.Merge(db,m);
-        foreach (var ping in m.Pings ?? []) db.PutPing(ping);
-        foreach (var link in m.Links ?? []) db.PutLink(link);
-        foreach(var traffic in m.Traffic??[])if(traffic.Source!=id)db.PutTraffic(traffic);
+        await db.MergeState(m, stop.Token);
         if (m.Update is not null) db.PutUpdate(m.Update);
         if (m.Web is not null) db.PutWeb(m.Web);
-        if(m.Ftp is not null)db.PutFtp(m.Ftp);
+        if (m.Ftp is not null) db.PutFtp(m.Ftp);
         if (m.Cesium is not null) db.PutCesium(m.Cesium);
     }
 
@@ -350,7 +338,7 @@ sealed class Service(Store db, X509Certificate2 cert,int controlPort=442)
                 var request = await RouteTransport.SendTask(peer, Sync());
                 var reply = await RouteTransport.ReadResult(peer, request.RequestId, TimeSpan.FromSeconds(8), stop.Token);
                 if (reply.Type != "sync") return;
-                Merge(reply);db.Set("peer_sync_seen:"+node.Id,App.Now.ToString());
+                await Merge(reply);db.Set("peer_sync_seen:"+node.Id,App.Now.ToString());
             }
         }
         catch { }

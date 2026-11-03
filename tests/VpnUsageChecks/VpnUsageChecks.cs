@@ -96,6 +96,7 @@ static class VpnUsageChecks
   }finally{
    requester.Stop();server.Stop();MultiplexPool.CloseLocal(aid);MultiplexPool.CloseLocal(bid);
    await Task.WhenAll(adopted,serving).WaitAsync(TimeSpan.FromSeconds(5));
+   sourceDb.Dispose();targetDb.Dispose();
    Directory.Delete(folder,true);
   }
  }

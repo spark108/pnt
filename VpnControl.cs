@@ -232,11 +232,7 @@ static class VpnControl
         if(reply.Type!="vpn-result"){if(reply.Name=="vpn-device-denied")throw new UnauthorizedAccessException(reply.Error);throw new IOException(reply.Error??"VPN-сервис не ответил.");}
         return reply.VpnPayload??"{}";
     }
-    public static void Merge(Store db,Message request)
-    {
-        foreach(var s in request.VpnServers??[])if(Valid(s))db.PutVpn(s);
-        foreach(var c in request.VpnClients??[])if(Valid(c)&&!db.VpnClients().Any(old=>old.Id==c.Id&&(old.Cert!=c.Cert||(old.DeviceAuthority is not null&&c.DeviceAuthority is not null&&old.DeviceAuthority!=c.DeviceAuthority))))db.PutVpn(c);
-    }
+    public static void Merge(Store db,Message request) => db.MergeVpnState(request);
     public static async Task Execute(Store db,X509Certificate2 cert,Stream stream,Message request,CancellationToken token)
     {
         try

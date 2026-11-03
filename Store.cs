@@ -3,13 +3,15 @@ using Microsoft.Data.Sqlite;
 
 namespace Pnt;
 
-sealed class Store : IDisposable
+sealed partial class Store : IDisposable
 {
-    readonly string path;
+    readonly string connectionString;
+    readonly SemaphoreSlim mergeGate = new(1, 1);
     public Store(string path)
     {
-        this.path = path;
+        connectionString = new SqliteConnectionStringBuilder { DataSource = path, Pooling = true, DefaultTimeout = 5 }.ToString();
         using var c = Open();
+        using (var journal = c.CreateCommand()) { journal.CommandText = "PRAGMA journal_mode=WAL"; journal.ExecuteNonQuery(); }
         foreach (var sql in new[]
         {
             "CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY,v TEXT NOT NULL)",
@@ -45,12 +47,15 @@ sealed class Store : IDisposable
     }
     internal SqliteConnection Open()
     {
-        var c = new SqliteConnection($"Data Source={path};Pooling=False;Default Timeout=5");
-        c.Open();
-        using var cmd = c.CreateCommand(); cmd.CommandText = "PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000"; cmd.ExecuteNonQuery();
-        return c;
+        var c = new SqliteConnection(connectionString);
+        try { c.Open(); return c; }
+        catch { c.Dispose(); throw; }
     }
-    public void Dispose() { }
+    public void Dispose()
+    {
+        using var c = new SqliteConnection(connectionString);
+        SqliteConnection.ClearPool(c);
+    }
     public List<CachedRoute> Routes(string target) => JsonSerializer.Deserialize<List<CachedRoute>>(Get("routes:" + target) ?? "[]", App.Json) ?? [];
     public void ChangeRoutes(string target, Func<List<CachedRoute>, List<CachedRoute>> change)
     {
@@ -192,14 +197,14 @@ sealed class Store : IDisposable
     }
     public void Put(Node value)
     {
-        var old = Nodes().FirstOrDefault(x => x.Id == value.Id);
+        var old = Find<Node>("nodes", value.Id);
         if (old?.Removed == true && !value.Removed) return;
         if (old?.Removed == false && value.Removed && value.Version <= old.Version) value = value with { Version = old.Version + 1 };
         Upsert("nodes", value.Id, value.Version, JsonSerializer.Serialize(value, App.Json));
     }
     public void Put(Rule value)
     {
-        var old = Rules().FirstOrDefault(x => x.Id == value.Id);
+        var old = Find<Rule>("rules", value.Id);
         if (old?.Removed == true && !value.Removed) return;
         if (old?.Removed == false && value.Removed && value.Version <= old.Version) value = value with { Version = old.Version + 1 };
         Upsert("rules", value.Id, value.Version, JsonSerializer.Serialize(value, App.Json));
@@ -207,9 +212,18 @@ sealed class Store : IDisposable
     void Upsert(string table, string id, long version, string json)
     {
         using var c = Open(); using var q = c.CreateCommand();
-        q.CommandText = $"INSERT INTO {table}(id,json,version) VALUES($id,$json,$version) ON CONFLICT(id) DO UPDATE SET json=excluded.json,version=excluded.version WHERE (excluded.version > {table}.version OR (json_extract(excluded.json,'$.removed')=1 AND json_extract({table}.json,'$.removed')=0)) AND NOT (json_extract({table}.json,'$.removed')=1 AND json_extract(excluded.json,'$.removed')=0)";
+        q.CommandText = UpsertSql(table);
         q.Parameters.AddWithValue("$id", id); q.Parameters.AddWithValue("$json", json); q.Parameters.AddWithValue("$version", version); q.ExecuteNonQuery();
     }
+    static string UpsertSql(string table) => $"INSERT INTO {table}(id,json,version) VALUES($id,$json,$version) ON CONFLICT(id) DO UPDATE SET json=excluded.json,version=excluded.version WHERE (excluded.version > {table}.version OR (json_extract(excluded.json,'$.removed')=1 AND json_extract({table}.json,'$.removed')=0)) AND NOT (json_extract({table}.json,'$.removed')=1 AND json_extract(excluded.json,'$.removed')=0)";
+
+    T? Find<T>(string table, string id)
+    {
+        using var c = Open(); using var q = c.CreateCommand();
+        q.CommandText = $"SELECT json FROM {table} WHERE id=$id"; q.Parameters.AddWithValue("$id", id);
+        return q.ExecuteScalar() is string json ? JsonSerializer.Deserialize<T>(json, App.Json) : default;
+    }
+
     List<T> All<T>(string table)
     {
         using var c = Open(); using var q = c.CreateCommand(); q.CommandText = $"SELECT json FROM {table}";
@@ -250,10 +264,11 @@ sealed class Store : IDisposable
         q.CommandText="INSERT INTO vpn_servers VALUES($id,$json,$version) ON CONFLICT(id) DO UPDATE SET json=excluded.json,version=excluded.version WHERE excluded.version>vpn_servers.version";
         q.Parameters.AddWithValue("$id",value.Id);q.Parameters.AddWithValue("$json",JsonSerializer.Serialize(value,App.Json));q.Parameters.AddWithValue("$version",value.Version);q.ExecuteNonQuery();
     }
+    const string VpnClientSql = "INSERT INTO vpn_clients(id,json,version) VALUES($id,$json,$version) ON CONFLICT(id) DO UPDATE SET json=CASE WHEN json_extract(vpn_clients.json,'$.cert')=json_extract(excluded.json,'$.cert') THEN json_set(excluded.json,'$.protectedIdentity',coalesce(json_extract(excluded.json,'$.protectedIdentity'),json_extract(vpn_clients.json,'$.protectedIdentity')),'$.deviceAuthority',coalesce(json_extract(vpn_clients.json,'$.deviceAuthority'),json_extract(excluded.json,'$.deviceAuthority'))) ELSE excluded.json END,version=excluded.version WHERE (excluded.version>vpn_clients.version OR (json_extract(excluded.json,'$.removed')=1 AND json_extract(vpn_clients.json,'$.removed')=0)) AND NOT (json_extract(vpn_clients.json,'$.removed')=1 AND json_extract(excluded.json,'$.removed')=0)";
     public void PutVpn(VpnClient value)
     {
         using var c=Open();using var q=c.CreateCommand();
-        q.CommandText="INSERT INTO vpn_clients(id,json,version) VALUES($id,$json,$version) ON CONFLICT(id) DO UPDATE SET json=CASE WHEN json_extract(vpn_clients.json,'$.cert')=json_extract(excluded.json,'$.cert') THEN json_set(excluded.json,'$.protectedIdentity',coalesce(json_extract(excluded.json,'$.protectedIdentity'),json_extract(vpn_clients.json,'$.protectedIdentity')),'$.deviceAuthority',coalesce(json_extract(vpn_clients.json,'$.deviceAuthority'),json_extract(excluded.json,'$.deviceAuthority'))) ELSE excluded.json END,version=excluded.version WHERE (excluded.version>vpn_clients.version OR (json_extract(excluded.json,'$.removed')=1 AND json_extract(vpn_clients.json,'$.removed')=0)) AND NOT (json_extract(vpn_clients.json,'$.removed')=1 AND json_extract(excluded.json,'$.removed')=0)";
+        q.CommandText=VpnClientSql;
         q.Parameters.AddWithValue("$id",value.Id);q.Parameters.AddWithValue("$json",JsonSerializer.Serialize(value,App.Json));q.Parameters.AddWithValue("$version",value.Version);q.ExecuteNonQuery();
     }
     public List<Rule> Rules() => All<Rule>("rules");
@@ -264,8 +279,12 @@ sealed class Store : IDisposable
         using var c=Open();using var q=c.CreateCommand();q.CommandText="INSERT INTO join_requests VALUES($id,$json) ON CONFLICT(id) DO UPDATE SET json=excluded.json";
         q.Parameters.AddWithValue("$id",request.Id);q.Parameters.AddWithValue("$json",JsonSerializer.Serialize(request,App.Json));q.ExecuteNonQuery();
     }
-    public Node? Self() => Nodes().FirstOrDefault(x => x.Id == Get("self"));
-    public Node? Resolve(string id) => Nodes().FirstOrDefault(x => !x.Removed && (x.Id == id || x.Name.Equals(id, StringComparison.OrdinalIgnoreCase) || x.Ip == id));
+    public Node? Self() => Get("self") is string id ? Find<Node>("nodes", id) : null;
+    public Node? Resolve(string id)
+    {
+        var exact = Find<Node>("nodes", id);
+        return exact is { Removed: false } ? exact : Nodes().FirstOrDefault(x => !x.Removed && (x.Name.Equals(id, StringComparison.OrdinalIgnoreCase) || x.Ip == id));
+    }
     public void Invite(Invite value)
     {
         using var c = Open(); using var q = c.CreateCommand();
@@ -300,7 +319,7 @@ sealed class Store : IDisposable
         if (report.Route is { Length: > 0 } route &&
             (route.Length > 10 || route[0] != report.Source || route[^1] != report.Target ||
              route.Any(x => x is null || x.Length != 16 || !x.All(Uri.IsHexDigit)))) return;
-        if (!Nodes().Any(x => x.Id == report.Source && !x.Removed) || !Nodes().Any(x => x.Id == report.Target && !x.Removed)) return;
+        if (Find<Node>("nodes", report.Source) is not { Removed: false } || Find<Node>("nodes", report.Target) is not { Removed: false }) return;
         using var c = Open(); using var q = c.CreateCommand();
         q.CommandText = "INSERT INTO peer_pings(source,target,ms,updated,direct,route) VALUES($source,$target,$ms,$updated,$direct,$route) ON CONFLICT(source,target) DO UPDATE SET ms=excluded.ms,updated=excluded.updated,direct=excluded.direct,route=excluded.route WHERE excluded.updated>peer_pings.updated";
         q.Parameters.AddWithValue("$source", report.Source); q.Parameters.AddWithValue("$target", report.Target);
