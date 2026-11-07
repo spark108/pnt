@@ -91,6 +91,22 @@ static class VpnChecks
         await VpnControl.Command(db,cert,["client","create","Alice","--servers","local","--out",output]);
         var profile=VpnClientAgent.Validate(await File.ReadAllTextAsync(output));
         Assert(profile.ClientId==db.VpnClients().Single().Id,"Client identity mismatch");
+        var discovered=db.Self()! with{Id="0123456789abcdef",Ip="127.0.0.2",Cert=new string('A',64)};
+        var cached=JsonSerializer.SerializeToNode(profile,App.Json)!;
+        cached["discoveredEntrypoints"]=JsonSerializer.SerializeToNode(new[]{discovered},App.Json);
+        var reloaded=VpnClientAgent.RuntimeProfile(cached.ToJsonString(App.Json));
+        Assert(reloaded.Entrypoints.Single()==discovered,"Restart did not prefer discovered entrypoints over bootstrap nodes");
+        Assert(VpnClientAgent.Validate(cached.ToJsonString(App.Json)).Entrypoints.SequenceEqual(profile.Entrypoints),"Discovery changed the signed bootstrap profile");
+        Assert(VpnClientAgent.RuntimeProfile(JsonSerializer.Serialize(profile,App.Json)).Entrypoints.SequenceEqual(profile.Entrypoints),"Legacy bootstrap fallback missing");
+        foreach(var invalid in new[]{Array.Empty<Node>(),new[]{discovered,discovered},new[]{discovered with{Removed=true}},new[]{discovered with{Ip="invalid"}},new[]{discovered with{Cert=new string('Z',64)}}})
+        {
+            cached["discoveredEntrypoints"]=JsonSerializer.SerializeToNode(invalid,App.Json);
+            try{VpnClientAgent.RuntimeProfile(cached.ToJsonString(App.Json));throw new Exception("Invalid discovered entrypoints accepted");}catch(ArgumentException){}
+        }
+        cached["discoveredEntrypoints"]=JsonSerializer.SerializeToNode(new[]{discovered},App.Json);
+        cached["entrypoints"]![0]!["name"]="tampered";
+        try{VpnClientAgent.RuntimeProfile(cached.ToJsonString(App.Json));throw new Exception("Discovery bypassed profile signature verification");}catch(ArgumentException){}
+
         foreach(var missing in new[]{new[]{"relayEnabled"},new[]{"location","relayEnabled"}})
         {
             var legacy=JsonSerializer.SerializeToNode(profile with{Signature=""},App.Json)!;
@@ -183,6 +199,16 @@ static class VpnChecks
         {
             var catalog=await Request(new Message("vpn-client",profile.ClientId,Name:"catalog"));
             Assert(catalog.Type=="vpn-result"&&catalog.VpnServers?.Single().Id==self,"Authorized catalog missing");
+            db.Put(discovered);
+            var removed=discovered with{Id="fedcba9876543210",Removed=true};db.Put(removed);
+            var announced=await Request(new Message("vpn-client",profile.ClientId,Name:"catalog"));
+            Assert(announced.Entrypoints?.Any(n=>n.Id==discovered.Id)==true&&announced.Entrypoints.Any(n=>n.Id==self),"Catalog omitted non-VPN cluster entrypoints");
+            Assert(!announced.Entrypoints!.Any(n=>n.Removed||n.Id==removed.Id),"Catalog announced removed entrypoints");
+            Assert(announced.Nodes?.Length==1&&announced.VpnServers?.Length==1,"Entrypoint discovery changed exit ACLs");
+            db.Put(discovered with{Removed=true,Version=discovered.Version+1});
+            var refreshed=await Request(new Message("vpn-client",profile.ClientId,Name:"catalog"));
+            Assert(refreshed.Entrypoints?.Length==1&&refreshed.Entrypoints[0].Id==self,"Removed entrypoint survived catalog refresh");
+
             Assert(savedClient.DeviceAuthority==self,"Client has no stable binding authority");
             Assert((await Request(new Message("vpn-client",profile.ClientId,Name:"catalog"),deviceB)).Type=="vpn-result","Unbound profile rejected a device before connection");
             try{db.DeviceAccess(profile.ClientId,deviceAKey,"check-device");throw new Exception("Catalog bound a device");}catch(UnauthorizedAccessException){}

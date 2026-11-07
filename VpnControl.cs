@@ -309,7 +309,7 @@ static class VpnControl
             if(request.Name=="catalog")
             {
                 var servers=db.VpnServers().Where(s=>Permitted(db,client,s.Id)).ToArray();
-                await Peer.Send(peer.Stream,new Message("vpn-result",VpnServers:servers,Nodes:db.Nodes().Where(n=>servers.Any(s=>s.Id==n.Id)).ToArray()));return;
+                await Peer.Send(peer.Stream,new Message("vpn-result",VpnServers:servers,Nodes:db.Nodes().Where(n=>servers.Any(s=>s.Id==n.Id)).ToArray(),Entrypoints:db.Nodes().Where(n=>!n.Removed).ToArray()));return;
             }
             if(request.Target is null||!Permitted(db,client,request.Target))throw new UnauthorizedAccessException("Сервер не разрешён клиенту.");
             if(request.Name is not ("ensure" or "udp" or "stats"))throw new UnauthorizedAccessException("Операция не разрешена клиенту.");

@@ -23,6 +23,19 @@ static class VpnClientAgent
         if(!identity.HasPrivateKey||Certificate.Id(identity)!=profile.ClientId||identity.NotAfter.ToUniversalTime()<DateTime.UtcNow)throw new ArgumentException("Ключ клиента недействителен или истёк.");
         return profile;
     }
+    internal static Node[] Entrypoints(Node[] nodes)
+    {
+        if(nodes.Length is 0 or >1024||nodes.Any(n=>n.Removed||string.IsNullOrEmpty(n.Id)||!IPAddress.TryParse(n.Ip,out _)||n.Cert is null||n.Cert.Length!=64||!n.Cert.All(Uri.IsHexDigit))||nodes.Select(n=>n.Id).Distinct().Count()!=nodes.Length)
+            throw new ArgumentException("Некорректный список входных узлов PNT.");
+        return nodes;
+    }
+    internal static VpnProfile RuntimeProfile(string json)
+    {
+        var profile=Validate(json);
+        using var document=JsonDocument.Parse(json);
+        return document.RootElement.TryGetProperty("discoveredEntrypoints",out var nodes)
+            ?profile with{Entrypoints=Entrypoints(nodes.Deserialize<Node[]>(App.Json)??[])}:profile;
+    }
     static X509Certificate2 Identity(VpnProfile profile)=>X509CertificateLoader.LoadPkcs12(Convert.FromBase64String(profile.Identity),null,OperatingSystem.IsWindows()?X509KeyStorageFlags.Exportable:X509KeyStorageFlags.EphemeralKeySet);
     static void Output(object value)=>Console.WriteLine(JsonSerializer.Serialize(value,App.Json));
     public static async Task<int> Run(string[] args)
@@ -33,13 +46,15 @@ static class VpnClientAgent
             var line=await Console.In.ReadLineAsync()??throw new ArgumentException("Нет запроса клиента.");
             if(line.Length>1_100_000)throw new ArgumentException("Запрос слишком большой.");
             using var input=JsonDocument.Parse(line);var root=input.RootElement;var action=root.GetProperty("action").GetString();
-            var profile=Validate(root.GetProperty("profile").GetRawText());
+            var json=root.GetProperty("profile").GetRawText();
+            var profile=action=="import"?Validate(json):RuntimeProfile(json);
             if(action=="import"){Output(new{ok=true,clientId=profile.ClientId});return 0;}
             using var identity=Identity(profile);
             if(action=="catalog")
             {
                 var result=await Request(profile,identity,"catalog",null);
-                Output(new{ok=true,servers=result.VpnServers,nodes=result.Nodes,clientId=profile.ClientId});return 0;
+                if(result.Entrypoints is not null)Entrypoints(result.Entrypoints);
+                Output(new{ok=true,servers=result.VpnServers,nodes=result.Nodes,entrypoints=result.Entrypoints,clientId=profile.ClientId});return 0;
             }
             if(action!="connect")throw new ArgumentException("Неизвестная операция клиента.");
             var target=root.GetProperty("server").GetString()??throw new ArgumentException("Сервер не выбран.");
