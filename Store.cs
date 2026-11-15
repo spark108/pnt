@@ -19,7 +19,7 @@ sealed partial class Store : IDisposable
             "CREATE TABLE IF NOT EXISTS direct_links(source TEXT NOT NULL,target TEXT NOT NULL,json TEXT NOT NULL,updated INTEGER NOT NULL,PRIMARY KEY(source,target))",
             "CREATE TABLE IF NOT EXISTS nodes(id TEXT PRIMARY KEY,json TEXT NOT NULL,version INTEGER NOT NULL)",
             "CREATE TABLE IF NOT EXISTS vpn_servers(id TEXT PRIMARY KEY,json TEXT NOT NULL,version INTEGER NOT NULL)",
-            "CREATE TABLE IF NOT EXISTS vpn_devices(client TEXT PRIMARY KEY,epoch TEXT NOT NULL,device_key TEXT)",
+            "CREATE TABLE IF NOT EXISTS vpn_devices(client TEXT PRIMARY KEY,epoch TEXT NOT NULL,device_key TEXT,version INTEGER NOT NULL DEFAULT 0)",
             "CREATE TABLE IF NOT EXISTS vpn_clients(id TEXT PRIMARY KEY,json TEXT NOT NULL,version INTEGER NOT NULL)",
             "CREATE TABLE IF NOT EXISTS vpn_usage_sessions(id TEXT PRIMARY KEY,client TEXT NOT NULL,started INTEGER NOT NULL,last_seen INTEGER NOT NULL,ended INTEGER NOT NULL DEFAULT 0,received INTEGER NOT NULL DEFAULT 0,sent INTEGER NOT NULL DEFAULT 0)",
             "CREATE INDEX IF NOT EXISTS vpn_usage_client ON vpn_usage_sessions(client,last_seen)",
@@ -44,6 +44,16 @@ sealed partial class Store : IDisposable
         reader.Close();
         if (!hasDirect) { using var alter = c.CreateCommand(); alter.CommandText = "ALTER TABLE peer_pings ADD COLUMN direct INTEGER NOT NULL DEFAULT 0"; alter.ExecuteNonQuery(); }
         if (!hasRoute) { using var alter = c.CreateCommand(); alter.CommandText = "ALTER TABLE peer_pings ADD COLUMN route TEXT NOT NULL DEFAULT '[]'"; alter.ExecuteNonQuery(); }
+        using var migration = c.BeginTransaction(deferred: false);
+        using var deviceSchema = c.CreateCommand();
+        deviceSchema.Transaction = migration;
+        deviceSchema.CommandText = "SELECT count(*) FROM pragma_table_info('vpn_devices') WHERE name='version'";
+        if ((long)deviceSchema.ExecuteScalar()! == 0)
+        {
+            deviceSchema.CommandText = "ALTER TABLE vpn_devices ADD COLUMN version INTEGER NOT NULL DEFAULT 0";
+            deviceSchema.ExecuteNonQuery();
+        }
+        migration.Commit();
     }
     internal SqliteConnection Open()
     {
@@ -233,13 +243,47 @@ sealed partial class Store : IDisposable
     }
     public List<Node> Nodes() => All<Node>("nodes");
     public List<VpnServer> VpnServers() => All<VpnServer>("vpn_servers");
-    internal VpnDeviceState DeviceAccess(string client,string? key,string action)
+    internal VpnDeviceReplica[] VpnDeviceSnapshot()
+    {
+        using var c = Open();
+        using var command = c.CreateCommand();
+        command.CommandText = """
+            SELECT c.id, json_extract(c.json,'$.cert'), coalesce(d.epoch,''), d.device_key, coalesce(d.version,0)
+            FROM vpn_clients c LEFT JOIN vpn_devices d ON d.client=c.id
+            WHERE coalesce(json_extract(c.json,'$.removed'),0)=0
+              AND (d.client IS NOT NULL OR json_extract(c.json,'$.deviceAuthority')=(SELECT v FROM meta WHERE k='self'))
+            """;
+        using var reader = command.ExecuteReader();
+        var replicas = new List<VpnDeviceReplica>();
+        while (reader.Read())
+            replicas.Add(new(reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.IsDBNull(3) ? null : reader.GetString(3), reader.GetInt64(4)));
+        return replicas.ToArray();
+    }
+
+    internal bool HasDeviceEpoch(string client, string? epoch)
+    {
+        using var c = Open();
+        using var command = c.CreateCommand();
+        command.CommandText = "SELECT epoch FROM vpn_devices WHERE client=$id AND device_key IS NOT NULL";
+        command.Parameters.AddWithValue("$id", client);
+        return command.ExecuteScalar() is string current && current == epoch;
+    }
+
+    internal VpnDeviceState DeviceAccess(string client,string? key,string action,bool allowMissing=true)
     {
         using var c=Open();using var tx=c.BeginTransaction(deferred:false);
         using var read=c.CreateCommand();read.Transaction=tx;
-        read.CommandText="SELECT epoch,device_key FROM vpn_devices WHERE client=$id";read.Parameters.AddWithValue("$id",client);
+        read.CommandText="SELECT epoch,device_key,version FROM vpn_devices WHERE client=$id";read.Parameters.AddWithValue("$id",client);
         VpnDeviceState state;
-        using(var reader=read.ExecuteReader())state=reader.Read()?new(reader.GetString(0),reader.IsDBNull(1)?null:reader.GetString(1)):new("",null);
+        long version;
+        using(var reader=read.ExecuteReader())
+        {
+            var found=reader.Read();
+            if(!found&&!allowMissing&&action!="unbind-device")throw new IOException("Состояние привязки клиента ещё не получено от кластера.");
+            state=found?new(reader.GetString(0),reader.IsDBNull(1)?null:reader.GetString(1)):new("",null);
+            version=found?reader.GetInt64(2):0;
+        }
+        var previous=state;
         if(action=="unbind-device")state=new(Guid.NewGuid().ToString("N"),null);
         else if(action!="state-device")
         {
@@ -249,11 +293,12 @@ sealed partial class Store : IDisposable
             else if(action=="check-device"&&state.Key is null)throw new UnauthorizedAccessException("Устройство ещё не привязано: сначала подключитесь.");
             else if(action is not ("bind-device" or "check-device" or "catalog-device" or "state-device"))throw new ArgumentException("Неизвестная операция привязки.");
         }
-        if(action is "bind-device" or "unbind-device")
+        if(state!=previous)
         {
             using var write=c.CreateCommand();write.Transaction=tx;
-            write.CommandText="INSERT INTO vpn_devices VALUES($id,$epoch,$key) ON CONFLICT(client) DO UPDATE SET epoch=excluded.epoch,device_key=excluded.device_key";
-            write.Parameters.AddWithValue("$id",client);write.Parameters.AddWithValue("$epoch",state.Epoch);write.Parameters.AddWithValue("$key",(object?)state.Key??DBNull.Value);write.ExecuteNonQuery();
+            write.CommandText="INSERT INTO vpn_devices(client,epoch,device_key,version) VALUES($id,$epoch,$key,$version) ON CONFLICT(client) DO UPDATE SET epoch=excluded.epoch,device_key=excluded.device_key,version=excluded.version";
+            write.Parameters.AddWithValue("$id",client);write.Parameters.AddWithValue("$epoch",state.Epoch);write.Parameters.AddWithValue("$key",(object?)state.Key??DBNull.Value);
+            write.Parameters.AddWithValue("$version",checked(version+1));write.ExecuteNonQuery();
         }
         tx.Commit();return state;
     }

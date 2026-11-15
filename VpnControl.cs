@@ -227,7 +227,7 @@ static class VpnControl
     {
         using var timeout=CancellationTokenSource.CreateLinkedTokenSource(token);timeout.CancelAfter(TimeSpan.FromSeconds(operation.Action is "start" or "stop" or "restart"?180:45));
         using var peer=await new RouteTransport(db,cert).Connect(target,cancellation:timeout.Token);
-        var task=await RouteTransport.SendTask(peer,new Message("vpn-admin",Certificate.Id(cert),Target:target,VpnPayload:JsonSerializer.Serialize(operation,App.Json),VpnServers:db.VpnServers().ToArray(),VpnClients:db.VpnClients().ToArray())).WaitAsync(timeout.Token);
+        var task=await RouteTransport.SendTask(peer,new Message("vpn-admin",Certificate.Id(cert),Target:target,VpnPayload:JsonSerializer.Serialize(operation,App.Json),VpnServers:db.VpnServers().ToArray(),VpnClients:db.VpnClients().ToArray(),VpnDevices:db.VpnDeviceSnapshot())).WaitAsync(timeout.Token);
         var reply=await RouteTransport.ReadResult(peer,task.RequestId,TimeSpan.FromSeconds(operation.Action is "start" or "stop" or "restart"?175:40),timeout.Token);
         if(reply.Type!="vpn-result"){if(reply.Name=="vpn-device-denied")throw new UnauthorizedAccessException(reply.Error);throw new IOException(reply.Error??"VPN-сервис не ответил.");}
         return reply.VpnPayload??"{}";
@@ -241,19 +241,15 @@ static class VpnControl
             var operation=JsonSerializer.Deserialize<VpnOperation>(request.VpnPayload??"{}",App.Json)??throw new ArgumentException("Нет операции.");
             if(operation.Action=="udp")
             {
-                var config=await Prepare(db,cert,operation,token);
+                var config=await Prepare(db,operation,token);
                 await Peer.Send(stream,new Message("vpn-result",Name:operation.KeepAlive?"vpn-keepalive-v1":null,VpnPayload:"{}",RequestId:request.RequestId));
                 using var relay=new VpnConnections.Relay(Certificate.Id(cert),operation.Client!,(request.Hops??[]).Append(Certificate.Id(cert)).ToArray());
-                await VpnDatagrams.Exit(stream,config.LocalHost,config.LocalPort,()=>Allowed(db,operation)&&db.Get("vpn_device_epoch:"+operation.Client)==operation.DeviceEpoch,token,relay.Touch,operation.KeepAlive);return;
-            }
-            if(operation.Action is "bind-device" or "check-device" or "catalog-device" or "unbind-device" or "state-device")
-            {
-                await Peer.Send(stream,new Message("vpn-result",VpnPayload:JsonSerializer.Serialize(VpnDevices.Local(db,operation),App.Json),RequestId:request.RequestId));return;
+                await VpnDatagrams.Exit(stream,config.LocalHost,config.LocalPort,()=>Allowed(db,operation)&&db.HasDeviceEpoch(operation.Client!,operation.DeviceEpoch),token,relay.Touch,operation.KeepAlive);return;
             }
             if(operation.Action=="reset-device")
             {
                 var resetting=db.VpnClients().Single(c=>c.Id==operation.Client&&!c.Removed);
-                await VpnDevices.ResetServer(db,cert,resetting,operation.DeviceEpoch,token);
+                await VpnDevices.ResetServer(db,resetting,operation.DeviceEpoch,token);
                 await Peer.Send(stream,new Message("vpn-result",VpnPayload:"{}",RequestId:request.RequestId));return;
             }
             var output=operation.Action switch
@@ -261,7 +257,7 @@ static class VpnControl
                 "start" or "stop" or "restart"=>await VpnServerInstaller.Control(operation.Action,token),
                 "inventory"=>await VpnServerInstaller.Inventory(token),
                 "probe"=>await VpnAdapter.Run("probe",null,[],token),
-                "ensure"=>JsonSerializer.Serialize(await Prepare(db,cert,operation,token),App.Json),
+                "ensure"=>JsonSerializer.Serialize(await Prepare(db,operation,token),App.Json),
                 "stats"=>JsonSerializer.Serialize(VpnConnections.Observe(Certificate.Id(cert),operation.Client!,JsonSerializer.Deserialize<VpnStatistics>(await VpnAdapter.Run("stats",operation.Client,[],token),App.Json)!,DateTimeOffset.UtcNow.ToUnixTimeSeconds()),App.Json),
                 "clients"=>JsonSerializer.Serialize(await VpnUsage.ReadClients(db,cert,token),App.Json),
                 "usage"=>JsonSerializer.Serialize(VpnUsage.Read(db,App.Now),App.Json),
@@ -274,21 +270,20 @@ static class VpnControl
     }
     static string[] AllowedIds(Store db)=>db.VpnClients().Where(c=>Permitted(db,c,db.Get("self")!)).Select(c=>c.Id).ToArray();
     static bool Allowed(Store db,VpnOperation operation)=>db.VpnClients().Any(c=>c.Id==operation.Client&&c.Cert==operation.Fingerprint&&Permitted(db,c,db.Get("self")!));
-    static async Task<VpnConfiguration> Prepare(Store db,X509Certificate2 cert,VpnOperation operation,CancellationToken token)
+    static async Task<VpnConfiguration> Prepare(Store db,VpnOperation operation,CancellationToken token)
     {
         if(!Allowed(db,operation))throw new UnauthorizedAccessException("Нет доступа к VPN-серверу.");
         var gate=VpnDevices.Gate(operation.Client!);await gate.WaitAsync(token);
         try
         {
-            await VpnDevices.VerifyOperation(db,cert,operation,token);
+            VpnDevices.VerifyOperation(db,operation);
             if(db.Get("vpn_profile_epoch:"+operation.Client)!=operation.DeviceEpoch)
             {
                 await VpnAdapter.Run("reset",operation.Client,[],token);
                 db.Set("vpn_profile_epoch:"+operation.Client,operation.DeviceEpoch!);
             }
-            db.Set("vpn_device_epoch:"+operation.Client,operation.DeviceEpoch!);
             var output=await VpnAdapter.Run("ensure",operation.Client,[],token);
-            await VpnDevices.VerifyOperation(db,cert,operation,token);
+            VpnDevices.VerifyOperation(db,operation);
             var config=JsonSerializer.Deserialize<VpnConfiguration>(output,App.Json)!;
             return config with{Host=db.Self()!.Ip,Config=config.Config.Replace("PNT_ENDPOINT",db.Self()!.Ip+":"+config.Port)};
         }
@@ -304,7 +299,7 @@ static class VpnControl
             if(request.Name is not ("catalog" or "ensure" or "udp" or "stats"))throw new UnauthorizedAccessException("Операция не разрешена клиенту.");
             if(request.Name!="catalog"&&(request.Target is null||!Permitted(db,client,request.Target)))throw new UnauthorizedAccessException("Сервер не разрешён клиенту.");
             var deviceKey=await VpnDevices.Challenge(peer.Stream,request,timeout.Token);
-            var deviceState=await VpnDevices.Access(db,cert,client,deviceKey,request.Name=="ensure"&&request.DeviceEpoch is null?"bind-device":request.Name=="catalog"?"catalog-device":"check-device",timeout.Token);
+            var deviceState=VpnDevices.Access(db,client,deviceKey,request.Name=="ensure"&&request.DeviceEpoch is null?"bind-device":request.Name=="catalog"?"catalog-device":"check-device");
             if(request.Name!="catalog"&&(request.Name!="ensure"||request.DeviceEpoch is not null)&&request.DeviceEpoch!=deviceState.Epoch)throw new UnauthorizedAccessException("Сессия деавторизована. Подключитесь заново.");
             if(request.Name=="catalog")
             {
@@ -317,27 +312,27 @@ static class VpnControl
             if(request.Name=="udp")
             {
                 using var outgoing=await new RouteTransport(db,cert).Connect(request.Target,cancellation:timeout.Token);
-                var task=await RouteTransport.SendTask(outgoing,new Message("vpn-admin",Certificate.Id(cert),Target:request.Target,VpnPayload:JsonSerializer.Serialize(op,App.Json),VpnServers:db.VpnServers().ToArray(),VpnClients:db.VpnClients().ToArray()));
+                var task=await RouteTransport.SendTask(outgoing,new Message("vpn-admin",Certificate.Id(cert),Target:request.Target,VpnPayload:JsonSerializer.Serialize(op,App.Json),VpnServers:db.VpnServers().ToArray(),VpnClients:db.VpnClients().ToArray(),VpnDevices:db.VpnDeviceSnapshot()));
                 var response=await RouteTransport.ReadResult(outgoing,task.RequestId,TimeSpan.FromSeconds(40));
                 if(response.Name=="vpn-device-denied")throw new UnauthorizedAccessException(response.Error);
                 if(response.Type!="vpn-result")throw new IOException(response.Error??"Нет VPN-туннеля.");
                 var keepAlive=op.KeepAlive&&response.Name=="vpn-keepalive-v1";
                 await Peer.Send(peer.Stream,new Message("vpn-result",Name:keepAlive?"vpn-keepalive-v1":null,Hops:outgoing.RouteReady?.Hops));
-                await VpnDatagrams.Relay(peer.Stream,outgoing.Stream,()=>Permitted(db,client,request.Target)&&db.VpnClients().Any(c=>c.Id==client.Id&&!c.Removed&&c.Servers.Contains(request.Target)),token,keepAlive);return;
+                await VpnDatagrams.Relay(peer.Stream,outgoing.Stream,()=>db.HasDeviceEpoch(client.Id,deviceState.Epoch)&&db.VpnClients().Any(c=>c.Id==client.Id&&Permitted(db,c,request.Target)),token,keepAlive);return;
             }
             var result=await Query(db,cert,request.Target,op,timeout.Token);
             await Peer.Send(peer.Stream,new Message("vpn-result",VpnPayload:result,DeviceEpoch:deviceState.Epoch));
         }
         catch(Exception e){await Peer.Send(peer.Stream,new Message("error",Name:e is UnauthorizedAccessException or CryptographicException?"vpn-device-denied":null,Error:e.Message));}
     }
-    public static async Task Reconcile(Store db,X509Certificate2 cert,CancellationToken token)
+    public static async Task Reconcile(Store db,CancellationToken token)
     {
         if(!OperatingSystem.IsLinux()||!db.VpnServers().Any(s=>s.Id==db.Get("self")))return;
-        foreach(var client in db.VpnClients().Where(c=>!c.Removed&&c.DeviceAuthority is not null))
+        foreach(var client in db.VpnClients().Where(c=>!c.Removed))
         {
             try
             {
-                await VpnDevices.ResetServer(db,cert,client,null,token);
+                await VpnDevices.ResetServer(db,client,null,token);
             }
             catch(Exception) when(!token.IsCancellationRequested){}
         }

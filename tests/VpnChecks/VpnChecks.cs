@@ -220,23 +220,57 @@ static class VpnChecks
             {
                 try{VpnDevices.Verify("challenge",altered,signed);throw new Exception("Device proof transferred to another task");}catch(UnauthorizedAccessException){}
             }
-            var state=await VpnDevices.Access(db,cert,savedClient,deviceAKey,"bind-device");
+            using var replica=new Store(Path.Combine(directory,"vpn-replica.db"));
+            replica.Set("self","fedcba9876543210");
+            Message Snapshot(Store source)=>new("sync",VpnClients:source.VpnClients().ToArray(),VpnDevices:source.VpnDeviceSnapshot());
+            await replica.MergeState(Snapshot(db));
+            Assert(VpnDevices.Access(replica,savedClient,deviceAKey,"catalog-device").Key is null,
+                "Replica could not authorize an unbound catalog locally");
+            var isolatedBinding=VpnDevices.Access(replica,savedClient,deviceBKey,"bind-device");
+            var state=VpnDevices.Access(db,savedClient,deviceAKey,"bind-device");
+            var migratedPath=Path.Combine(directory,"vpn-legacy.db");
+            using(var legacy=new Store(migratedPath))
+            {
+                legacy.Set("self",self);
+                legacy.PutVpn(savedClient);
+                VpnDevices.Access(legacy,savedClient,deviceAKey,"bind-device");
+                using var connection=legacy.Open();
+                using var schema=connection.CreateCommand();
+                schema.CommandText="ALTER TABLE vpn_devices DROP COLUMN version";
+                schema.ExecuteNonQuery();
+            }
+            using(var migrated=new Store(migratedPath))
+            using(var receiver=new Store(Path.Combine(directory,"vpn-migrated-replica.db")))
+            {
+                receiver.Set("self","fedcba9876543210");
+                await receiver.MergeState(Snapshot(migrated));
+                Assert(VpnDevices.Access(receiver,savedClient,deviceAKey,"check-device").Key==deviceAKey,
+                    "Legacy binding was lost during migration to a replica");
+            }
             Assert(state.Key==deviceAKey&&state.Epoch.Length==32,"First connection did not bind device");
             Assert((await Request(new Message("vpn-client",profile.ClientId,Name:"catalog"),deviceB)).Name=="vpn-device-denied","Copied profile authenticated on second device");
             Assert((await Request(new Message("vpn-client",profile.ClientId,Name:"catalog"))).Type=="vpn-result","Bound device lost access");
             Assert((await Request(new Message("vpn-client",profile.ClientId,Name:"stats",Target:self))).Name=="vpn-device-denied","Session without epoch was accepted");
             var operation=new VpnOperation("ensure",profile.ClientId,savedClient.Cert,DeviceKey:deviceAKey,DeviceEpoch:state.Epoch);
-            await VpnDevices.VerifyOperation(db,cert,operation,default);
-            var reset=await VpnDevices.Access(db,cert,savedClient,null,"unbind-device");
+            VpnDevices.VerifyOperation(db,operation);
+            var reset=VpnDevices.Access(db,savedClient,null,"unbind-device");
             Assert(reset.Key is null&&reset.Epoch!=state.Epoch,"Unbind retained old device authorization");
-            try{await VpnDevices.VerifyOperation(db,cert,operation,default);throw new Exception("Old session survived unbind");}catch(UnauthorizedAccessException){}
+            var staleSnapshot=Snapshot(replica);
+            await replica.MergeState(Snapshot(db));
+            await db.MergeState(staleSnapshot);
+            await replica.MergeState(staleSnapshot);
+            Assert(VpnDevices.Access(replica,savedClient,null,"state-device")==reset&&
+                VpnDevices.Access(db,savedClient,null,"state-device")==reset&&
+                !replica.HasDeviceEpoch(savedClient.Id,isolatedBinding.Epoch),
+                "Reset did not converge or a stale replica restored the old binding");
+            try{VpnDevices.VerifyOperation(db,operation);throw new Exception("Old session survived unbind");}catch(UnauthorizedAccessException){}
             Assert((await Request(new Message("vpn-client",profile.ClientId,Name:"stats",Target:self))).Name=="vpn-device-denied","Revoked session did not receive explicit deauthorization");
-            var rebound=await VpnDevices.Access(db,cert,savedClient,deviceBKey,"bind-device");
+            var rebound=VpnDevices.Access(db,savedClient,deviceBKey,"bind-device");
             Assert(rebound.Key==deviceBKey&&rebound.Epoch!=reset.Epoch,"New device did not bind after unbind");
             Assert((await Request(new Message("vpn-client",profile.ClientId,Name:"catalog"))).Name=="vpn-device-denied","Old device retained access after rebinding");
-            await VpnDevices.Access(db,cert,savedClient,null,"unbind-device");
-            await VpnDevices.Access(db,cert,savedClient,deviceAKey,"bind-device");
-            try{await VpnDevices.VerifyOperation(db,cert,operation,default);throw new Exception("Old epoch survived rebinding to the same device");}catch(UnauthorizedAccessException){}
+            VpnDevices.Access(db,savedClient,null,"unbind-device");
+            VpnDevices.Access(db,savedClient,deviceAKey,"bind-device");
+            try{VpnDevices.VerifyOperation(db,operation);throw new Exception("Old epoch survived rebinding to the same device");}catch(UnauthorizedAccessException){}
             Assert((await Request(new Message("vpn-client",profile.ClientId,Name:"stats",Target:self,DeviceEpoch:state.Epoch))).Name=="vpn-device-denied","Old epoch fetched statistics after rebind");
             Assert((await Request(new Message("vpn-client",profile.ClientId,Name:"ensure",Target:self,DeviceEpoch:state.Epoch))).Name=="vpn-device-denied","Old session refreshed itself after unbind");
             var race=await Task.WhenAll(new[]{deviceAKey,deviceBKey}.Select(key=>Task.Run(()=>{

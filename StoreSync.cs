@@ -86,7 +86,7 @@ sealed partial class Store
 
     internal void MergeVpnState(Message message)
     {
-        if (message.VpnServers is not { Length: > 0 } && message.VpnClients is not { Length: > 0 }) return;
+        if (message.VpnServers is not { Length: > 0 } && message.VpnClients is not { Length: > 0 } && message.VpnDevices is not { Length: > 0 }) return;
         using var batch = new SyncBatch(this);
         batch.Vpn(message);
         batch.Commit();
@@ -168,6 +168,20 @@ sealed partial class Store
                     Execute(VpnClientSql, ("$id", incoming.Id), ("$json", JsonSerializer.Serialize(incoming, App.Json)), ("$version", incoming.Version));
                     clients[incoming.Id] = incoming with { ProtectedIdentity = incoming.ProtectedIdentity ?? old?.ProtectedIdentity, DeviceAuthority = old?.DeviceAuthority ?? incoming.DeviceAuthority };
                 }
+            }
+            foreach (var device in message.VpnDevices ?? [])
+            {
+                if (!device.Valid()) continue;
+                Execute("""
+                    INSERT INTO vpn_devices(client,epoch,device_key,version)
+                    SELECT $id,$epoch,$key,$version FROM vpn_clients
+                    WHERE id=$id AND json_extract(json,'$.cert')=$cert AND coalesce(json_extract(json,'$.removed'),0)=0
+                    ON CONFLICT(client) DO UPDATE SET epoch=excluded.epoch,device_key=excluded.device_key,version=excluded.version
+                    WHERE (excluded.version, excluded.epoch<>'', excluded.device_key IS NULL, excluded.epoch, coalesce(excluded.device_key,''))
+                        > (vpn_devices.version, vpn_devices.epoch<>'', vpn_devices.device_key IS NULL, vpn_devices.epoch, coalesce(vpn_devices.device_key,''))
+                    """,
+                    ("$id", device.Client), ("$cert", device.Fingerprint), ("$epoch", device.Epoch),
+                    ("$key", (object?)device.Key ?? DBNull.Value), ("$version", device.Version));
             }
         }
         public void Commit() => transaction.Commit();

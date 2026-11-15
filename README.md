@@ -166,7 +166,7 @@ Import `.pnt` into [PNT VPN](https://github.com/spark108/amnezia-pnt). Clients c
 
 A new profile binds on first connection to a separate Android Keystore / Windows CNG device key, absent from `.pnt`. A copied file is then rejected on another device. `unbind` resets the binding, invalidates the session generation and removes VPN keys on reachable servers; offline removals remain pending. The next device can claim it, including the previous one. `revoke` permanently denies the identity.
 
-The node that created the client serializes binding decisions and must be reachable for authorization; there is no automatic authority failover. For clients predating binding support, run `unbind` once to assign an authority and invalidate old sessions. Back up that database.
+Any PNT node with a synchronized VPN client record and device binding can authorize the client from its local copy. There is no quorum. During a partition, nodes may authorize using stale permissions or bindings. On reconnection, the higher binding revision wins, with a reset winning over a bind at the same revision. Update the cluster and allow the original nodes to synchronize their existing bindings before taking them offline. Existing profiles remain valid. For profiles predating binding support, run `unbind` once to initialize replicated state and invalidate old sessions.
 
 Profiles contain private credentials. Repeat export preserves identity and refreshes the server list. New identities are stored encrypted in the replicated registry; older profiles predating identity storage need the original `.pnt`. Existing files are not overwritten. Connection status uses AmneziaWG handshakes and can lag a disconnect.
 

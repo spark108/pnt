@@ -7,6 +7,15 @@ namespace Pnt;
 
 record VpnDeviceState(string Epoch,string? Key);
 record VpnDeviceProof(string Key,string Signature);
+record VpnDeviceReplica(string Client, string Fingerprint, string Epoch, string? Key, long Version)
+{
+    internal bool Valid() =>
+        Client is { Length: 16 } && Client.All(Uri.IsHexDigit) &&
+        Fingerprint is { Length: 64 } && Fingerprint.All(Uri.IsHexDigit) &&
+        Version is >= 0 and < long.MaxValue &&
+        (Guid.TryParseExact(Epoch, "N", out _) || (Version == 0 && Epoch == "" && Key is null)) &&
+        (Key is null or { Length: > 0 and <= 256 });
+}
 
 static class VpnDevices
 {
@@ -32,35 +41,27 @@ static class VpnDevices
         var proof=JsonSerializer.Deserialize<VpnDeviceProof>(response.VpnPayload,App.Json)??throw new UnauthorizedAccessException("Нет подтверждения устройства.");
         return Verify(nonce,request,proof);
     }
-    internal static VpnDeviceState Local(Store db,VpnOperation operation)
+    internal static VpnDeviceState Access(Store db,VpnClient client,string? key,string action)
     {
-        var client=db.VpnClients().SingleOrDefault(c=>c.Id==operation.Client&&!c.Removed&&c.Cert==operation.Fingerprint)
+        if(client.Removed)throw new UnauthorizedAccessException("Клиент не разрешён.");
+        return db.DeviceAccess(client.Id,key,action,client.DeviceAuthority is not null&&client.DeviceAuthority==db.Get("self"));
+    }
+    internal static void VerifyOperation(Store db,VpnOperation operation)
+    {
+        var client=db.VpnClients().SingleOrDefault(c=>c.Id==operation.Client&&c.Cert==operation.Fingerprint&&!c.Removed)
             ??throw new UnauthorizedAccessException("Клиент не разрешён.");
-        if(client.DeviceAuthority!=db.Get("self"))throw new UnauthorizedAccessException("Этот узел не управляет привязкой клиента.");
-        return db.DeviceAccess(client.Id,operation.DeviceKey,operation.Action);
-    }
-    internal static async Task<VpnDeviceState> Access(Store db,X509Certificate2 cert,VpnClient client,string? key,string action,CancellationToken token=default)
-    {
-        if(client.DeviceAuthority is null)throw new IOException("Для старого профиля администратор должен выполнить pnt vpn client unbind "+client.Id+".");
-        var op=new VpnOperation(action,client.Id,client.Cert,DeviceKey:key);
-        return client.DeviceAuthority==db.Get("self")?Local(db,op):
-            JsonSerializer.Deserialize<VpnDeviceState>(await VpnControl.Query(db,cert,client.DeviceAuthority,op,token),App.Json)??throw new IOException("Нет ответа узла привязки.");
-    }
-    internal static async Task VerifyOperation(Store db,X509Certificate2 cert,VpnOperation operation,CancellationToken token)
-    {
-        var client=db.VpnClients().Single(c=>c.Id==operation.Client&&!c.Removed);
-        var state=await Access(db,cert,client,operation.DeviceKey,"check-device",token);
+        var state=Access(db,client,operation.DeviceKey,"check-device");
         if(state.Epoch!=operation.DeviceEpoch)throw new UnauthorizedAccessException("Привязка устройства сброшена. Подключитесь заново.");
     }
-    internal static async Task ResetServer(Store db,X509Certificate2 cert,VpnClient client,string? expectedEpoch,CancellationToken token)
+    internal static async Task ResetServer(Store db,VpnClient client,string? expectedEpoch,CancellationToken token)
     {
         var gate=Gate(client.Id);await gate.WaitAsync(token);
         try
         {
-            var state=await Access(db,cert,client,null,"state-device",token);
+            var state=Access(db,client,null,"state-device");
+            if(state.Epoch.Length==0)return;
             if(expectedEpoch is not null&&state.Epoch!=expectedEpoch)return;
             if(db.Get("vpn_profile_epoch:"+client.Id)==state.Epoch)return;
-            db.Set("vpn_device_epoch:"+client.Id,state.Epoch);
             await VpnAdapter.Run("reset",client.Id,[],token);
             db.Set("vpn_profile_epoch:"+client.Id,state.Epoch);
         }
@@ -69,12 +70,7 @@ static class VpnDevices
     internal static async Task Unbind(Store db,X509Certificate2 cert,VpnClient client)
     {
         if(client.Removed)throw new ArgumentException("Клиент отозван.");
-        if(client.DeviceAuthority is null)
-        {
-            client=client with{DeviceAuthority=db.Get("self"),Version=Math.Max(App.Now,client.Version+1)};
-            db.PutVpn(client);await App.Broadcast(db,cert);
-        }
-        var reset=await Access(db,cert,client,null,"unbind-device");
+        var reset=Access(db,client,null,"unbind-device");
         using var slots=new SemaphoreSlim(4);
         await Task.WhenAll(db.VpnServers().Where(s=>!s.Removed).Select(async server=>
         {

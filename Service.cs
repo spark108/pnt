@@ -250,7 +250,7 @@ sealed class Service(Store db, X509Certificate2 cert,int controlPort=442)
         await Peer.Send(peer.Stream, new Message("welcome", id, Nodes: db.Nodes().ToArray(), Rules: db.Rules().ToArray(), KeyHash: db.Get("key_hash"), Update: db.Update(), Web: db.Web(),Cesium:db.Cesium(),Ftp:db.Ftp()));
     }
 
-    Message Sync() => new("sync", id, Nodes: db.Nodes().ToArray(), Rules: db.Rules().ToArray(), Update: db.Update(), Pings: db.Pings().ToArray(), Web: db.Web(), Links: db.Links().ToArray(),VpnServers:db.VpnServers().ToArray(),VpnClients:db.VpnClients().ToArray(),Cesium:db.Cesium(),Traffic:db.Traffic().ToArray(),Ftp:db.Ftp());
+    Message Sync() => new("sync", id, Nodes: db.Nodes().ToArray(), Rules: db.Rules().ToArray(), Update: db.Update(), Pings: db.Pings().ToArray(), Web: db.Web(), Links: db.Links().ToArray(),VpnServers:db.VpnServers().ToArray(),VpnClients:db.VpnClients().ToArray(),Cesium:db.Cesium(),Traffic:db.Traffic().ToArray(),Ftp:db.Ftp(),VpnDevices:db.VpnDeviceSnapshot());
 
     async Task Merge(Message m)
     {
@@ -305,7 +305,7 @@ sealed class Service(Store db, X509Certificate2 cert,int controlPort=442)
     }
     async Task ReconcileVpn()
     {
-        try{await VpnControl.Reconcile(db,cert,stop.Token);}
+        try{await VpnControl.Reconcile(db,stop.Token);}
         catch(OperationCanceledException){}
         catch(Exception e){Console.Error.WriteLine("pnt: VPN reconciliation: "+e.Message);}
     }
