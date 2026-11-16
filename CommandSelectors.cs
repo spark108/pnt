@@ -36,6 +36,8 @@ static class CommandSelectors
                 aggregate=Array.IndexOf(args,"--servers")+1;
                 if(aggregate==0)aggregate=-1;
                 break;
+            case ["vpn","client","notif","send",_,_]:
+                positions.Add(new(4,Kind.Client));break;
             case ["vpn","client",var action,_,..] when action is "rename" or "show" or "allow" or "deny" or "unbind" or "revoke" or "handshake":
                 positions.Add(new(3,Kind.Client));
                 if(action is "allow" or "deny" or "handshake"&&args.Length>4)

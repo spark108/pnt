@@ -15,6 +15,7 @@ sealed class Service(Store db, X509Certificate2 cert,int controlPort=442)
     readonly CancellationTokenSource stop = new();
     readonly Dictionary<string, Task> checks = new();
     readonly Dictionary<string, Task> synchronizations = new();
+    readonly System.Collections.Concurrent.ConcurrentDictionary<string, long> notificationSync = new();
     readonly Dictionary<string, (Task Work, long Due)> routeScans = new();
     Task topologyWork = Task.CompletedTask;
     Task bootstrapWork = Task.CompletedTask;
@@ -335,10 +336,18 @@ sealed class Service(Store db, X509Certificate2 cert,int controlPort=442)
         {
             using(var peer = await routing.Connect(node.Id, cancellation: stop.Token))
             {
-                var request = await RouteTransport.SendTask(peer, Sync());
+                var position = notificationSync.GetValueOrDefault(node.Id);
+                var notices = db.VpnNotifications(position, limit: VpnNotification.PageSize);
+                if (position != 0 && notices.Length == 0)
+                    notices = db.VpnNotifications(limit: VpnNotification.PageSize);
+                var request = await RouteTransport.SendTask(peer, Sync() with
+                {
+                    VpnNotifications = notices.Length == 0 ? null : notices.Select(row => row.Value).ToArray()
+                });
                 var reply = await RouteTransport.ReadResult(peer, request.RequestId, TimeSpan.FromSeconds(8), stop.Token);
                 if (reply.Type != "sync") return;
                 await Merge(reply);db.Set("peer_sync_seen:"+node.Id,App.Now.ToString());
+                notificationSync[node.Id] = notices.Length == 0 ? 0 : notices[^1].Sequence;
             }
         }
         catch { }

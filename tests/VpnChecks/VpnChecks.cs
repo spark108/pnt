@@ -199,6 +199,24 @@ static class VpnChecks
         {
             var catalog=await Request(new Message("vpn-client",profile.ClientId,Name:"catalog"));
             Assert(catalog.Type=="vpn-result"&&catalog.VpnServers?.Single().Id==self,"Authorized catalog missing");
+            const string notificationText = "Maintenance [test] <b>plain text</b>";
+            var selector = CommandSelectors.Create(db, ["vpn", "client", "notif", "send", "*", notificationText]);
+            Assert(selector?.Commands().Single()[4] == profile.ClientId, "Notification selector did not resolve the client");
+            await VpnControl.Command(db, cert, ["client", "notif", "send", profile.ClientId, notificationText]);
+            var notice = db.VpnNotifications().Single().Value;
+            var privateNotice = notice with { Id = Guid.NewGuid().ToString("N"), Client = self, Text = "Another client" };
+            var notificationSync = new Message("sync", VpnNotifications: [notice, privateNotice]);
+            await db.MergeState(notificationSync);
+            await db.MergeState(notificationSync);
+            Assert(db.VpnNotifications().Length == 2, "Notification replication duplicated a delivery");
+            var inboxRequest = new Message("vpn-client", profile.ClientId, Name: "notifications");
+            var inbox = await Request(inboxRequest);
+            using var page = JsonDocument.Parse(inbox.VpnPayload!);
+            Assert(page.RootElement.GetProperty("notifications").Deserialize<VpnNotification[]>(App.Json)!.SequenceEqual([notice]),
+                "Notification request returned the wrong client's deliveries");
+            var next = await Request(inboxRequest with { Target = page.RootElement.GetProperty("cursor").GetString() });
+            using var nextPage = JsonDocument.Parse(next.VpnPayload!);
+            Assert(nextPage.RootElement.GetProperty("notifications").GetArrayLength() == 0, "Notification cursor replayed a delivery");
             db.Put(discovered);
             var removed=discovered with{Id="fedcba9876543210",Removed=true};db.Put(removed);
             var announced=await Request(new Message("vpn-client",profile.ClientId,Name:"catalog"));

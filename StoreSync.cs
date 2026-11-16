@@ -40,6 +40,12 @@ sealed partial class Store
                 }
             }
             batch.Vpn(message);
+            foreach (var notification in message.VpnNotifications ?? [])
+            {
+                if (!notification.Valid()) continue;
+                batch.Execute(InsertVpnNotification, ("$id", notification.Id), ("$client", notification.Client),
+                    ("$text", notification.Text), ("$created", notification.Created));
+            }
             var active = nodes.Values.Where(n => !n.Removed).ToArray();
             var ids = active.Select(n => n.Id).ToHashSet();
             bool Known(string id) => ids.Contains(id) || active.Any(n => n.Name.Equals(id, StringComparison.OrdinalIgnoreCase) || n.Ip == id);

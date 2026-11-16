@@ -50,6 +50,13 @@ static class VpnClientAgent
             var profile=action=="import"?Validate(json):RuntimeProfile(json);
             if(action=="import"){Output(new{ok=true,clientId=profile.ClientId});return 0;}
             using var identity=Identity(profile);
+            if (action == "notifications")
+            {
+                var cursor = root.TryGetProperty("cursor", out var value) ? value.GetString() : null;
+                var result = await Request(profile, identity, "notifications", cursor).WaitAsync(TimeSpan.FromSeconds(30));
+                Console.WriteLine(result.VpnPayload ?? throw new IOException("Нет ответа на запрос уведомлений."));
+                return 0;
+            }
             if(action=="catalog")
             {
                 var result=await Request(profile,identity,"catalog",null);

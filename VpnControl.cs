@@ -98,6 +98,21 @@ static class VpnControl
                 await VpnDevices.Unbind(db,cert,FindClient(db,name));break;
             case ["client","list"]:
                 await ListClients(db,cert);break;
+            case ["client","notif","send",var recipient,var message]:
+                var receivingClient = FindClient(db, recipient);
+                if (receivingClient.Removed) throw new ArgumentException("Клиент отозван.");
+                var notice = new VpnNotification(Guid.NewGuid().ToString("N"), receivingClient.Id, message.Trim(), App.Now);
+                if (!notice.Valid()) throw new ArgumentException($"Укажите текст уведомления длиной до {VpnNotification.MaxTextLength} символов.");
+                db.PutVpnNotification(notice);
+                Console.WriteLine($"Уведомление отправлено клиенту {receivingClient.Id}.");
+                break;
+            case ["client","notif","list"]:
+                var recipients = db.VpnClients().ToDictionary(client => client.Id, client => client.Name);
+                CliOutput.Table(["Дата", "Получатель", "Уведомление"], db.VpnNotifications().Select(row => row.Value)
+                    .OrderByDescending(value => value.Created).ThenBy(value => value.Id)
+                    .Select(value => new CliCell[] { DateTimeOffset.FromUnixTimeMilliseconds(value.Created).ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss"),
+                        recipients.TryGetValue(value.Client, out var recipientName) ? $"{recipientName} ({value.Client})" : value.Client, value.Text }));
+                break;
             case ["client","rename",var name,var requestedClientName]:
                 var renamedClient=FindClient(db,name);
                 if(renamedClient.Removed)throw new ArgumentException("Клиент отозван.");
@@ -296,11 +311,29 @@ static class VpnControl
         {
             var client=db.VpnClients().FirstOrDefault(c=>c.Id==peer.RemoteId&&c.Cert==peer.RemoteFingerprint&&!c.Removed);
             if(client==null||request.Id!=client.Id||db.Get("left")=="1"||db.Self()?.Removed!=false)throw new UnauthorizedAccessException("Профиль клиента не разрешён или отозван.");
-            if(request.Name is not ("catalog" or "ensure" or "udp" or "stats"))throw new UnauthorizedAccessException("Операция не разрешена клиенту.");
-            if(request.Name!="catalog"&&(request.Target is null||!Permitted(db,client,request.Target)))throw new UnauthorizedAccessException("Сервер не разрешён клиенту.");
+            if(request.Name is not ("catalog" or "notifications" or "ensure" or "udp" or "stats"))throw new UnauthorizedAccessException("Операция не разрешена клиенту.");
+            var profileRequest = request.Name is "catalog" or "notifications";
+            if(!profileRequest&&(request.Target is null||!Permitted(db,client,request.Target)))throw new UnauthorizedAccessException("Сервер не разрешён клиенту.");
             var deviceKey=await VpnDevices.Challenge(peer.Stream,request,timeout.Token);
-            var deviceState=VpnDevices.Access(db,client,deviceKey,request.Name=="ensure"&&request.DeviceEpoch is null?"bind-device":request.Name=="catalog"?"catalog-device":"check-device");
-            if(request.Name!="catalog"&&(request.Name!="ensure"||request.DeviceEpoch is not null)&&request.DeviceEpoch!=deviceState.Epoch)throw new UnauthorizedAccessException("Сессия деавторизована. Подключитесь заново.");
+            var deviceState=VpnDevices.Access(db,client,deviceKey,request.Name=="ensure"&&request.DeviceEpoch is null?"bind-device":profileRequest?"catalog-device":"check-device");
+            if(!profileRequest&&(request.Name!="ensure"||request.DeviceEpoch is not null)&&request.DeviceEpoch!=deviceState.Epoch)throw new UnauthorizedAccessException("Сессия деавторизована. Подключитесь заново.");
+            if (request.Name == "notifications")
+            {
+                var node = db.Get("self");
+                var after = 0L;
+                if (request.Target?.Split(':', 2) is [var source, var sequence] && source == node && long.TryParse(sequence, out var cursor))
+                    after = Math.Max(0, cursor);
+                var page = db.VpnNotifications(after, client.Id, VpnNotification.PageSize);
+                var next = page.Length == 0 ? after : page[^1].Sequence;
+                var payload = JsonSerializer.Serialize(new
+                {
+                    notifications = page.Select(row => row.Value),
+                    cursor = $"{node}:{next}",
+                    more = page.Length == VpnNotification.PageSize
+                }, App.Json);
+                await Peer.Send(peer.Stream, new Message("vpn-result", VpnPayload: payload));
+                return;
+            }
             if(request.Name=="catalog")
             {
                 var servers=db.VpnServers().Where(s=>Permitted(db,client,s.Id)).ToArray();

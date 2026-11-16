@@ -21,6 +21,8 @@ sealed partial class Store : IDisposable
             "CREATE TABLE IF NOT EXISTS vpn_servers(id TEXT PRIMARY KEY,json TEXT NOT NULL,version INTEGER NOT NULL)",
             "CREATE TABLE IF NOT EXISTS vpn_devices(client TEXT PRIMARY KEY,epoch TEXT NOT NULL,device_key TEXT,version INTEGER NOT NULL DEFAULT 0)",
             "CREATE TABLE IF NOT EXISTS vpn_clients(id TEXT PRIMARY KEY,json TEXT NOT NULL,version INTEGER NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS vpn_notifications(seq INTEGER PRIMARY KEY,id TEXT NOT NULL UNIQUE,client TEXT NOT NULL,text TEXT NOT NULL,created INTEGER NOT NULL)",
+            "CREATE INDEX IF NOT EXISTS vpn_notifications_client ON vpn_notifications(client,seq)",
             "CREATE TABLE IF NOT EXISTS vpn_usage_sessions(id TEXT PRIMARY KEY,client TEXT NOT NULL,started INTEGER NOT NULL,last_seen INTEGER NOT NULL,ended INTEGER NOT NULL DEFAULT 0,received INTEGER NOT NULL DEFAULT 0,sent INTEGER NOT NULL DEFAULT 0)",
             "CREATE INDEX IF NOT EXISTS vpn_usage_client ON vpn_usage_sessions(client,last_seen)",
             "CREATE TABLE IF NOT EXISTS vpn_usage_paths(session TEXT NOT NULL,mode TEXT NOT NULL,route TEXT NOT NULL,first_seen INTEGER NOT NULL,last_seen INTEGER NOT NULL,received INTEGER NOT NULL,sent INTEGER NOT NULL,PRIMARY KEY(session,mode,route))",
