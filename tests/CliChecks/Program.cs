@@ -31,6 +31,11 @@ await Invoke("vpn","server","status","0123456789abcdef");Require(executed!.Seque
 Require((await Invoke("vpn","server","status")).Code!=0&&executed is null,"VPN server status accepted missing node");
 foreach(var verb in new[]{"enable","disable","status"}){await Invoke("ftp",verb);Require(executed!.SequenceEqual(new[]{"ftp",verb}),"FTPS command dispatch failed");}
 Require((await Invoke("ftp","enable","extra")).Code!=0&&executed is null,"FTPS accepted unknown arguments");
+await Invoke("tap","enable","--subnet","10.234.42.0/24");
+Require(executed is ["tap","enable","--subnet","10.234.42.0/24"],"TAP enable lost the subnet.");
+await Invoke("tap","status","0123456789abcdef");
+Require(executed is ["tap","status","0123456789abcdef"],"TAP status lost the remote node.");
+Require((await Invoke("tap","disable","--subnet","10.234.42.0/24")).Code != 0 && executed is null, "TAP disable accepted a subnet.");
 Require(rootHelp.Code == 0 && rootHelp.Output.Contains("node") && !rootHelp.Output.Contains("--servers"), "Root help must list only its commands");
 var nodeHelp=await Invoke("node","--help");
 Require(nodeHelp.Output.Contains("init")&&nodeHelp.Output.Contains("join")&&!nodeHelp.Output.Contains("requests"),"New node help shows member-only commands");

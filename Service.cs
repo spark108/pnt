@@ -22,6 +22,7 @@ sealed class Service(Store db, X509Certificate2 cert,int controlPort=442)
     Task vpnWork = Task.CompletedTask;
     Task vpnUsageWork = Task.CompletedTask;
     readonly WebPanel web = new(db, cert);
+    readonly TapService tap = new(db, cert);
     readonly FtpGateway ftp = new(db, cert);
     readonly RouteTransport routing = new(db, cert);
 
@@ -47,6 +48,7 @@ sealed class Service(Store db, X509Certificate2 cert,int controlPort=442)
         using var term = OperatingSystem.IsLinux() ? PosixSignalRegistration.Create(PosixSignal.SIGTERM, x => { x.Cancel = true; stop.Cancel(); }) : null;
         Console.CancelKeyPress += (_, x) => { x.Cancel = true; stop.Cancel(); };
         _ = Task.Run(Maintain);
+        var tapWork = tap.Run(stop.Token);
         try
         {
             while (!stop.IsCancellationRequested)
@@ -61,6 +63,7 @@ sealed class Service(Store db, X509Certificate2 cert,int controlPort=442)
             stop.Cancel();
             if (udp is not null && QuicTransport.Supported) { await udp.DisposeAsync(); await udpWork; Firewall.Close(ControlPort, "udp"); }
             MultiplexPool.CloseLocal(id);
+            await tapWork;
             await ftp.Stop();
             await web.Stop();
             control.Stop();
@@ -74,6 +77,7 @@ sealed class Service(Store db, X509Certificate2 cert,int controlPort=442)
         && db.Get("left") != "1" && db.Self()?.Removed == false;
     void ObserveQuic(string remote, IPAddress address)
     {
+        tap.Observe(remote, address.MapToIPv4());
         if (db.Resolve(remote) is Node known && !known.BehindNat && Enrollment.Private(known.Ip) && address.MapToIPv4().ToString() != known.Ip)
             db.Put(known with { BehindNat = true, Version = Math.Max(App.Now, known.Version + 1) });
     }
@@ -86,7 +90,7 @@ sealed class Service(Store db, X509Certificate2 cert,int controlPort=442)
         if (request == null) return;
         if(request.Type=="enroll"){await Enrollment.Receive(db,cert,peer,request,stop.Token);return;}
         if (request.Type == "join") { await Join(peer, request); return; }
-        if(request.Type=="vpn-client") {await VpnControl.ClientRequest(db,cert,peer,request,stop.Token);return;}
+        if(request.Type=="vpn-client") {await VpnControl.ClientRequest(db,cert,peer,request,stop.Token,tap);return;}
         var known = db.Nodes().FirstOrDefault(x => x.Id == request.Id && x.Cert == peer.RemoteFingerprint);
         if (known?.Removed == true && request.Type == "sync")
         {
@@ -97,6 +101,7 @@ sealed class Service(Store db, X509Certificate2 cert,int controlPort=442)
         {
             await Peer.Send(peer.Stream, new Message("error", Error: "Узел не состоит в кластере или исключён.")); return;
         }
+        tap.Observe(known.Id, peer.RemoteAddress?.MapToIPv4());
         if (request.Type == "mux")
         {
             if(!known.BehindNat && Enrollment.Private(known.Ip) && peer.RemoteAddress is IPAddress remoteAddress && remoteAddress.MapToIPv4().ToString()!=known.Ip)
@@ -126,13 +131,20 @@ sealed class Service(Store db, X509Certificate2 cert,int controlPort=442)
     {
         switch (request.Type)
         {
+            case "tap-status":
+                await Peer.Send(stream, new Message("tap-status", id, RequestId: request.RequestId,
+                    TapStatuses: db.TapStatus(id) is { } state ? [state] : [])); break;
+            case "tap-link" when !routed:
+                await tap.Accept(stream, request, stop.Token); break;
+            case "tap-vpn" when routed:
+                await tap.AttachVpn(stream, request, stop.Token); break;
             case "file-session":
                 if(request.Target==id)await FileService.Serve(db,stream,request,stop.Token);
                 break;
             case "latency-open":
                 await LatencyProbe.Reply(stream,request,id,stop.Token);break;
             case "vpn-admin":
-                await VpnControl.Execute(db,cert,stream,request,stop.Token);break;
+                await VpnControl.Execute(db,cert,stream,request,stop.Token,tap);break;
             case "route-info":
                 await Peer.Send(stream, new Message("route-info", id, Pings: db.Pings().ToArray(), Links: db.Links().ToArray())); break;
             case "route-search":
@@ -219,7 +231,7 @@ sealed class Service(Store db, X509Certificate2 cert,int controlPort=442)
         var task = await Peer.Read(incoming).WaitAsync(TimeSpan.FromSeconds(20));
         if (task is null) return;
         if (task.RequestId != request.RequestId || task.Id != path[0] || task.Deadline <= App.Now ||
-            task.Type is not ("sync" or "probe" or "exec" or "ping-external" or "tcp-check" or "interfaces" or "tunnel" or "vpn-admin" or "latency-open" or "node-leave" or "node-reboot" or "file-session"))
+            task.Type is not ("sync" or "probe" or "exec" or "ping-external" or "tcp-check" or "interfaces" or "tunnel" or "vpn-admin" or "latency-open" or "node-leave" or "node-reboot" or "file-session" or "tap-status" or "tap-vpn"))
         {
             await Peer.Send(incoming, new Message("error", Error: "Запрос просрочен или не соответствует маршруту.", RequestId: task.RequestId)); return;
         }
@@ -248,16 +260,17 @@ sealed class Service(Store db, X509Certificate2 cert,int controlPort=442)
         }
         if (!db.Consume(invite)) { await Peer.Send(peer.Stream, new Message("error", Error: "Приглашение уже использовано.")); return; }
         db.Put(new Node(m.Id, m.Name, m.Ip, m.Cert, App.Now,Platform:m.Platform=="windows"?"windows":"linux"));
-        await Peer.Send(peer.Stream, new Message("welcome", id, Nodes: db.Nodes().ToArray(), Rules: db.Rules().ToArray(), KeyHash: db.Get("key_hash"), Update: db.Update(), Web: db.Web(),Cesium:db.Cesium(),Ftp:db.Ftp()));
+        await Peer.Send(peer.Stream, new Message("welcome", id, Nodes: db.Nodes().ToArray(), Rules: db.Rules().ToArray(), KeyHash: db.Get("key_hash"), Update: db.Update(), Web: db.Web(),Cesium:db.Cesium(),Ftp:db.Ftp(),Tap:db.TapConfig(),TapAddresses:db.TapPool()));
     }
 
-    Message Sync() => new("sync", id, Nodes: db.Nodes().ToArray(), Rules: db.Rules().ToArray(), Update: db.Update(), Pings: db.Pings().ToArray(), Web: db.Web(), Links: db.Links().ToArray(),VpnServers:db.VpnServers().ToArray(),VpnClients:db.VpnClients().ToArray(),Cesium:db.Cesium(),Traffic:db.Traffic().ToArray(),Ftp:db.Ftp(),VpnDevices:db.VpnDeviceSnapshot());
+    Message Sync() => new("sync", id, Nodes: db.Nodes().ToArray(), Rules: db.Rules().ToArray(), Update: db.Update(), Pings: db.Pings().ToArray(), Web: db.Web(), Links: db.Links().ToArray(),VpnServers:db.VpnServers().ToArray(),VpnClients:db.VpnClients().ToArray(),Cesium:db.Cesium(),Traffic:db.Traffic().ToArray(),Ftp:db.Ftp(),VpnDevices:db.VpnDeviceSnapshot(),Tap:db.TapConfig(),TapAddresses:db.TapPool(),TapStatuses:db.TapStatuses());
 
     async Task Merge(Message m)
     {
         await db.MergeState(m, stop.Token);
         if (m.Update is not null) db.PutUpdate(m.Update);
         if (m.Web is not null) db.PutWeb(m.Web);
+        db.MergeTap(m);
         if (m.Ftp is not null) db.PutFtp(m.Ftp);
         if (m.Cesium is not null) db.PutCesium(m.Cesium);
     }

@@ -119,6 +119,10 @@ static class CommandLine
         Leaf("node maintenance done", "Завершить обслуживание.", dispatch:"cluster maintenance done");
         Group("forward", "Проброс TCP-портов через сеть PNT.");
         Group("ftp", "Файловый FTPS-шлюз к узлам кластера.");
+        Group("tap", "Внутренняя Ethernet-сеть узлов PNT.");
+        Leaf("tap status", "Показать состояние TAP.", [("id?", "ID узла.")]);
+        Leaf("tap enable", "Включить TAP или сменить его подсеть без смены номеров узлов.", options: [("--subnet", "IPv4-подсеть /24. По умолчанию последняя сохранённая или 37.0.0.0/24.", false)]);
+        Leaf("tap disable", "Выключить TAP, сохранив адресацию.");
         Leaf("ftp enable", "Включить FTPS на всех узлах: TCP 440, пассивный диапазон 44100–44131.");
         Leaf("ftp disable", "Выключить FTPS на всех узлах и закрыть сеансы.");
         Leaf("ftp status", "Показать настройки FTPS и сертификат текущего узла.");

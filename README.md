@@ -200,6 +200,8 @@ Cesium ion credentials are entered through the CLI; `pnt cesium token clear` rem
 
 Link labels show ping and current aggregate PNT throughput in both directions (Mbps), sampled about every five seconds and shared across the cluster. Rates exclude IP/TLS/QUIC overhead and are not a bandwidth test; stale or unavailable samples show `—`.
 
+The optional [TAP transport](TAP.md) adds a private Ethernet segment between cluster members alongside the existing transport.
+
 ## Cluster file access over FTPS
 
 ```sh
