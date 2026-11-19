@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Net;
+using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
@@ -107,7 +108,7 @@ sealed class TapService(Store db, X509Certificate2 cert, TapService.Runtime? run
                                 .Append(App.OwnIp).Append(db.Get("bootstrap_host")).Where(s => s is not null)
                                 .Select(s => IPAddress.TryParse(s, out var parsed) ? parsed : IPAddress.None);
                             await using var adapter = runtime?.Adapter(ip, mac) ?? await TapAdapter.Open(config.Subnet, ip, mac, serviceIps, token);
-                            using var network = new Network(db, cert, self, epoch, ip, (byte)octet, adapter, Status, observed, runtime);
+                            using var network = new Network(db, cert, self, epoch, ip, (byte)octet, adapter, observed, runtime);
                             current = network;
                             try { await network.Run(token); }
                             finally { current = null; }
@@ -174,7 +175,6 @@ sealed class TapService(Store db, X509Certificate2 cert, TapService.Runtime? run
         readonly byte octet;
         readonly byte[] prefix;
         readonly TapAdapter adapter;
-        readonly Action<string?, string?, string?, string, string?, TapLink[], int> status;
         readonly ConcurrentDictionary<string, IPAddress> observed;
         readonly Runtime? runtime;
         readonly UdpClient udp;
@@ -184,11 +184,11 @@ sealed class TapService(Store db, X509Certificate2 cert, TapService.Runtime? run
         readonly ConcurrentDictionary<string, long> retry = new(StringComparer.Ordinal);
         volatile Snapshot snapshot = new([], [], [], []);
         internal Network(Store db, X509Certificate2 cert, string self, string epoch, IPAddress address, byte octet,
-            TapAdapter adapter, Action<string?, string?, string?, string, string?, TapLink[], int> status,
+            TapAdapter adapter,
             ConcurrentDictionary<string, IPAddress> observed, Runtime? runtime)
         {
             this.db = db; this.cert = cert; this.self = self; this.epoch = epoch; this.address = address;
-            this.octet = octet; this.adapter = adapter; this.status = status; this.observed = observed; this.runtime = runtime; prefix = address.GetAddressBytes()[..3];
+            this.octet = octet; this.adapter = adapter; this.observed = observed; this.runtime = runtime; prefix = address.GetAddressBytes()[..3];
             var setting = Environment.GetEnvironmentVariable("PNT_TAP_PORT");
             port = runtime?.Port ?? (setting is null ? TapControl.DefaultPort : int.TryParse(setting, out var number) && number is > 0 and <= 65535
                 ? number : throw new IOException("PNT_TAP_PORT должен быть номером UDP-порта 1–65535."));
@@ -206,7 +206,7 @@ sealed class TapService(Store db, X509Certificate2 cert, TapService.Runtime? run
             using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(token);
             if (runtime is null) Firewall.Open(port, "udp");
             var t = lifetime.Token;
-            var jobs = new[] { Tick(t), ReadUdp(t), ReadTap(t) };
+            var jobs = new[] { Tick(t), ReadUdp(t), ReadTap(t), MeasurePings(t) };
             try { await await Task.WhenAny(jobs); }
             finally
             {
@@ -290,11 +290,15 @@ sealed class TapService(Store db, X509Certificate2 cert, TapService.Runtime? run
                 var active = links.Values.Where(l => l.Ready).GroupBy(l => l.Node)
                     .Select(g => g.MinBy(l => Volatile.Read(ref l.Ms))!).ToArray();
                 var direct = active.Select(l => new TapLink(l.Node, Volatile.Read(ref l.Ms))).ToArray();
+                var measurements = tapPings;
+                var now = App.Now;
                 var report = new TapStatus(self, epoch, address.ToString(), Convert.ToHexString(adapter.Mac),
                     direct.Length > 0 ? "готов" : "адаптер поднят, UDP-путь не подтверждён",
                     direct.Length > 0 ? null : "Для межузлового VPN доступен текущий транспорт.",
-                    App.Now, direct, port);
-                status(report.Epoch, report.Address, report.Mac, report.State, report.Error, report.Links, report.Port);
+                    now, direct, port,
+                    measurements.Where(p => now - p.Updated is >= 0 and < 30_000 && snapshot.Numbers.TryGetValue(p.Node, out var number) &&
+                        snapshot.Routes.ContainsKey(number)).ToArray());
+                db.PutTapStatus(report);
                 var known = db.TapStatuses().Where(s => s.Epoch == epoch && App.Now - s.Updated < 18_000 && eligible.Contains(s.Node) &&
                     TapControl.Hex(s.Mac, 12) && s.Address == new IPAddress([..prefix, (byte)pool.Octets[s.Node]]).ToString())
                     .ToDictionary(s => s.Node);
@@ -310,6 +314,34 @@ sealed class TapService(Store db, X509Certificate2 cert, TapService.Runtime? run
                     await Task.WhenAll(candidates.Select(n => Dial(n, token)));
                 }
                 await Task.Delay(1200, token);
+            }
+        }
+
+        volatile TapPing[] tapPings = [];
+
+        async Task MeasurePings(CancellationToken token)
+        {
+            // Test runtimes have simulated adapters with no host route for ICMP.
+            if (runtime is not null) { await Task.Delay(Timeout.Infinite, token); return; }
+            while (!token.IsCancellationRequested)
+            {
+                var currentRoutes = snapshot;
+                var results = new ConcurrentBag<TapPing>();
+                await Parallel.ForEachAsync(currentRoutes.Routes.Keys,
+                    new ParallelOptions { MaxDegreeOfParallelism = 16, CancellationToken = token },
+                    async (number, ct) =>
+                    {
+                        try
+                        {
+                            using var ping = new Ping();
+                            var result = await ping.SendPingAsync(new IPAddress([..prefix, number]), TimeSpan.FromMilliseconds(1300), cancellationToken: ct);
+                            if (result.Status == IPStatus.Success)
+                                results.Add(new TapPing(currentRoutes.Nodes[number], result.RoundtripTime, App.Now));
+                        }
+                        catch (Exception e) when (e is PingException or PlatformNotSupportedException) { }
+                    });
+                tapPings = results.ToArray();
+                await Task.Delay(3000, token);
             }
         }
 

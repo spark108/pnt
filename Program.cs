@@ -238,7 +238,7 @@ static class App
         if (db.Get("cluster") == null || db.Get("left") == "1" || db.Self()?.Removed == true) throw new Exception("Узел не состоит в активном кластере.");
     }
 
-    static readonly string[] NodeColumns=["ID","Имя","IP","Пинг / статус","NAT","Реле"];
+    internal static readonly string[] NodeColumns = ["ID", "Имя", "IP", "Пинг / статус", "Тип соединения", "Реле"];
     static void PrintNodes(Store db,string? fromNode)
     {
         var rows=NodeRows(db,fromNode);
@@ -257,11 +257,18 @@ static class App
         }
         finally{Console.CancelKeyPress-=cancel;}
     }
-    static List<CliCell[]> NodeRows(Store db,string? fromNode)
+    internal static List<CliCell[]> NodeRows(Store db,string? fromNode)
     {
         Active(db);
         var source=fromNode is null?db.Self()!:db.Resolve(fromNode)??throw new Exception("Узел для измерения пинга не найден.");
         var nodes=db.Nodes();var pings=db.Pings();
+        var tap = db.TapConfig();
+        var pool = tap?.Enabled == true ? db.TapPool() : null;
+        var epoch = TapControl.Epoch(tap, pool);
+        var tapSource = epoch is null ? null : db.TapStatus(source.Id);
+        if (tapSource?.Epoch != epoch) tapSource = null;
+        var tapPings = tapSource?.Pings;
+        var now = Now;
         var rows = new List<CliCell[]>();
         foreach (var node in nodes)
         {
@@ -273,6 +280,15 @@ static class App
                     ping.Route is { Length: > 2 } route ? " через " + string.Join(" → ", route.Skip(1).SkipLast(1).Select(x => nodes.FirstOrDefault(n => n.Id == x)?.Name ?? x)) : " через другой узел")
                 : long.TryParse(db.Get("peer_sync_seen:"+node.Id),out var seen)&&Now-seen<30_000?"нет замера":"нет связи";
             rows.Add([node.Id,node.Name,new(node.Ip,node.BehindNat?"grey":null),new(status,node.Removed||status=="нет связи"?"red":status is "update" or "нет замера"?"yellow":"green"),new(node.BehindNat?"NAT":"—",node.BehindNat?"cyan":"grey"),new(node.RelayEnabled?"да":"резерв",node.RelayEnabled?"green":"yellow")]);
+            if (!node.Removed && pool?.Octets.TryGetValue(node.Id, out var octet) == true)
+            {
+                var tapIp = TapControl.Address(tap!.Subnet, octet).ToString();
+                var tapPing = tapPings?.FirstOrDefault(p => p.Node == node.Id && now - p.Updated is >= 0 and < 30_000);
+                var local = node.Id == source.Id && tapSource is { Mac: not null } &&
+                    now - tapSource.Updated is >= 0 and < 30_000;
+                var delay = local ? "0 ms" : tapPing is not null ? $"{tapPing.Ms} ms" : "нет замера";
+                rows.Add(["", "", tapIp, new(delay, local || tapPing is not null ? "green" : "yellow"), new("TAP", "cyan"), ""]);
+            }
         }
         return rows;
     }

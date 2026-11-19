@@ -29,8 +29,13 @@ static class TapChecks
             using var first = new Store(Path.Combine(path, "a.db"));
             using var second = new Store(Path.Combine(path, "b.db"));
             const string a = "0101010101010101", b = "0202020202020202", c = "0303030303030303";
+            first.Set("cluster", "test");
+            first.Set("self", a);
             first.Put(new Node(a, "a", "10.1.1.1", new string('a',64), 1));
-            first.Put(new Node(b, "b", "10.1.1.2", new string('b',64), 1));
+            first.Put(new Node(b, "b", "10.1.1.2", new string('b',64), 1, BehindNat: true));
+            Require(App.NodeColumns[4] == "Тип соединения" &&
+                App.NodeRows(first, null).Select(row => row[4].Value).Order().SequenceEqual(new[] { "—", "NAT" }.Order()),
+                "The connection type column must be present even with TAP disabled.");
             first.ChangeTapConfig(a, true, null);
             var old = first.TapConfig()!;
             var pool = first.TapPool()!;
@@ -41,10 +46,24 @@ static class TapChecks
             Require(first.TapConfig()!.Subnet == "10.234.42.0/24" && first.TapPool()!.Octets[b] == pool.Octets[b],
                 "Subnet migration from another node changed its final octet.");
             Require(TapControl.Epoch(old, pool) != TapControl.Epoch(first.TapConfig(), pool), "Subnet migration did not invalidate old sessions.");
+            var now = App.Now;
+            var epoch = TapControl.Epoch(first.TapConfig(), first.TapPool());
+            first.MergeTap(new Message("sync", TapStatuses:
+            [
+                new(b, epoch, "10.234.42.2", "020000000002", "готов", null, now, [new(a, 91)], Pings: [new(a, 24, now)])
+            ]));
+            var remoteRows = App.NodeRows(first, b);
+            var tapIndex = remoteRows.FindIndex(row => row[2].Value == "10.234.42.1");
+            Require(tapIndex > 0 && remoteRows[tapIndex - 1][2].Value == "10.1.1.1" &&
+                remoteRows[tapIndex][3].Value == "24 ms" && remoteRows[tapIndex][4].Value == "TAP",
+                "The TAP row must follow its regular IP and use ICMP from the selected node.");
+            Require(App.NodeRows(first, null).Single(row => row[2].Value == "10.234.42.2")[3].Value == "нет замера",
+                "A different source must not reuse another node's ICMP measurements.");
             second.MergeTap(new Message("sync", Tap: old));
             Require(second.TapConfig()!.Subnet == "10.234.42.0/24", "A late replication message rolled back the subnet.");
             first.ChangeTapConfig(a, false, null);
             Require(first.TapConfig() is { Enabled: false, Subnet: "10.234.42.0/24" }, "Disabling lost the subnet.");
+            Require(App.NodeRows(first, null).All(row => row[4].Value != "TAP"), "Disabling TAP left extra rows in the list.");
             first.ChangeTapConfig(a, true, null);
             Require(first.TapConfig() is { Enabled: true, Subnet: "10.234.42.0/24" }, "Re-enabling lost the configured subnet.");
             first.Put(new Node(c, "c", "10.1.1.3", new string('c',64), 1));

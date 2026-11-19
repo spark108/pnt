@@ -8,7 +8,8 @@ namespace Pnt;
 record TapConfig(string Id, long Version, bool Enabled, string Subnet);
 record TapPool(string Id, string Allocator, long Revision, Dictionary<string, int> Octets);
 record TapLink(string Node, double Ms);
-record TapStatus(string Node, string? Epoch, string? Address, string? Mac, string State, string? Error, long Updated, TapLink[] Links, int Port = 0);
+record TapPing(string Node, long Ms, long Updated);
+record TapStatus(string Node, string? Epoch, string? Address, string? Mac, string State, string? Error, long Updated, TapLink[] Links, int Port = 0, TapPing[]? Pings = null);
 
 static class TapControl
 {
@@ -153,6 +154,9 @@ sealed partial class Store
         if (!TapControl.Hex(value.Node, 16) || value.Updated <= 0 || value.Updated > App.Now + 60_000 ||
             value.Links is not { Length: <= 254 } || value.Links.Any(l => l is null || !TapControl.Hex(l.Node, 16) || !double.IsFinite(l.Ms) || l.Ms < 0) ||
             value.Epoch is not null && !TapControl.Hex(value.Epoch, 64) || value.Port is < 0 or > 65535 || value.Error?.Length > 1024) return;
+        if (value.Pings is { } pings && (pings.Length > 254 ||
+            pings.Any(p => p is null || !TapControl.Hex(p.Node, 16) || p.Ms is < 0 or > 1300 || p.Updated <= 0 || p.Updated > value.Updated)))
+            return;
         TapWrite((read, write) =>
         {
             var key = "tap_status:" + value.Node;
